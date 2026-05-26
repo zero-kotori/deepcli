@@ -12,6 +12,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use similar::TextDiff;
+use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::process::Stdio;
@@ -135,7 +136,7 @@ impl ToolRegistry {
                 ),
                 declaration(
                     "run_shell",
-                    "Run a sandboxed shell command.",
+                    "Run a sandboxed shell command with a bounded timeout.",
                     ToolSurface::Shell,
                     false,
                     false,
@@ -633,7 +634,17 @@ impl ToolExecutor {
             explicit_approval: approved,
         });
         self.ensure_allowed("run_shell", &decision, approved)?;
-        let output = run_command(&self.workspace, command).await?;
+        let timeout_seconds = args
+            .get("timeout_seconds")
+            .and_then(Value::as_u64)
+            .filter(|value| *value > 0)
+            .unwrap_or_else(default_shell_timeout_seconds);
+        let output = run_command_with_timeout(
+            &self.workspace,
+            command,
+            Duration::from_secs(timeout_seconds),
+        )
+        .await?;
         Ok(ToolExecution {
             tool: "run_shell".to_string(),
             content: output_text(&output),
@@ -1127,6 +1138,14 @@ pub async fn run_command(workspace: &Path, command: &str) -> Result<CommandOutpu
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn default_shell_timeout_seconds() -> u64 {
+    env::var("DEEP_CLI_RUN_SHELL_TIMEOUT_SECONDS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(120)
 }
 
 pub async fn run_command_with_timeout(
@@ -1992,6 +2011,7 @@ fn schema_for(name: &str) -> Value {
                 ("approved", "boolean"),
                 ("writes_files", "boolean"),
                 ("requires_network", "boolean"),
+                ("timeout_seconds", "integer"),
             ],
             &["command"],
         ),
