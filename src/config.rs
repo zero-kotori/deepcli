@@ -283,6 +283,13 @@ impl AppConfig {
                 self.agent.provider_turn_timeout_seconds = value;
             }
         }
+        if let Ok(iterations) = env::var("DEEP_CLI_MAX_TOOL_ITERATIONS") {
+            if let Ok(value) = iterations.parse::<usize>() {
+                if value > 0 {
+                    self.agent.max_tool_iterations = value;
+                }
+            }
+        }
     }
 }
 
@@ -530,7 +537,10 @@ fn default_web_search() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn loads_project_config_and_redacts_credentials() {
@@ -599,5 +609,17 @@ mod tests {
             Some("http://127.0.0.1:8443")
         );
         assert_eq!(runtime.no_proxy, vec!["localhost"]);
+    }
+
+    #[test]
+    fn max_tool_iterations_can_be_overridden_by_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempdir().unwrap();
+        env::set_var("DEEP_CLI_MAX_TOOL_ITERATIONS", "128");
+
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+
+        env::remove_var("DEEP_CLI_MAX_TOOL_ITERATIONS");
+        assert_eq!(config.agent.max_tool_iterations, 128);
     }
 }
