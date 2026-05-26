@@ -1,0 +1,76 @@
+{
+  "version": 1,
+  "project": {
+    "name": "deep-cli",
+    "command": "deep-cli",
+    "implementationLanguage": "rust",
+    "language": "zh-CN"
+  },
+  "defaultProvider": "deepseek",
+  "providers": {
+    "deepseek": {
+      "type": "deepseek",
+      "credentialsFile": ".deepcli/credentials/deepseek-credentials.json",
+      "acceptanceModel": "deepseek-v4-pro",
+      "capabilities": [
+        "streaming",
+        "reasoner",
+        "tool_calling",
+        "json_output",
+        "context_cache"
+      ]
+    },
+    "kimi": {
+      "type": "kimi",
+      "credentialsFile": ".deepcli/credentials/kimi-credentials.json",
+      "capabilities": [
+        "streaming",
+        "json_output"
+      ]
+    }
+  },
+  "permissions": {
+    "defaultMode": "sandbox",
+    "workspaceRead": "ask_on_first_use",
+    "workspaceWrite": "sandbox_then_approval",
+    "shell": "sandbox_then_approval",
+    "network": "allow",
+    "git": "sandbox_then_approval",
+    "dangerousCommands": "double_confirm",
+    "approvalPolicy": "auto_reviewer_then_user",
+    "dangerousCommandPatterns": [
+      "rm -rf",
+      "git reset --hard",
+      "sudo",
+      "/System/",
+      "/usr/bin/",
+      "/usr/local/bin/"
+    ]
+  },
+  "sandbox": {
+    "enabledByDefault": true,
+    "workspaceRoot": ".",
+    "allowReadWithinWorkspace": true,
+    "allowNetwork": true,
+    "allowSystemWrite": false,
+    "allowDangerousCommands": false,
+    "onMissingPermission": "request_approval"
+  },
+  "agent": {
+    "requirePlanForComplexTasks": true,
+    "autoReviewer": true,
+    "maxSubagentDepth": 2,
+    "providerTurnTimeoutSeconds": 600
+  },
+  "usage": {
+    "tokenWarningThreshold": 160000
+  },
+  "network": {
+    "webSearch": "enabled",
+    "proxy": {
+      "http": null,
+      "https": null,
+      "noProxy": []
+    }
+  }
+}
