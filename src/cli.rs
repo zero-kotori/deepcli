@@ -1,6 +1,6 @@
 use crate::config::AppConfig;
 use crate::runtime::{AgentRuntime, RuntimeOptions};
-use crate::ui::run_basic_repl;
+use crate::ui::{run_basic_repl, run_tui};
 use crate::workspace::WorkspaceManager;
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -38,6 +38,10 @@ pub struct Cli {
     #[arg(long)]
     pub stream: bool,
 
+    /// Start the interactive terminal UI with a message box and collapsible tool log.
+    #[arg(long)]
+    pub tui: bool,
+
     /// Grant first-use local read authorization and approve non-dangerous local actions.
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -66,7 +70,11 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
     )?;
 
     if cli.task.is_empty() {
-        run_basic_repl(&mut runtime).await
+        if cli.tui {
+            run_tui(runtime).await
+        } else {
+            run_basic_repl(&mut runtime).await
+        }
     } else {
         let task = cli.task.join(" ");
         let output = runtime.handle_input(&task).await?;

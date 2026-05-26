@@ -99,14 +99,16 @@ PY
 usage() {
   cat <<'EOF'
 Usage:
-  deep_cli                         Start an interactive session in the current directory
+  deep_cli                         Start the terminal UI in the current directory
+  deep_cli repl                    Start the legacy line-based REPL
   deep_cli resume [session_id]     Resume a session; without id, resume the latest session in this directory
   deep_cli sessions                List sessions for the current directory
+  deep_cli tui                     Start the terminal UI in the current directory
   deep_cli ask <prompt>            Run a one-shot task in the current directory
   deep_cli stream <prompt>         Run a streaming one-shot chat task
-  deep_cli kimi [ask|stream|resume] [args...]
+  deep_cli kimi [ask|stream|resume|tui|repl] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deep_cli deepseek [ask|stream|resume] [args...]
+  deep_cli deepseek [ask|stream|resume|tui|repl] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deep_cli help                    Show this help
 
@@ -115,6 +117,8 @@ All other arguments are forwarded to deep-cli with:
 
 Examples:
   deep_cli
+  deep_cli repl
+  deep_cli tui
   deep_cli resume
   deep_cli resume 6155c14e-85e5-4600-a081-29359cc232f2
   deep_cli kimi
@@ -137,7 +141,7 @@ run_provider_command() {
 
   case "${1:-}" in
     "" )
-      run_deep_cli --provider "$provider" --model "$model"
+      run_deep_cli --provider "$provider" --model "$model" --tui
       ;;
     ask )
       shift
@@ -146,6 +150,14 @@ run_provider_command() {
     stream )
       shift
       run_deep_cli --provider "$provider" --model "$model" --stream "$@"
+      ;;
+    tui )
+      shift
+      run_deep_cli --provider "$provider" --model "$model" --tui "$@"
+      ;;
+    repl )
+      shift
+      run_deep_cli --provider "$provider" --model "$model" "$@"
       ;;
     resume )
       shift
@@ -159,7 +171,7 @@ run_provider_command() {
       else
         shift
       fi
-      run_deep_cli --provider "$provider" --model "$model" --resume "$session_id" "$@"
+      run_deep_cli --provider "$provider" --model "$model" --tui --resume "$session_id" "$@"
       ;;
     * )
       run_deep_cli --provider "$provider" --model "$model" "$@"
@@ -169,7 +181,7 @@ run_provider_command() {
 
 case "${1:-}" in
   "" )
-    run_deep_cli
+    run_deep_cli --tui
     ;;
   help|--help|-h )
     usage
@@ -186,10 +198,18 @@ case "${1:-}" in
     else
       shift
     fi
-    run_deep_cli --resume "$session_id" "$@"
+    run_deep_cli --tui --resume "$session_id" "$@"
     ;;
   sessions|session )
     list_sessions
+    ;;
+  tui )
+    shift
+    run_deep_cli --tui "$@"
+    ;;
+  repl )
+    shift
+    run_deep_cli "$@"
     ;;
   ask )
     shift

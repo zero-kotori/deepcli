@@ -9,6 +9,7 @@ use anyhow::{anyhow, Result};
 use chrono::Utc;
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
@@ -28,6 +29,67 @@ pub struct AgentRuntime {
     session: Session,
     executor: ToolExecutor,
     stream_output: bool,
+    progress_tx: Option<Sender<RuntimeProgress>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeProgress {
+    ProviderStreamStarted,
+    ProviderTurnStarted {
+        iteration: usize,
+        max_iterations: usize,
+        message_count: usize,
+        tool_count: usize,
+        request_kib: usize,
+        compacted: bool,
+    },
+    ProviderTurnCompleted {
+        elapsed_ms: u128,
+        tool_calls: usize,
+    },
+    ToolStarted {
+        tool: String,
+    },
+    ToolCompleted {
+        tool: String,
+        ok: bool,
+        summary: String,
+    },
+}
+
+impl RuntimeProgress {
+    pub fn plain_text(&self) -> String {
+        match self {
+            RuntimeProgress::ProviderStreamStarted => {
+                "deep-cli: provider stream started".to_string()
+            }
+            RuntimeProgress::ProviderTurnStarted {
+                iteration,
+                max_iterations,
+                message_count,
+                tool_count,
+                request_kib,
+                compacted,
+            } => format!(
+                "deep-cli: provider turn {iteration}/{max_iterations} (messages={message_count}, tools={tool_count}, request~{request_kib} KiB{})",
+                if *compacted { ", compacted" } else { "" }
+            ),
+            RuntimeProgress::ProviderTurnCompleted {
+                elapsed_ms,
+                tool_calls,
+            } => format!(
+                "deep-cli: provider response in {:.1}s (tool_calls={tool_calls})",
+                *elapsed_ms as f64 / 1000.0
+            ),
+            RuntimeProgress::ToolStarted { tool } => {
+                format!("deep-cli: running tool {tool}")
+            }
+            RuntimeProgress::ToolCompleted { tool, ok, .. } => {
+                let status = if *ok { "completed" } else { "failed" };
+                format!("deep-cli: tool {tool} {status}")
+            }
+        }
+    }
 }
 
 impl AgentRuntime {
@@ -75,11 +137,28 @@ impl AgentRuntime {
             session,
             executor,
             stream_output: options.stream_output,
+            progress_tx: None,
         })
     }
 
     pub fn session_id(&self) -> String {
         self.session.id().to_string()
+    }
+
+    pub fn provider_name(&self) -> &str {
+        &self.session.metadata.provider
+    }
+
+    pub fn model_name(&self) -> Option<&str> {
+        self.session.metadata.model.as_deref()
+    }
+
+    pub fn state_label(&self) -> String {
+        format!("{:?}", self.session.metadata.state)
+    }
+
+    pub fn set_progress_sender(&mut self, progress_tx: Option<Sender<RuntimeProgress>>) {
+        self.progress_tx = progress_tx;
     }
 
     pub fn workspace(&self) -> &Path {
@@ -100,7 +179,53 @@ impl AgentRuntime {
             )
             .await;
         }
+        if is_low_information_input(input) && !self.has_open_user_context()? {
+            return self.handle_low_information_input(input);
+        }
         self.run_agent_task(input).await
+    }
+
+    fn handle_low_information_input(&mut self, input: &str) -> Result<String> {
+        let message =
+            "我不确定你想执行什么。请说明要我分析、修改、测试、继续上次任务，或使用 /help 查看命令。";
+        self.session.append_message("user", input)?;
+        self.session.append_message("assistant", message)?;
+        self.session.write_summary(message)?;
+        self.session.set_state(SessionState::WaitingUser)?;
+        Ok(message.to_string())
+    }
+
+    fn has_open_user_context(&self) -> Result<bool> {
+        if matches!(
+            self.session.metadata.state,
+            SessionState::AwaitingApproval | SessionState::Paused
+        ) {
+            return Ok(true);
+        }
+        if self
+            .session
+            .load_side_questions()?
+            .iter()
+            .any(|item| item.status == crate::session::SideQuestionStatus::Open)
+        {
+            return Ok(true);
+        }
+        if self
+            .session
+            .load_approval_requests()?
+            .iter()
+            .any(|item| item.status == crate::session::ApprovalStatus::Pending)
+        {
+            return Ok(true);
+        }
+        Ok(self.session.load_plan()?.is_some_and(|plan| {
+            plan.steps.iter().any(|step| {
+                matches!(
+                    step.status,
+                    PlanStepStatus::InProgress | PlanStepStatus::Failed
+                )
+            })
+        }))
     }
 
     pub async fn run_agent_task(&mut self, task: &str) -> Result<String> {
@@ -140,7 +265,7 @@ impl AgentRuntime {
 
         self.session.set_state(SessionState::Executing)?;
         if self.stream_output && !is_complex_task(task) {
-            eprintln!("deep-cli: provider stream started");
+            self.emit_progress(RuntimeProgress::ProviderStreamStarted);
             self.session
                 .append_audit_event("provider_stream_started", json!({}))?;
             let events = match timeout(
@@ -184,15 +309,14 @@ impl AgentRuntime {
             let compacted_messages = compact_messages_for_provider(&messages);
             let compacted = compacted_messages.len() != messages.len();
             let request_stats = provider_request_stats(&compacted_messages, &tool_specs);
-            eprintln!(
-                "deep-cli: provider turn {}/{} (messages={}, tools={}, request~{} KiB{})",
-                iteration + 1,
-                self.config.agent.max_tool_iterations,
-                request_stats.message_count,
-                request_stats.tool_count,
-                request_stats.total_bytes.div_ceil(1024),
-                if compacted { ", compacted" } else { "" }
-            );
+            self.emit_progress(RuntimeProgress::ProviderTurnStarted {
+                iteration: iteration + 1,
+                max_iterations: self.config.agent.max_tool_iterations,
+                message_count: request_stats.message_count,
+                tool_count: request_stats.tool_count,
+                request_kib: request_stats.total_bytes.div_ceil(1024),
+                compacted,
+            });
             self.session.append_audit_event(
                 "provider_turn_started",
                 json!({
@@ -229,11 +353,10 @@ impl AgentRuntime {
                 }
             };
             let elapsed = started.elapsed();
-            eprintln!(
-                "deep-cli: provider response in {:.1}s (tool_calls={})",
-                elapsed.as_secs_f64(),
-                response.tool_calls.len()
-            );
+            self.emit_progress(RuntimeProgress::ProviderTurnCompleted {
+                elapsed_ms: elapsed.as_millis(),
+                tool_calls: response.tool_calls.len(),
+            });
             self.session.append_audit_event(
                 "provider_turn_completed",
                 json!({
@@ -341,6 +464,14 @@ impl AgentRuntime {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
     }
 
+    fn emit_progress(&self, event: RuntimeProgress) {
+        if let Some(tx) = &self.progress_tx {
+            let _ = tx.send(event);
+        } else {
+            eprintln!("{}", event.plain_text());
+        }
+    }
+
     async fn execute_tool_call(&mut self, call: &ToolCall) -> Result<String> {
         if !self.registry.has(&call.function.name) {
             return Err(anyhow!(
@@ -348,7 +479,9 @@ impl AgentRuntime {
                 call.function.name
             ));
         }
-        eprintln!("deep-cli: running tool {}", call.function.name);
+        self.emit_progress(RuntimeProgress::ToolStarted {
+            tool: call.function.name.clone(),
+        });
         self.session
             .append_audit_event("tool_started", json!({ "tool": call.function.name }))?;
         let execution = match self
@@ -359,10 +492,16 @@ impl AgentRuntime {
             Ok(execution) => execution,
             Err(error) if is_approval_error(&error) => {
                 self.session.set_state(SessionState::AwaitingApproval)?;
-                return Ok(format!(
+                let output = format!(
                     "tool `{}` is awaiting approval: {error}",
                     call.function.name
-                ));
+                );
+                self.emit_progress(RuntimeProgress::ToolCompleted {
+                    tool: call.function.name.clone(),
+                    ok: false,
+                    summary: truncate_progress_detail(&output),
+                });
+                return Ok(output);
             }
             Err(error) => {
                 self.session.append_audit_event(
@@ -372,13 +511,24 @@ impl AgentRuntime {
                         "error": error.to_string()
                     }),
                 )?;
-                return Ok(format!("tool `{}` failed: {error}", call.function.name));
+                let output = format!("tool `{}` failed: {error}", call.function.name);
+                self.emit_progress(RuntimeProgress::ToolCompleted {
+                    tool: call.function.name.clone(),
+                    ok: false,
+                    summary: truncate_progress_detail(&output),
+                });
+                return Ok(output);
             }
         };
         self.update_plan_after_tool(
             &call.function.name,
             execution.raw.get("passed").and_then(|v| v.as_bool()),
         )?;
+        self.emit_progress(RuntimeProgress::ToolCompleted {
+            tool: call.function.name.clone(),
+            ok: true,
+            summary: truncate_progress_detail(&execution.content),
+        });
         Ok(execution.content)
     }
 
@@ -812,6 +962,16 @@ fn truncate_tool_output_for_prompt(output: &str) -> String {
     )
 }
 
+fn truncate_progress_detail(output: &str) -> String {
+    let limit = 2_000usize;
+    let char_count = output.chars().count();
+    if char_count <= limit {
+        return output.to_string();
+    }
+    let head = output.chars().take(limit).collect::<String>();
+    format!("{head}\n\n[deep-cli truncated UI detail: original_chars={char_count}]")
+}
+
 fn is_approval_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("requires approval") || message.contains("requires double confirmation")
@@ -826,6 +986,30 @@ fn is_complex_task(task: &str) -> bool {
         || task.contains("implement")
         || task.contains("refactor")
         || task.split_whitespace().count() > 12
+}
+
+fn is_low_information_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        return false;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if normalized.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    if normalized.chars().count() <= 2
+        && normalized
+            .chars()
+            .all(|ch| ch.is_ascii_punctuation() || ch.is_ascii_alphanumeric())
+    {
+        return true;
+    }
+
+    matches!(
+        normalized.as_str(),
+        "ok" | "k" | "y" | "n" | "yes" | "no" | "嗯" | "好" | "继续" | "go" | "next"
+    )
 }
 
 fn default_plan(task: &str) -> Plan {
@@ -884,6 +1068,8 @@ fn system_prompt(context: &crate::workspace::WorkspaceContext, config: &AppConfi
         "language": config.agent.language,
         "workflow": "analyze -> plan -> modify -> test -> repair -> report",
         "rules": [
+            format!("Always respond in {} unless the user explicitly asks for another language.", config.agent.language),
+            "If the user input is ambiguous or too short to identify a concrete task, ask a concise clarification question before using tools.",
             "All filesystem, shell, git, network, skill, and sub-agent actions must use tools.",
             "For complex tasks, explain the plan before editing.",
             "Use minimal scoped changes and run relevant tests.",
@@ -913,6 +1099,16 @@ mod tests {
             "implement the provider adapter and run tests"
         ));
         assert!(!is_complex_task("hello"));
+    }
+
+    #[test]
+    fn low_information_input_is_detected_locally() {
+        assert!(is_low_information_input("1"));
+        assert!(is_low_information_input("ok"));
+        assert!(is_low_information_input("."));
+        assert!(is_low_information_input("继续"));
+        assert!(!is_low_information_input("/help"));
+        assert!(!is_low_information_input("请阅读项目结构"));
     }
 
     #[test]
