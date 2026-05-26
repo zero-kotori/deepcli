@@ -418,7 +418,11 @@ fn default_providers() -> BTreeMap<String, ProviderConfig> {
             provider_type: "kimi".to_string(),
             credentials_file: PathBuf::from(".deepcli/credentials/kimi-credentials.json"),
             acceptance_model: None,
-            capabilities: vec!["streaming".to_string(), "json_output".to_string()],
+            capabilities: vec![
+                "streaming".to_string(),
+                "tool_calling".to_string(),
+                "json_output".to_string(),
+            ],
         },
     );
     providers

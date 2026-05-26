@@ -412,26 +412,118 @@ impl ProviderClient for DeepSeekClient {
 
 pub struct KimiClient {
     config: ProviderRuntimeConfig,
+    http: reqwest::Client,
 }
 
 impl KimiClient {
     pub fn new(config: ProviderRuntimeConfig) -> Self {
-        Self { config }
+        let mut builder = reqwest::Client::builder().connect_timeout(Duration::from_secs(30));
+        let no_proxy = configured_no_proxy(&config.no_proxy);
+        if let Some(proxy) = &config.http_proxy {
+            if let Ok(proxy) = reqwest::Proxy::http(proxy) {
+                builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
+            }
+        }
+        if let Some(proxy) = &config.https_proxy {
+            if let Ok(proxy) = reqwest::Proxy::https(proxy) {
+                builder = builder.proxy(proxy.no_proxy(no_proxy.clone()));
+            }
+        }
+        Self {
+            config,
+            http: builder.build().unwrap_or_else(|_| reqwest::Client::new()),
+        }
+    }
+
+    fn endpoint(&self) -> &str {
+        self.config
+            .endpoint
+            .as_deref()
+            .unwrap_or("https://api.kimi.com/coding/v1/messages")
+    }
+
+    fn model(&self) -> &str {
+        self.config.model.as_deref().unwrap_or("kimi-for-coding")
+    }
+
+    fn api_key(&self) -> Result<&str> {
+        self.config
+            .api_key
+            .as_deref()
+            .filter(|key| !key.trim().is_empty())
+            .ok_or_else(|| {
+                anyhow!("Kimi apiKey is missing; configure .deepcli/credentials or KIMI_API_KEY")
+            })
+    }
+
+    async fn chat_anthropic_response(&self, request: ChatRequest) -> Result<ChatResponse> {
+        let body = kimi_anthropic_request_body(self.model(), &request);
+        let max_attempts = provider_max_attempts();
+        let mut last_error = None;
+        for attempt in 0..max_attempts {
+            match self
+                .http
+                .post(self.endpoint())
+                .bearer_auth(self.api_key()?)
+                .header("x-api-key", self.api_key()?)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    if status.is_success() {
+                        return normalize_kimi_anthropic_response(&text);
+                    }
+                    let message = format!(
+                        "Kimi request failed with {status}: {}",
+                        redact_secret(&text)
+                    );
+                    if is_retryable_status(status) && attempt + 1 < max_attempts {
+                        last_error = Some(message);
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(anyhow!(message));
+                }
+                Err(error) if is_retryable_reqwest(&error) && attempt + 1 < max_attempts => {
+                    last_error = Some(format!("Kimi request failed: {error}"));
+                    sleep(retry_delay(attempt)).await;
+                }
+                Err(error) => return Err(error).context("Kimi request failed"),
+            }
+        }
+        Err(anyhow!(
+            "{}",
+            last_error.unwrap_or_else(|| "Kimi request failed after retries".to_string())
+        ))
     }
 }
 
 #[async_trait]
 impl ProviderClient for KimiClient {
-    async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
-        Err(anyhow!(
-            "Kimi adapter is registered but chat execution is not part of the MVP implementation yet"
-        ))
+    async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        self.chat_anthropic_response(request).await
     }
 
-    async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
-        Err(anyhow!(
-            "Kimi adapter is registered but streaming execution is not part of the MVP implementation yet"
-        ))
+    async fn stream(&self, request: ChatRequest) -> Result<Vec<StreamEvent>> {
+        let response = self.chat(request).await?;
+        let mut events = Vec::new();
+        if let Some(content) = response.content {
+            events.push(StreamEvent {
+                content_delta: Some(content),
+                reasoning_delta: response.reasoning_content,
+                done: false,
+            });
+        }
+        events.push(StreamEvent {
+            content_delta: None,
+            reasoning_delta: None,
+            done: true,
+        });
+        Ok(events)
     }
 
     fn supports(&self, capability: ProviderCapability) -> bool {
@@ -454,6 +546,168 @@ impl ProviderClient for KimiClient {
             capabilities: self.config.capabilities.clone(),
         }
     }
+}
+
+fn kimi_anthropic_request_body(model: &str, request: &ChatRequest) -> Value {
+    let mut system_parts = Vec::new();
+    let mut messages = Vec::new();
+    for message in &request.messages {
+        match message.role.as_str() {
+            "system" => {
+                if let Some(content) = &message.content {
+                    system_parts.push(redact_sensitive_text(content));
+                }
+            }
+            "tool" => {
+                let content = message.content.clone().unwrap_or_default();
+                messages.push(json!({
+                    "role": "user",
+                    "content": [{
+                        "type": "tool_result",
+                        "tool_use_id": message.tool_call_id.clone().unwrap_or_default(),
+                        "content": redact_sensitive_text(&content)
+                    }]
+                }));
+            }
+            "assistant" => {
+                let mut content_blocks = Vec::new();
+                if let Some(content) = &message.content {
+                    if !content.trim().is_empty() {
+                        content_blocks.push(json!({
+                            "type": "text",
+                            "text": redact_sensitive_text(content)
+                        }));
+                    }
+                }
+                if let Some(tool_calls) = &message.tool_calls {
+                    for call in tool_calls {
+                        content_blocks.push(json!({
+                            "type": "tool_use",
+                            "id": call.id,
+                            "name": call.function.name,
+                            "input": call.function.arguments
+                        }));
+                    }
+                }
+                if content_blocks.is_empty() {
+                    content_blocks.push(json!({"type": "text", "text": ""}));
+                }
+                messages.push(json!({
+                    "role": "assistant",
+                    "content": content_blocks
+                }));
+            }
+            _ => {
+                let content = message.content.clone().unwrap_or_default();
+                messages.push(json!({
+                    "role": "user",
+                    "content": redact_sensitive_text(&content)
+                }));
+            }
+        }
+    }
+
+    let mut body = json!({
+        "model": model,
+        "max_tokens": provider_max_output_tokens(),
+        "messages": messages,
+    });
+    if !system_parts.is_empty() {
+        body["system"] = json!(system_parts.join("\n\n"));
+    }
+    if !request.tools.is_empty() {
+        body["tools"] = json!(request
+            .tools
+            .iter()
+            .map(|tool| {
+                json!({
+                    "name": tool.function.name,
+                    "description": tool.function.description,
+                    "input_schema": tool.function.parameters
+                })
+            })
+            .collect::<Vec<_>>());
+    }
+    body
+}
+
+fn normalize_kimi_anthropic_response(raw: &str) -> Result<ChatResponse> {
+    let value: Value =
+        serde_json::from_str(raw).context("failed to parse Kimi Anthropic response")?;
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Err(anyhow!("Kimi request failed: {}", redact_secret(error)));
+    }
+
+    let mut content = String::new();
+    let mut reasoning_content = String::new();
+    let mut tool_calls = Vec::new();
+    if let Some(blocks) = value.get("content").and_then(Value::as_array) {
+        for (index, block) in blocks.iter().enumerate() {
+            match block
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "text" => {
+                    if let Some(text) = block.get("text").and_then(Value::as_str) {
+                        content.push_str(text);
+                    }
+                }
+                "thinking" => {
+                    if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                        reasoning_content.push_str(text);
+                    }
+                }
+                "tool_use" => {
+                    let name = block
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .ok_or_else(|| anyhow!("Kimi tool_use block missing name"))?;
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or_else(|| Value::Object(Default::default()));
+                    tool_calls.push(ToolCall {
+                        id: block
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(ToString::to_string)
+                            .unwrap_or_else(|| format!("toolu_{index}")),
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction {
+                            name: name.to_string(),
+                            arguments: input,
+                        },
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    let usage = value.get("usage").cloned().unwrap_or(Value::Null);
+    let prompt_tokens = usage
+        .get("input_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("prompt_tokens").and_then(Value::as_u64));
+    let completion_tokens = usage
+        .get("output_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| usage.get("completion_tokens").and_then(Value::as_u64));
+    Ok(ChatResponse {
+        content: (!content.is_empty()).then_some(content),
+        reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+        tool_calls,
+        usage: Usage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens: prompt_tokens.zip(completion_tokens).map(|(a, b)| a + b),
+            prompt_cache_hit_tokens: usage.get("cache_read_input_tokens").and_then(Value::as_u64),
+            prompt_cache_miss_tokens: usage
+                .get("cache_creation_input_tokens")
+                .and_then(Value::as_u64),
+        },
+    })
 }
 
 fn normalize_chat_response(raw: &str) -> Result<ChatResponse> {
@@ -698,6 +952,14 @@ fn provider_max_attempts() -> usize {
         .unwrap_or(DEFAULT_MAX_PROVIDER_ATTEMPTS)
 }
 
+fn provider_max_output_tokens() -> usize {
+    env::var("DEEP_CLI_PROVIDER_MAX_OUTPUT_TOKENS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(8192)
+}
+
 fn provider_streaming_chat_enabled() -> bool {
     env::var("DEEP_CLI_PROVIDER_STREAMING_CHAT")
         .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"))
@@ -891,6 +1153,84 @@ mod tests {
             response.tool_calls[0].function.arguments["path"],
             "Cargo.toml"
         );
+    }
+
+    #[test]
+    fn maps_kimi_anthropic_tool_use_response() {
+        let raw = r#"{
+          "content": [
+            {"type":"text","text":"checking"},
+            {"type":"tool_use","id":"toolu_1","name":"read_file","input":{"path":"Cargo.toml"}}
+          ],
+          "usage": {"input_tokens": 10, "output_tokens": 5}
+        }"#;
+
+        let response = normalize_kimi_anthropic_response(raw).unwrap();
+        assert_eq!(response.content.as_deref(), Some("checking"));
+        assert_eq!(response.tool_calls[0].id, "toolu_1");
+        assert_eq!(response.tool_calls[0].function.name, "read_file");
+        assert_eq!(
+            response.tool_calls[0].function.arguments["path"],
+            "Cargo.toml"
+        );
+        assert_eq!(response.usage.total_tokens, Some(15));
+    }
+
+    #[test]
+    fn builds_kimi_anthropic_tool_result_request() {
+        let body = kimi_anthropic_request_body(
+            "kimi-for-coding",
+            &ChatRequest {
+                messages: vec![
+                    ProviderMessage {
+                        role: "system".to_string(),
+                        content: Some("system".to_string()),
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    },
+                    ProviderMessage {
+                        role: "assistant".to_string(),
+                        content: None,
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: Some(vec![ToolCall {
+                            id: "toolu_1".to_string(),
+                            call_type: "function".to_string(),
+                            function: ToolCallFunction {
+                                name: "read_file".to_string(),
+                                arguments: json!({"path":"Cargo.toml"}),
+                            },
+                        }]),
+                    },
+                    ProviderMessage {
+                        role: "tool".to_string(),
+                        content: Some("done".to_string()),
+                        reasoning_content: None,
+                        name: Some("read_file".to_string()),
+                        tool_call_id: Some("toolu_1".to_string()),
+                        tool_calls: None,
+                    },
+                ],
+                tools: vec![ToolSpec {
+                    spec_type: "function".to_string(),
+                    function: ToolFunctionSpec {
+                        name: "read_file".to_string(),
+                        description: "Read".to_string(),
+                        parameters: json!({"type":"object"}),
+                    },
+                }],
+                json_mode: false,
+            },
+        );
+
+        assert_eq!(body["model"], "kimi-for-coding");
+        assert_eq!(body["system"], "system");
+        assert_eq!(body["messages"][0]["content"][0]["type"], "tool_use");
+        assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
+        assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
     }
 
     #[test]

@@ -25,6 +25,7 @@
       "credentialsFile": ".deepcli/credentials/kimi-credentials.json",
       "capabilities": [
         "streaming",
+        "tool_calling",
         "json_output"
       ]
     }
