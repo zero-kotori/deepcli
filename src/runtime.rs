@@ -175,8 +175,10 @@ impl AgentRuntime {
 
         let context_tool_limit = context_tool_limit();
         let verification_tool_limit = verification_tool_limit();
+        let budget_skip_turn_limit = budget_skip_turn_limit();
         let mut context_tool_calls_before_action = 0usize;
         let mut verification_calls_before_action = 0usize;
+        let mut consecutive_budget_skipped_turns = 0usize;
         for iteration in 0..self.config.agent.max_tool_iterations {
             let tool_specs = self.registry.tool_specs();
             let compacted_messages = compact_messages_for_provider(&messages);
@@ -268,6 +270,7 @@ impl AgentRuntime {
                 tool_calls: Some(response.tool_calls.clone()),
             });
 
+            let mut budget_skipped_this_turn = 0usize;
             for call in response.tool_calls {
                 if call.function.name == "run_tests" {
                     self.session.set_state(SessionState::Testing)?;
@@ -275,6 +278,7 @@ impl AgentRuntime {
                 let tool_output = if is_context_gathering_call(&call)
                     && context_tool_calls_before_action >= context_tool_limit
                 {
+                    budget_skipped_this_turn += 1;
                     format!(
                         "tool `{}` skipped: context-gathering budget exceeded after {} context-only tool calls without a patch or verification action. Stop gathering context and either apply a focused patch, run a focused verification command, or report the concrete blocker.",
                         call.function.name, context_tool_limit
@@ -282,6 +286,7 @@ impl AgentRuntime {
                 } else if is_verification_call(&call)
                     && verification_calls_before_action >= verification_tool_limit
                 {
+                    budget_skipped_this_turn += 1;
                     format!(
                         "tool `{}` skipped: verification budget exceeded after {} verification-only tool calls without a project write. Stop running more tests, apply a focused patch to the current failure, or report the concrete blocker.",
                         call.function.name, verification_tool_limit
@@ -312,6 +317,19 @@ impl AgentRuntime {
                     tool_call_id: Some(call.id),
                     tool_calls: None,
                 });
+            }
+
+            if budget_skipped_this_turn > 0 {
+                consecutive_budget_skipped_turns += 1;
+                if consecutive_budget_skipped_turns >= budget_skip_turn_limit {
+                    self.session.set_state(SessionState::Failed)?;
+                    return Err(anyhow!(
+                        "agent repeated budget-skipped tool calls for {} consecutive turns",
+                        consecutive_budget_skipped_turns
+                    ));
+                }
+            } else {
+                consecutive_budget_skipped_turns = 0;
             }
         }
 
@@ -563,6 +581,14 @@ fn verification_tool_limit() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(12)
+}
+
+fn budget_skip_turn_limit() -> usize {
+    std::env::var("DEEP_CLI_MAX_BUDGET_SKIPPED_TURNS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(3)
 }
 
 fn is_context_gathering_tool(name: &str) -> bool {
