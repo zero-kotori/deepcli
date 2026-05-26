@@ -310,6 +310,10 @@ impl ToolExecutor {
         self
     }
 
+    pub fn set_session(&mut self, session: Option<Session>) {
+        self.session = session;
+    }
+
     pub async fn execute(&self, name: &str, args: Value) -> Result<ToolExecution> {
         let original_args = args.clone();
         if let Some(session) = &self.session {

@@ -1,4 +1,5 @@
 use crate::runtime::{AgentRuntime, RuntimeProgress};
+use crate::session::SessionMetadata;
 use anyhow::Result;
 use crossterm::{
     event::{
@@ -123,6 +124,9 @@ pub async fn run_basic_repl(runtime: &mut AgentRuntime) -> Result<()> {
         if input.is_empty() {
             continue;
         }
+        if matches!(input.trim(), "/quit" | "/exit") {
+            break;
+        }
         let output = runtime.handle_input(input).await?;
         println!("{output}");
     }
@@ -147,6 +151,7 @@ struct TuiState {
     input: MessageBox,
     chat: Vec<ChatLine>,
     tool_log: Vec<ToolLogItem>,
+    resume_picker: Option<ResumePicker>,
     selected_tool: Option<usize>,
     running: bool,
     exit_requested: bool,
@@ -156,6 +161,11 @@ struct TuiState {
 struct WorkerDone {
     runtime: AgentRuntime,
     result: std::result::Result<String, String>,
+}
+
+struct ResumePicker {
+    sessions: Vec<SessionMetadata>,
+    selected: usize,
 }
 
 pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
@@ -176,6 +186,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
             input: MessageBox::new(),
             chat: Vec::new(),
             tool_log: Vec::new(),
+            resume_picker: None,
             selected_tool: None,
             running: false,
             exit_requested: false,
@@ -246,7 +257,15 @@ fn handle_tui_key(
         return Ok(());
     }
     if key.code == KeyCode::Esc {
+        if state.resume_picker.is_some() {
+            state.resume_picker = None;
+            return Ok(());
+        }
         state.exit_requested = !state.running;
+        return Ok(());
+    }
+    if state.resume_picker.is_some() {
+        handle_resume_picker_key(key, state);
         return Ok(());
     }
     match key.code {
@@ -273,6 +292,47 @@ fn handle_tui_key(
     Ok(())
 }
 
+fn handle_resume_picker_key(key: KeyEvent, state: &mut TuiState) {
+    match key.code {
+        KeyCode::Up | KeyCode::Left => {
+            if let Some(picker) = &mut state.resume_picker {
+                picker.selected = picker.selected.saturating_sub(1);
+            }
+        }
+        KeyCode::Down | KeyCode::Right => {
+            if let Some(picker) = &mut state.resume_picker {
+                if !picker.sessions.is_empty() {
+                    picker.selected = (picker.selected + 1).min(picker.sessions.len() - 1);
+                }
+            }
+        }
+        KeyCode::Enter => confirm_resume_selection(state),
+        _ => {}
+    }
+}
+
+fn confirm_resume_selection(state: &mut TuiState) {
+    let Some(picker) = state.resume_picker.take() else {
+        return;
+    };
+    let Some(session) = picker.sessions.get(picker.selected) else {
+        return;
+    };
+    let Some(runtime) = state.runtime.as_mut() else {
+        return;
+    };
+    match runtime.resume_session(&session.id.to_string()) {
+        Ok(message) => state.chat.push(ChatLine {
+            role: "deep-cli".to_string(),
+            content: message,
+        }),
+        Err(error) => state.chat.push(ChatLine {
+            role: "error".to_string(),
+            content: error.to_string(),
+        }),
+    }
+}
+
 fn submit_tui_input(
     state: &mut TuiState,
     input: String,
@@ -280,6 +340,14 @@ fn submit_tui_input(
     done_tx: Sender<WorkerDone>,
 ) {
     if input.trim().is_empty() || state.running {
+        return;
+    }
+    let trimmed = input.trim();
+    if matches!(trimmed, "/quit" | "/exit") {
+        state.exit_requested = true;
+        return;
+    }
+    if handle_tui_local_command(state, trimmed) {
         return;
     }
     let Some(mut runtime) = state.runtime.take() else {
@@ -299,6 +367,75 @@ fn submit_tui_input(
             .map_err(|error| error.to_string());
         let _ = done_tx.send(WorkerDone { runtime, result });
     });
+}
+
+fn handle_tui_local_command(state: &mut TuiState, input: &str) -> bool {
+    let Some(runtime) = state.runtime.as_mut() else {
+        return false;
+    };
+    if input == "/resume" {
+        match runtime.list_sessions() {
+            Ok(sessions) if sessions.is_empty() => state.chat.push(ChatLine {
+                role: "deep-cli".to_string(),
+                content: "当前目录没有历史会话。".to_string(),
+            }),
+            Ok(sessions) => {
+                state.resume_picker = Some(ResumePicker {
+                    sessions,
+                    selected: 0,
+                });
+            }
+            Err(error) => state.chat.push(ChatLine {
+                role: "error".to_string(),
+                content: error.to_string(),
+            }),
+        }
+        return true;
+    }
+
+    if let Some(id) = input.strip_prefix("/resume ") {
+        match runtime.resume_session(id.trim()) {
+            Ok(message) => state.chat.push(ChatLine {
+                role: "deep-cli".to_string(),
+                content: message,
+            }),
+            Err(error) => state.chat.push(ChatLine {
+                role: "error".to_string(),
+                content: error.to_string(),
+            }),
+        }
+        return true;
+    }
+
+    if input == "/rename" {
+        match runtime.rename_current_session("") {
+            Ok(message) => state.chat.push(ChatLine {
+                role: "deep-cli".to_string(),
+                content: message,
+            }),
+            Err(error) => state.chat.push(ChatLine {
+                role: "error".to_string(),
+                content: error.to_string(),
+            }),
+        }
+        return true;
+    }
+
+    if let Some(title) = input.strip_prefix("/rename ") {
+        match runtime.rename_current_session(title.trim()) {
+            Ok(message) => state.chat.push(ChatLine {
+                role: "deep-cli".to_string(),
+                content: message,
+            }),
+            Err(error) => state.chat.push(ChatLine {
+                role: "error".to_string(),
+                content: error.to_string(),
+            }),
+        }
+        return true;
+    }
+
+    false
 }
 
 fn drain_progress(state: &mut TuiState, progress_rx: &Receiver<RuntimeProgress>) {
@@ -412,6 +549,9 @@ fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
     let session = runtime
         .map(|runtime| runtime.session_id())
         .unwrap_or_else(|| "<running>".to_string());
+    let title = runtime
+        .and_then(|runtime| runtime.session_title().map(str::to_string))
+        .unwrap_or_else(|| "<untitled>".to_string());
     let provider = runtime
         .map(|runtime| runtime.provider_name().to_string())
         .unwrap_or_else(|| "<running>".to_string());
@@ -430,7 +570,7 @@ fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(format!(
-            "  session={session} provider={provider} model={model} state={state_label}"
+            "  title={title} session={session} provider={provider} model={model} state={state_label}"
         )),
     ]))
     .block(Block::default().borders(Borders::ALL).title("Status"));
@@ -452,38 +592,42 @@ fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
         areas.transcript,
     );
 
-    let tools = state
-        .tool_log
-        .iter()
-        .enumerate()
-        .rev()
-        .take(7)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .map(|(index, item)| {
-            let marker = if item.expanded { "v" } else { ">" };
-            let selected = if state.selected_tool == Some(index) {
-                "*"
-            } else {
-                " "
-            };
-            let text = if item.expanded {
-                format!("{selected} {marker} {}\n  {}", item.title, item.detail)
-            } else {
-                format!("{selected} {marker} {}", item.title)
-            };
-            ListItem::new(text)
-        })
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        List::new(tools).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Tool Calls (click or Ctrl-Enter to expand)"),
-        ),
-        areas.tools,
-    );
+    if let Some(picker) = &state.resume_picker {
+        render_resume_picker(frame, areas.tools, picker);
+    } else {
+        let tools = state
+            .tool_log
+            .iter()
+            .enumerate()
+            .rev()
+            .take(7)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .map(|(index, item)| {
+                let marker = if item.expanded { "v" } else { ">" };
+                let selected = if state.selected_tool == Some(index) {
+                    "*"
+                } else {
+                    " "
+                };
+                let text = if item.expanded {
+                    format!("{selected} {marker} {}\n  {}", item.title, item.detail)
+                } else {
+                    format!("{selected} {marker} {}", item.title)
+                };
+                ListItem::new(text)
+            })
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            List::new(tools).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Tool Calls (click or Ctrl-Enter to expand)"),
+            ),
+            areas.tools,
+        );
+    }
 
     let input_title = if state.running {
         "Message Box (running; Ctrl-C after completion to exit)"
@@ -496,6 +640,46 @@ fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
             .block(Block::default().borders(Borders::ALL).title(input_title)),
         areas.input,
     );
+}
+
+fn render_resume_picker(frame: &mut Frame<'_>, area: Rect, picker: &ResumePicker) {
+    let visible = area.height.saturating_sub(2) as usize;
+    let start = if visible == 0 {
+        0
+    } else {
+        picker.selected.saturating_sub(visible.saturating_sub(1))
+    };
+    let items = picker
+        .sessions
+        .iter()
+        .enumerate()
+        .skip(start)
+        .take(visible)
+        .map(|(index, session)| {
+            let selected = if index == picker.selected { "*" } else { " " };
+            let title = session.title.as_deref().unwrap_or("<untitled>");
+            let model = session.model.as_deref().unwrap_or("<unset>");
+            ListItem::new(format!(
+                "{selected} {}  {}  {}  {}",
+                short_id(&session.id.to_string()),
+                title,
+                session.provider,
+                model
+            ))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("Resume (Up/Down/Left/Right select, Enter confirm, Esc cancel)"),
+        ),
+        area,
+    );
+}
+
+fn short_id(id: &str) -> &str {
+    id.get(..8).unwrap_or(id)
 }
 
 pub fn render_dashboard(frame: &mut Frame<'_>, area: Rect, snapshot: &TuiSnapshot) {

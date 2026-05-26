@@ -1,4 +1,4 @@
-use crate::commands::{CommandContext, CommandRouter};
+use crate::commands::{format_session_list, CommandContext, CommandRouter, SlashCommand};
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage, ToolCall, Usage};
@@ -145,6 +145,10 @@ impl AgentRuntime {
         self.session.id().to_string()
     }
 
+    pub fn session_title(&self) -> Option<&str> {
+        self.session.metadata.title.as_deref()
+    }
+
     pub fn provider_name(&self) -> &str {
         &self.session.metadata.provider
     }
@@ -167,6 +171,18 @@ impl AgentRuntime {
 
     pub async fn handle_input(&mut self, input: &str) -> Result<String> {
         if let Some(command) = CommandRouter::parse(input)? {
+            match command {
+                SlashCommand::Resume { id } => {
+                    return self.handle_resume_command(id);
+                }
+                SlashCommand::Rename { args } => {
+                    return self.handle_rename_command(args);
+                }
+                SlashCommand::Quit => {
+                    return Ok("bye".to_string());
+                }
+                _ => {}
+            }
             return CommandRouter::handle(
                 command,
                 CommandContext {
@@ -183,6 +199,44 @@ impl AgentRuntime {
             return self.handle_low_information_input(input);
         }
         self.run_agent_task(input).await
+    }
+
+    pub fn list_sessions(&self) -> Result<Vec<crate::session::SessionMetadata>> {
+        SessionStore::new(&self.workspace).list()
+    }
+
+    pub fn resume_session(&mut self, id: &str) -> Result<String> {
+        let session = SessionStore::new(&self.workspace).load(id)?;
+        let label = session
+            .metadata
+            .title
+            .clone()
+            .unwrap_or_else(|| session.metadata.id.to_string());
+        self.session = session;
+        self.executor.set_session(Some(self.session.clone()));
+        Ok(format!("已切换到会话：{label}"))
+    }
+
+    pub fn rename_current_session(&mut self, title: &str) -> Result<String> {
+        if title.trim().is_empty() {
+            return Ok("请提供会话名称，例如：/rename 编译器修复记录".to_string());
+        }
+        self.session.rename(title)?;
+        self.executor.set_session(Some(self.session.clone()));
+        Ok(format!("已重命名当前会话为：{}", title.trim()))
+    }
+
+    fn handle_resume_command(&mut self, id: Option<String>) -> Result<String> {
+        if let Some(id) = id {
+            self.resume_session(&id)
+        } else {
+            Ok(format_session_list(&self.list_sessions()?))
+        }
+    }
+
+    fn handle_rename_command(&mut self, args: Vec<String>) -> Result<String> {
+        let title = args.join(" ");
+        self.rename_current_session(&title)
     }
 
     fn handle_low_information_input(&mut self, input: &str) -> Result<String> {
@@ -1207,6 +1261,55 @@ mod tests {
                 .status,
             PlanStepStatus::Completed
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_renames_and_resumes_sessions_without_provider_call() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli/credentials")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            serde_json::to_vec_pretty(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(".deepcli/credentials/deepseek-credentials.json"),
+            r#"{"apiKey":"test","model":"deepseek-chat"}"#,
+        )
+        .unwrap();
+        let store = SessionStore::new(dir.path());
+        let other = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("other".to_string()),
+            )
+            .unwrap();
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let rename = runtime.handle_input("/rename first task").await.unwrap();
+        assert!(rename.contains("first task"));
+        assert_eq!(runtime.session_title(), Some("first task"));
+
+        let resume = runtime
+            .handle_input(&format!("/resume {}", other.id()))
+            .await
+            .unwrap();
+        assert!(resume.contains(&other.id().to_string()));
+        assert_eq!(runtime.session_id(), other.id().to_string());
     }
 
     #[test]

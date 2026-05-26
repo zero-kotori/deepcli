@@ -92,7 +92,8 @@ if not items:
 
 for item in items:
     model = item.get("model") or "<unset>"
-    print(f"{item.get('id')}  provider={item.get('provider')}  model={model}  updated_at={item.get('updated_at')}")
+    title = item.get("title") or "<untitled>"
+    print(f"{item.get('id')}  title={title}  provider={item.get('provider')}  model={model}  updated_at={item.get('updated_at')}")
 PY
 }
 

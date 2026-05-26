@@ -3,7 +3,8 @@ use crate::config::AppConfig;
 use crate::privacy::looks_sensitive;
 use crate::prompts::PromptStore;
 use crate::session::{
-    ApprovalRequest, ApprovalStatus, PlanStepStatus, SessionStore, SideQuestion, SideQuestionStatus,
+    ApprovalRequest, ApprovalStatus, PlanStepStatus, SessionMetadata, SessionStore, SideQuestion,
+    SideQuestionStatus,
 };
 use crate::skills::SkillStore;
 use crate::tools::{ToolExecutor, ToolRegistry};
@@ -36,6 +37,8 @@ pub enum SlashCommand {
     Approval { args: Vec<String> },
     Session { args: Vec<String> },
     Resume { id: Option<String> },
+    Rename { args: Vec<String> },
+    Quit,
     Terminal,
 }
 
@@ -87,6 +90,8 @@ impl CommandRouter {
             "/resume" => SlashCommand::Resume {
                 id: args.first().cloned(),
             },
+            "/rename" => SlashCommand::Rename { args },
+            "/quit" | "/exit" => SlashCommand::Quit,
             "/terminal" => SlashCommand::Terminal,
             other => bail!("unknown slash command `{other}`"),
         }))
@@ -141,9 +146,13 @@ impl CommandRouter {
                     let session = store.load(&id)?;
                     Ok(serde_json::to_string_pretty(&session.metadata)?)
                 } else {
-                    Ok(serde_json::to_string_pretty(&store.list()?)?)
+                    Ok(format_session_list(&store.list()?))
                 }
             }
+            SlashCommand::Rename { .. } => {
+                Ok("/rename is handled by the active runtime".to_string())
+            }
+            SlashCommand::Quit => Ok("bye".to_string()),
             SlashCommand::Terminal => {
                 let output = context.executor.execute("open_terminal", json!({})).await?;
                 Ok(output.content)
@@ -172,6 +181,8 @@ impl CommandRouter {
             "/approval list [--all]|approve <id>|deny <id>|clear",
             "/session list|show [session_id]",
             "/resume [session_id]",
+            "/rename <title>",
+            "/quit",
             "/terminal",
         ]
         .join("\n")
@@ -198,9 +209,29 @@ impl CommandRouter {
             "/approval",
             "/session",
             "/resume",
+            "/rename",
+            "/quit",
             "/terminal",
         ]
     }
+}
+
+pub fn format_session_list(sessions: &[SessionMetadata]) -> String {
+    if sessions.is_empty() {
+        return "no sessions".to_string();
+    }
+    sessions
+        .iter()
+        .map(|session| {
+            let title = session.title.as_deref().unwrap_or("<untitled>");
+            let model = session.model.as_deref().unwrap_or("<unset>");
+            format!(
+                "{}  title={}  provider={}  model={}  updated_at={}",
+                session.id, title, session.provider, model, session.updated_at
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn handle_context(workspace: &Path) -> Result<String> {
@@ -260,6 +291,14 @@ fn handle_status(context: CommandContext<'_>) -> Result<String> {
         if let Ok(session) = store.load(&session_id) {
             let summary = session.activity_summary()?;
             lines.push(format!("state: {:?}", session.metadata.state));
+            lines.push(format!(
+                "title: {}",
+                session
+                    .metadata
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "<untitled>".to_string())
+            ));
             lines.push(format!("provider: {}", session.metadata.provider));
             lines.push(format!(
                 "model: {}",
@@ -365,7 +404,7 @@ fn update_project_model_config(
 fn handle_session(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
     let store = SessionStore::new(workspace);
     match args.first().map(String::as_str) {
-        None | Some("list") => Ok(serde_json::to_string_pretty(&store.list()?)?),
+        None | Some("list") => Ok(format_session_list(&store.list()?)),
         Some("show") => {
             let id = args.get(1).cloned().or(current).ok_or_else(|| {
                 anyhow::anyhow!("missing session id and no active session is available")
@@ -856,6 +895,16 @@ mod tests {
             Some(SlashCommand::Resume {
                 id: Some("abc".to_string())
             })
+        );
+        assert_eq!(
+            CommandRouter::parse("/rename compiler fix").unwrap(),
+            Some(SlashCommand::Rename {
+                args: vec!["compiler".to_string(), "fix".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/quit").unwrap(),
+            Some(SlashCommand::Quit)
         );
         assert_eq!(
             CommandRouter::parse("/permissions set-mode write").unwrap(),

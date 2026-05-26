@@ -27,6 +27,8 @@ pub enum SessionState {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionMetadata {
     pub id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     pub workspace: PathBuf,
     pub state: SessionState,
     pub created_at: DateTime<Utc>,
@@ -183,6 +185,7 @@ impl SessionStore {
         let now = Utc::now();
         let metadata = SessionMetadata {
             id: Uuid::new_v4(),
+            title: None,
             workspace: workspace.as_ref().to_path_buf(),
             state: SessionState::New,
             created_at: now,
@@ -239,6 +242,13 @@ impl Session {
 
     pub fn set_state(&mut self, state: SessionState) -> Result<()> {
         self.metadata.state = state;
+        self.metadata.updated_at = Utc::now();
+        self.save_metadata()
+    }
+
+    pub fn rename(&mut self, title: impl Into<String>) -> Result<()> {
+        let title = title.into().trim().to_string();
+        self.metadata.title = if title.is_empty() { None } else { Some(title) };
         self.metadata.updated_at = Utc::now();
         self.save_metadata()
     }
@@ -632,6 +642,30 @@ mod tests {
             loaded.load_plan().unwrap().unwrap().steps[0].status,
             PlanStepStatus::Completed
         );
+    }
+
+    #[test]
+    fn renames_session_and_reads_legacy_metadata_without_title() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        session.rename("compiler fix").unwrap();
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert_eq!(loaded.metadata.title.as_deref(), Some("compiler fix"));
+
+        let legacy = serde_json::json!({
+            "id": uuid::Uuid::new_v4(),
+            "workspace": dir.path(),
+            "state": "new",
+            "created_at": Utc::now(),
+            "updated_at": Utc::now(),
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro"
+        });
+        let metadata: SessionMetadata = serde_json::from_value(legacy).unwrap();
+        assert_eq!(metadata.title, None);
     }
 
     #[test]
