@@ -174,7 +174,9 @@ impl AgentRuntime {
         }
 
         let context_tool_limit = context_tool_limit();
+        let verification_tool_limit = verification_tool_limit();
         let mut context_tool_calls_before_action = 0usize;
+        let mut verification_calls_before_action = 0usize;
         for iteration in 0..self.config.agent.max_tool_iterations {
             let tool_specs = self.registry.tool_specs();
             let compacted_messages = compact_messages_for_provider(&messages);
@@ -277,6 +279,13 @@ impl AgentRuntime {
                         "tool `{}` skipped: context-gathering budget exceeded after {} context-only tool calls without a patch or verification action. Stop gathering context and either apply a focused patch, run a focused verification command, or report the concrete blocker.",
                         call.function.name, context_tool_limit
                     )
+                } else if is_verification_call(&call)
+                    && verification_calls_before_action >= verification_tool_limit
+                {
+                    format!(
+                        "tool `{}` skipped: verification budget exceeded after {} verification-only tool calls without a project write. Stop running more tests, apply a focused patch to the current failure, or report the concrete blocker.",
+                        call.function.name, verification_tool_limit
+                    )
                 } else {
                     self.execute_tool_call(&call).await?
                 };
@@ -288,6 +297,11 @@ impl AgentRuntime {
                     context_tool_calls_before_action += 1;
                 } else if is_progress_action_call(&call) && !tool_failed {
                     context_tool_calls_before_action = 0;
+                }
+                if is_project_mutating_call(&call) && !tool_failed {
+                    verification_calls_before_action = 0;
+                } else if is_verification_call(&call) {
+                    verification_calls_before_action += 1;
                 }
                 let tool_output = truncate_tool_output_for_prompt(&tool_output);
                 messages.push(ProviderMessage {
@@ -543,6 +557,14 @@ fn context_tool_limit() -> usize {
         .unwrap_or(12)
 }
 
+fn verification_tool_limit() -> usize {
+    std::env::var("DEEP_CLI_MAX_VERIFICATION_TOOL_CALLS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(12)
+}
+
 fn is_context_gathering_tool(name: &str) -> bool {
     matches!(
         name,
@@ -578,6 +600,9 @@ fn is_context_gathering_call(call: &ToolCall) -> bool {
         .and_then(serde_json::Value::as_str)
         .unwrap_or_default()
         .trim();
+    if run_shell_writes_project(call) {
+        return false;
+    }
     !is_progress_shell_command(command)
 }
 
@@ -586,7 +611,7 @@ fn is_progress_action_call(call: &ToolCall) -> bool {
         "apply_patch_or_write" | "run_tests" | "setup_environment" => true,
         "write_file" => is_project_write_call(call),
         "run_shell" => {
-            run_shell_writes_files(call)
+            run_shell_writes_project(call)
                 || call
                     .function
                     .arguments
@@ -595,6 +620,29 @@ fn is_progress_action_call(call: &ToolCall) -> bool {
                     .map(is_progress_shell_command)
                     .unwrap_or(false)
         }
+        _ => false,
+    }
+}
+
+fn is_project_mutating_call(call: &ToolCall) -> bool {
+    match call.function.name.as_str() {
+        "apply_patch_or_write" => true,
+        "write_file" => is_project_write_call(call),
+        "run_shell" => run_shell_writes_project(call),
+        _ => false,
+    }
+}
+
+fn is_verification_call(call: &ToolCall) -> bool {
+    match call.function.name.as_str() {
+        "run_tests" => true,
+        "run_shell" => call
+            .function
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(is_progress_shell_command)
+            .unwrap_or(false),
         _ => false,
     }
 }
@@ -632,6 +680,51 @@ fn run_shell_writes_files(call: &ToolCall) -> bool {
         .get("writes_files")
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false)
+}
+
+fn run_shell_writes_project(call: &ToolCall) -> bool {
+    if run_shell_writes_files(call) {
+        return true;
+    }
+    let command = call
+        .function
+        .arguments
+        .get("command")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    shell_command_writes_project(command)
+}
+
+fn shell_command_writes_project(command: &str) -> bool {
+    let normalized = command.replace('\\', "/");
+    let writes = [
+        "apply_patch",
+        "sed -i",
+        "cat >",
+        "cat <<",
+        "tee ",
+        "rm -f",
+        "rm ",
+        "mkdir ",
+        "mv ",
+    ];
+    let project_paths = [
+        "src/",
+        "tests/",
+        "docs/",
+        "examples/",
+        "benches/",
+        ".github/",
+        "Cargo.toml",
+        "Cargo.lock",
+        "build.rs",
+        ".deepignore",
+        ".gitignore",
+        "AGENTS.md",
+        "README.md",
+    ];
+    writes.iter().any(|needle| normalized.contains(needle))
+        && project_paths.iter().any(|path| normalized.contains(path))
 }
 
 fn shell_command_after_cd(command: &str) -> &str {
@@ -1039,10 +1132,24 @@ mod tests {
         assert!(!is_context_gathering_call(&shell_call(
             "docker run autotest"
         )));
+        assert!(!is_context_gathering_call(&shell_call(
+            "sed -i '' 's/a/b/' src/parser.rs"
+        )));
         assert!(is_progress_shell_command("cargo build"));
         assert!(!is_progress_shell_command(
             "python3 - <<'PY'\nprint('inspect')\nPY"
         ));
+        assert!(is_verification_call(&tool_call(
+            "run_tests",
+            json!({"command": "cargo build"})
+        )));
+        assert!(is_verification_call(&shell_call("cargo build")));
+        assert!(!is_verification_call(&shell_call(
+            "sed -i '' 's/a/b/' src/parser.rs"
+        )));
+        assert!(is_project_mutating_call(&shell_call(
+            "sed -i '' 's/a/b/' src/parser.rs"
+        )));
         assert!(is_progress_action_call(&shell_write_call(
             "python3 - <<'PY'\nprint('patch')\nPY"
         )));
