@@ -456,8 +456,60 @@ impl KimiClient {
             })
     }
 
+    async fn chat_anthropic_streaming_response(
+        &self,
+        request: ChatRequest,
+    ) -> Result<ChatResponse> {
+        let body = kimi_anthropic_request_body(self.model(), &request, true);
+        let max_attempts = provider_max_attempts();
+        let mut last_error = None;
+        for attempt in 0..max_attempts {
+            match self
+                .http
+                .post(self.endpoint())
+                .bearer_auth(self.api_key()?)
+                .header("x-api-key", self.api_key()?)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(response) if response.status().is_success() => {
+                    return collect_kimi_anthropic_streaming_chat_response(response).await;
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response.text().await.unwrap_or_default();
+                    let message = format!(
+                        "Kimi streaming chat failed with {status}: {}",
+                        redact_secret(&text)
+                    );
+                    if is_retryable_status(status) && attempt + 1 < max_attempts {
+                        last_error = Some(message);
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(anyhow!(message));
+                }
+                Err(error) if is_retryable_reqwest(&error) && attempt + 1 < max_attempts => {
+                    last_error = Some(format!("Kimi streaming chat request failed: {error}"));
+                    sleep(retry_delay(attempt)).await;
+                }
+                Err(error) => return Err(error).context("Kimi streaming chat request failed"),
+            }
+        }
+        Err(anyhow!(
+            "{}",
+            last_error.unwrap_or_else(|| "Kimi streaming chat failed after retries".to_string())
+        ))
+    }
+
     async fn chat_anthropic_response(&self, request: ChatRequest) -> Result<ChatResponse> {
-        let body = kimi_anthropic_request_body(self.model(), &request);
+        if provider_streaming_chat_enabled() {
+            return self.chat_anthropic_streaming_response(request).await;
+        }
+
+        let body = kimi_anthropic_request_body(self.model(), &request, false);
         let max_attempts = provider_max_attempts();
         let mut last_error = None;
         for attempt in 0..max_attempts {
@@ -509,21 +561,55 @@ impl ProviderClient for KimiClient {
     }
 
     async fn stream(&self, request: ChatRequest) -> Result<Vec<StreamEvent>> {
-        let response = self.chat(request).await?;
-        let mut events = Vec::new();
-        if let Some(content) = response.content {
-            events.push(StreamEvent {
-                content_delta: Some(content),
-                reasoning_delta: response.reasoning_content,
-                done: false,
-            });
+        let body = kimi_anthropic_request_body(self.model(), &request, true);
+        let max_attempts = provider_max_attempts();
+        let mut response = None;
+        let mut last_error = None;
+        for attempt in 0..max_attempts {
+            match self
+                .http
+                .post(self.endpoint())
+                .bearer_auth(self.api_key()?)
+                .header("x-api-key", self.api_key()?)
+                .header("anthropic-version", "2023-06-01")
+                .json(&body)
+                .send()
+                .await
+            {
+                Ok(candidate) if candidate.status().is_success() => {
+                    response = Some(candidate);
+                    break;
+                }
+                Ok(candidate) => {
+                    let status = candidate.status();
+                    let text = candidate.text().await.unwrap_or_default();
+                    let message = format!(
+                        "Kimi streaming failed with {status}: {}",
+                        redact_secret(&text)
+                    );
+                    if is_retryable_status(status) && attempt + 1 < max_attempts {
+                        last_error = Some(message);
+                        sleep(retry_delay(attempt)).await;
+                        continue;
+                    }
+                    return Err(anyhow!(message));
+                }
+                Err(error) if is_retryable_reqwest(&error) && attempt + 1 < max_attempts => {
+                    last_error = Some(format!("Kimi streaming request failed: {error}"));
+                    sleep(retry_delay(attempt)).await;
+                }
+                Err(error) => return Err(error).context("Kimi streaming request failed"),
+            }
         }
-        events.push(StreamEvent {
-            content_delta: None,
-            reasoning_delta: None,
-            done: true,
-        });
-        Ok(events)
+
+        let response = response.ok_or_else(|| {
+            anyhow!(
+                "{}",
+                last_error
+                    .unwrap_or_else(|| "Kimi streaming request failed after retries".to_string())
+            )
+        })?;
+        collect_kimi_anthropic_stream_events(response).await
     }
 
     fn supports(&self, capability: ProviderCapability) -> bool {
@@ -548,7 +634,7 @@ impl ProviderClient for KimiClient {
     }
 }
 
-fn kimi_anthropic_request_body(model: &str, request: &ChatRequest) -> Value {
+fn kimi_anthropic_request_body(model: &str, request: &ChatRequest, stream: bool) -> Value {
     let mut system_parts = Vec::new();
     let mut messages = Vec::new();
     for message in &request.messages {
@@ -628,6 +714,9 @@ fn kimi_anthropic_request_body(model: &str, request: &ChatRequest) -> Value {
             })
             .collect::<Vec<_>>());
     }
+    if stream {
+        body["stream"] = json!(true);
+    }
     body
 }
 
@@ -686,6 +775,15 @@ fn normalize_kimi_anthropic_response(raw: &str) -> Result<ChatResponse> {
     }
 
     let usage = value.get("usage").cloned().unwrap_or(Value::Null);
+    Ok(ChatResponse {
+        content: (!content.is_empty()).then_some(content),
+        reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+        tool_calls,
+        usage: kimi_usage_from_value(&usage),
+    })
+}
+
+fn kimi_usage_from_value(usage: &Value) -> Usage {
     let prompt_tokens = usage
         .get("input_tokens")
         .and_then(Value::as_u64)
@@ -694,20 +792,317 @@ fn normalize_kimi_anthropic_response(raw: &str) -> Result<ChatResponse> {
         .get("output_tokens")
         .and_then(Value::as_u64)
         .or_else(|| usage.get("completion_tokens").and_then(Value::as_u64));
-    Ok(ChatResponse {
-        content: (!content.is_empty()).then_some(content),
-        reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
-        tool_calls,
-        usage: Usage {
-            prompt_tokens,
-            completion_tokens,
-            total_tokens: prompt_tokens.zip(completion_tokens).map(|(a, b)| a + b),
-            prompt_cache_hit_tokens: usage.get("cache_read_input_tokens").and_then(Value::as_u64),
-            prompt_cache_miss_tokens: usage
-                .get("cache_creation_input_tokens")
-                .and_then(Value::as_u64),
-        },
-    })
+    Usage {
+        prompt_tokens,
+        completion_tokens,
+        total_tokens: usage
+            .get("total_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| prompt_tokens.zip(completion_tokens).map(|(a, b)| a + b)),
+        prompt_cache_hit_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| usage.get("cached_tokens").and_then(Value::as_u64)),
+        prompt_cache_miss_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(Value::as_u64),
+    }
+}
+
+fn merge_usage(target: &mut Usage, next: Usage) {
+    if next.prompt_tokens.is_some() {
+        target.prompt_tokens = next.prompt_tokens;
+    }
+    if next.completion_tokens.is_some() {
+        target.completion_tokens = next.completion_tokens;
+    }
+    if next.total_tokens.is_some() {
+        target.total_tokens = next.total_tokens;
+    }
+    if next.prompt_cache_hit_tokens.is_some() {
+        target.prompt_cache_hit_tokens = next.prompt_cache_hit_tokens;
+    }
+    if next.prompt_cache_miss_tokens.is_some() {
+        target.prompt_cache_miss_tokens = next.prompt_cache_miss_tokens;
+    }
+}
+
+#[derive(Default)]
+struct KimiStreamingBlock {
+    block_type: String,
+    id: Option<String>,
+    name: Option<String>,
+    text: String,
+    thinking: String,
+    input: Option<Value>,
+    input_json: String,
+}
+
+#[derive(Default)]
+struct KimiStreamingAccumulator {
+    blocks: Vec<KimiStreamingBlock>,
+    usage: Usage,
+}
+
+impl KimiStreamingAccumulator {
+    fn ensure_block(&mut self, index: usize) -> &mut KimiStreamingBlock {
+        while self.blocks.len() <= index {
+            self.blocks.push(KimiStreamingBlock::default());
+        }
+        &mut self.blocks[index]
+    }
+
+    fn into_response(self) -> Result<ChatResponse> {
+        let mut content = String::new();
+        let mut reasoning_content = String::new();
+        let mut tool_calls = Vec::new();
+
+        for (index, block) in self.blocks.into_iter().enumerate() {
+            match block.block_type.as_str() {
+                "text" => content.push_str(&block.text),
+                "thinking" => reasoning_content.push_str(&block.thinking),
+                "tool_use" => {
+                    let name = block
+                        .name
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| anyhow!("Kimi streamed tool_use block missing name"))?;
+                    let arguments = if !block.input_json.trim().is_empty() {
+                        serde_json::from_str(&block.input_json).with_context(|| {
+                            format!("failed to parse streamed input for Kimi tool call `{name}`")
+                        })?
+                    } else {
+                        block
+                            .input
+                            .unwrap_or_else(|| Value::Object(Default::default()))
+                    };
+                    tool_calls.push(ToolCall {
+                        id: block.id.unwrap_or_else(|| format!("toolu_{index}")),
+                        call_type: "function".to_string(),
+                        function: ToolCallFunction { name, arguments },
+                    });
+                }
+                _ => {
+                    if !block.text.is_empty() {
+                        content.push_str(&block.text);
+                    }
+                    if !block.thinking.is_empty() {
+                        reasoning_content.push_str(&block.thinking);
+                    }
+                }
+            }
+        }
+
+        Ok(ChatResponse {
+            content: (!content.is_empty()).then_some(content),
+            reasoning_content: (!reasoning_content.is_empty()).then_some(reasoning_content),
+            tool_calls,
+            usage: self.usage,
+        })
+    }
+}
+
+async fn collect_kimi_anthropic_streaming_chat_response(
+    response: reqwest::Response,
+) -> Result<ChatResponse> {
+    let mut events = KimiStreamingAccumulator::default();
+    let mut buffer = String::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("failed to read Kimi provider stream")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(index) = buffer.find('\n') {
+            let line = buffer[..index].trim().to_string();
+            buffer = buffer[index + 1..].to_string();
+            if parse_kimi_anthropic_sse_line(&line, &mut events)? {
+                return events.into_response();
+            }
+        }
+    }
+    events.into_response()
+}
+
+fn parse_kimi_anthropic_sse_line(
+    line: &str,
+    events: &mut KimiStreamingAccumulator,
+) -> Result<bool> {
+    if !line.starts_with("data:") {
+        return Ok(false);
+    }
+    let payload = line.trim_start_matches("data:").trim();
+    if payload == "[DONE]" {
+        return Ok(true);
+    }
+
+    let value: Value =
+        serde_json::from_str(payload).context("failed to parse Kimi provider SSE chunk")?;
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Err(anyhow!(
+            "Kimi streaming request failed: {}",
+            redact_secret(error)
+        ));
+    }
+
+    match value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "message_start" => {
+            if let Some(usage) = value.pointer("/message/usage") {
+                merge_usage(&mut events.usage, kimi_usage_from_value(usage));
+            }
+        }
+        "content_block_start" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let content_block = value.get("content_block").unwrap_or(&Value::Null);
+            let block = events.ensure_block(index);
+            block.block_type = content_block
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            block.id = content_block
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            block.name = content_block
+                .get("name")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            block.input = content_block.get("input").cloned();
+            if let Some(text) = content_block.get("text").and_then(Value::as_str) {
+                block.text.push_str(text);
+            }
+            if let Some(thinking) = content_block.get("thinking").and_then(Value::as_str) {
+                block.thinking.push_str(thinking);
+            }
+        }
+        "content_block_delta" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let delta = value.get("delta").unwrap_or(&Value::Null);
+            let block = events.ensure_block(index);
+            match delta
+                .get("type")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "text_delta" => {
+                    if block.block_type.is_empty() {
+                        block.block_type = "text".to_string();
+                    }
+                    if let Some(text) = delta.get("text").and_then(Value::as_str) {
+                        block.text.push_str(text);
+                    }
+                }
+                "thinking_delta" => {
+                    if block.block_type.is_empty() {
+                        block.block_type = "thinking".to_string();
+                    }
+                    if let Some(thinking) = delta.get("thinking").and_then(Value::as_str) {
+                        block.thinking.push_str(thinking);
+                    }
+                }
+                "input_json_delta" => {
+                    if block.block_type.is_empty() {
+                        block.block_type = "tool_use".to_string();
+                    }
+                    if let Some(partial_json) = delta.get("partial_json").and_then(Value::as_str) {
+                        block.input_json.push_str(partial_json);
+                    }
+                }
+                _ => {}
+            }
+        }
+        "message_delta" => {
+            if let Some(usage) = value.get("usage") {
+                merge_usage(&mut events.usage, kimi_usage_from_value(usage));
+            }
+        }
+        "message_stop" => return Ok(true),
+        _ => {}
+    }
+
+    Ok(false)
+}
+
+async fn collect_kimi_anthropic_stream_events(
+    response: reqwest::Response,
+) -> Result<Vec<StreamEvent>> {
+    let mut events = Vec::new();
+    let mut buffer = String::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.context("failed to read Kimi provider stream")?;
+        buffer.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(index) = buffer.find('\n') {
+            let line = buffer[..index].trim().to_string();
+            buffer = buffer[index + 1..].to_string();
+            if let Some(event) = parse_kimi_anthropic_stream_event_line(&line)? {
+                let done = event.done;
+                events.push(event);
+                if done {
+                    return Ok(events);
+                }
+            }
+        }
+    }
+    Ok(events)
+}
+
+fn parse_kimi_anthropic_stream_event_line(line: &str) -> Result<Option<StreamEvent>> {
+    if !line.starts_with("data:") {
+        return Ok(None);
+    }
+    let payload = line.trim_start_matches("data:").trim();
+    if payload == "[DONE]" {
+        return Ok(Some(StreamEvent {
+            content_delta: None,
+            reasoning_delta: None,
+            done: true,
+        }));
+    }
+
+    let value: Value =
+        serde_json::from_str(payload).context("failed to parse Kimi provider SSE chunk")?;
+    if let Some(error) = value.pointer("/error/message").and_then(Value::as_str) {
+        return Err(anyhow!(
+            "Kimi streaming request failed: {}",
+            redact_secret(error)
+        ));
+    }
+
+    match value
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+    {
+        "content_block_delta" => {
+            let delta = value.get("delta").unwrap_or(&Value::Null);
+            let content_delta = delta
+                .get("text")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let reasoning_delta = delta
+                .get("thinking")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            if content_delta.is_some() || reasoning_delta.is_some() {
+                Ok(Some(StreamEvent {
+                    content_delta,
+                    reasoning_delta,
+                    done: false,
+                }))
+            } else {
+                Ok(None)
+            }
+        }
+        "message_stop" => Ok(Some(StreamEvent {
+            content_delta: None,
+            reasoning_delta: None,
+            done: true,
+        })),
+        _ => Ok(None),
+    }
 }
 
 fn normalize_chat_response(raw: &str) -> Result<ChatResponse> {
@@ -1177,6 +1572,97 @@ mod tests {
     }
 
     #[test]
+    fn parses_kimi_anthropic_streamed_text() {
+        let mut acc = KimiStreamingAccumulator::default();
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}}"#,
+            &mut acc,
+        )
+        .unwrap();
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            &mut acc,
+        )
+        .unwrap();
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}"#,
+            &mut acc,
+        )
+        .unwrap();
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"message_delta","usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15}}"#,
+            &mut acc,
+        )
+        .unwrap();
+        assert!(
+            parse_kimi_anthropic_sse_line(r#"data: {"type":"message_stop"}"#, &mut acc).unwrap()
+        );
+
+        let response = acc.into_response().unwrap();
+        assert_eq!(response.content.as_deref(), Some("OK"));
+        assert_eq!(response.usage.total_tokens, Some(15));
+    }
+
+    #[test]
+    fn parses_kimi_anthropic_streamed_tool_use() {
+        let mut acc = KimiStreamingAccumulator::default();
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#,
+            &mut acc,
+        )
+        .unwrap();
+        let first_delta = format!(
+            "data: {}",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": "{\"path\":\"Car"
+                }
+            })
+        );
+        parse_kimi_anthropic_sse_line(&first_delta, &mut acc).unwrap();
+        let second_delta = format!(
+            "data: {}",
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": "go.toml\"}"
+                }
+            })
+        );
+        parse_kimi_anthropic_sse_line(&second_delta, &mut acc).unwrap();
+
+        let response = acc.into_response().unwrap();
+        assert_eq!(response.tool_calls[0].id, "toolu_1");
+        assert_eq!(response.tool_calls[0].function.name, "read_file");
+        assert_eq!(
+            response.tool_calls[0].function.arguments["path"],
+            "Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn parses_kimi_anthropic_stream_event_delta() {
+        let event = parse_kimi_anthropic_stream_event_line(
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}"#,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(event.content_delta.as_deref(), Some("OK"));
+        assert!(!event.done);
+        assert!(
+            parse_kimi_anthropic_stream_event_line(r#"data: {"type":"message_stop"}"#)
+                .unwrap()
+                .unwrap()
+                .done
+        );
+    }
+
+    #[test]
     fn builds_kimi_anthropic_tool_result_request() {
         let body = kimi_anthropic_request_body(
             "kimi-for-coding",
@@ -1224,13 +1710,37 @@ mod tests {
                 }],
                 json_mode: false,
             },
+            false,
         );
 
         assert_eq!(body["model"], "kimi-for-coding");
+        assert!(body.get("stream").is_none());
         assert_eq!(body["system"], "system");
         assert_eq!(body["messages"][0]["content"][0]["type"], "tool_use");
         assert_eq!(body["messages"][1]["content"][0]["type"], "tool_result");
         assert_eq!(body["tools"][0]["input_schema"]["type"], "object");
+    }
+
+    #[test]
+    fn builds_kimi_anthropic_stream_request() {
+        let body = kimi_anthropic_request_body(
+            "kimi-for-coding",
+            &ChatRequest {
+                messages: vec![ProviderMessage {
+                    role: "user".to_string(),
+                    content: Some("hello".to_string()),
+                    reasoning_content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                }],
+                tools: Vec::new(),
+                json_mode: false,
+            },
+            true,
+        );
+
+        assert_eq!(body["stream"], true);
     }
 
     #[test]
