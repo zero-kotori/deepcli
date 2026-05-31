@@ -350,6 +350,8 @@ fn top_level_entries() -> &'static [&'static str] {
         "about",
         "quickstart",
         "selftest",
+        "preflight",
+        "release-check",
         "completion",
         "completions",
         "init",
@@ -542,6 +544,8 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "about"
             | "quickstart"
             | "selftest"
+            | "preflight"
+            | "release-check"
             | "completion"
             | "completions"
             | "init"
@@ -651,6 +655,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Version { .. }
         | SlashCommand::Quickstart { .. }
         | SlashCommand::Selftest { .. }
+        | SlashCommand::Preflight { .. }
         | SlashCommand::Completion { .. } => true,
         SlashCommand::Quit | SlashCommand::Stop => true,
         SlashCommand::Status { .. } | SlashCommand::Context => true,
@@ -1200,6 +1205,18 @@ mod tests {
             parse_one_shot_command(&["selftest".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Selftest {
                 args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["preflight".into(), "--json".into()]).unwrap(),
+            Some(SlashCommand::Preflight {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["release-check".into(), "--dry-run".into()]).unwrap(),
+            Some(SlashCommand::Preflight {
+                args: vec!["--dry-run".to_string()]
             })
         );
         assert_eq!(
@@ -1820,6 +1837,8 @@ mod tests {
             vec!["/privacy", "--json"],
             vec!["/selftest"],
             vec!["/selftest", "--json"],
+            vec!["/preflight", "--dry-run"],
+            vec!["/preflight", "--dry-run", "--json"],
             vec!["/completion"],
             vec!["/completion", "json"],
             vec!["/completion", "install", "zsh"],

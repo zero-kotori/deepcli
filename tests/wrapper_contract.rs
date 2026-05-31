@@ -227,6 +227,18 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/selftest", "--json", "--fail-on-issues"]
     ));
 
+    let preflight = run_wrapper(&["preflight", "--dry-run", "--json"]);
+    assert!(ends_with_args(
+        &preflight.args,
+        &["/preflight", "--dry-run", "--json"]
+    ));
+
+    let release_check = run_wrapper(&["release-check", "--dry-run"]);
+    assert!(ends_with_args(
+        &release_check.args,
+        &["/release-check", "--dry-run"]
+    ));
+
     let completion = run_wrapper(&["completion", "zsh"]);
     assert!(ends_with_args(&completion.args, &["/completion", "zsh"]));
 
@@ -933,6 +945,26 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&selftest.args, "--provider", "deepseek"));
     assert!(has_adjacent(&selftest.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&selftest.args, &["/selftest", "--json"]));
+
+    let preflight = run_wrapper(&["deepseek", "preflight", "--dry-run", "--json"]);
+    assert!(has_adjacent(&preflight.args, "--provider", "deepseek"));
+    assert!(has_adjacent(&preflight.args, "--model", "deepseek-v4-pro"));
+    assert!(ends_with_args(
+        &preflight.args,
+        &["/preflight", "--dry-run", "--json"]
+    ));
+
+    let release_check = run_wrapper(&["deepseek", "release-check", "--dry-run"]);
+    assert!(has_adjacent(&release_check.args, "--provider", "deepseek"));
+    assert!(has_adjacent(
+        &release_check.args,
+        "--model",
+        "deepseek-v4-pro"
+    ));
+    assert!(ends_with_args(
+        &release_check.args,
+        &["/release-check", "--dry-run"]
+    ));
 
     let completion = run_wrapper(&["deepseek", "completion", "json"]);
     assert!(has_adjacent(&completion.args, "--provider", "deepseek"));

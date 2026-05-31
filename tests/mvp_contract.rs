@@ -11,6 +11,7 @@ fn mvp_slash_commands_are_registered() {
         "/about",
         "/quickstart",
         "/selftest",
+        "/preflight",
         "/completion",
         "/init",
         "/status",

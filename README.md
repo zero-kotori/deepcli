@@ -85,6 +85,7 @@ deepcli usage --json
 deepcli trace --limit 30
 deepcli logs --limit 80
 deepcli privacy --json
+deepcli preflight --json
 deepcli accept --json
 deepcli gate --json
 deepcli handoff --pr
@@ -126,9 +127,14 @@ cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor --quick --json
+./scripts/deepcli preflight --dry-run
+./scripts/deepcli release-check --dry-run
+./scripts/deepcli preflight --json
 ```
 
 `selftest` 和 `doctor` 会读取 `.deepcli/config.json` 中的 `project.gitIdentity`，对比当前 Git 仓库的有效 `user.name` / `user.email`，用于提交前发现错误作者身份。
+
+`preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查，`--quick` 可跳过较慢的 clippy/gate。
 
 `privacy.allowedEmails` / `privacy.allowedEmailDomains` 可声明公开或允许的邮箱，让 `deepcli privacy` 将这些命中记录为 suppressed findings，而不是阻断开源前检查；只想允许提交元数据时可使用 `privacy.allowedCommitEmails` / `privacy.allowedCommitDomains`。
 `privacy.allowedUserPaths` 可声明脱敏后的历史本机用户路径，用于折叠已知迁移遗留路径。

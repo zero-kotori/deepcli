@@ -51,6 +51,7 @@ pub enum SlashCommand {
     Version { args: Vec<String> },
     Quickstart { args: Vec<String> },
     Selftest { args: Vec<String> },
+    Preflight { args: Vec<String> },
     Completion { args: Vec<String> },
     Init { args: Vec<String> },
     Status { args: Vec<String> },
@@ -118,6 +119,7 @@ impl CommandRouter {
             "/version" | "/about" => SlashCommand::Version { args },
             "/quickstart" => SlashCommand::Quickstart { args },
             "/selftest" | "/self-test" => SlashCommand::Selftest { args },
+            "/preflight" | "/release-check" => SlashCommand::Preflight { args },
             "/completion" | "/completions" => SlashCommand::Completion { args },
             "/init" => SlashCommand::Init { args },
             "/status" => SlashCommand::Status { args },
@@ -253,6 +255,7 @@ impl CommandRouter {
             SlashCommand::Selftest { args } => {
                 handle_selftest(context.workspace, context.config, context.registry, args)
             }
+            SlashCommand::Preflight { args } => handle_preflight(context.workspace, args),
             SlashCommand::Completion { args } => handle_completion(context.workspace, args),
             SlashCommand::Init { args } => {
                 handle_init(
@@ -461,6 +464,7 @@ impl CommandRouter {
             "/about",
             "/quickstart",
             "/selftest",
+            "/preflight",
             "/completion",
             "/init",
             "/status",
@@ -680,6 +684,29 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli selftest --json --fail-on-issues",
             ],
             notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
+        },
+        CommandHelp {
+            name: "/preflight",
+            listing: "/preflight [--json] [--output path] [--dry-run] [--quick] [--fail-fast]",
+            summary: "Run a publish-ready local preflight across formatting, tests, diagnostics, privacy, and gate checks.",
+            usage: &[
+                "/preflight",
+                "/preflight --json",
+                "/preflight --output <workspace-relative-path>",
+                "/preflight --dry-run",
+                "/preflight --quick",
+                "/preflight --fail-fast",
+                "deepcli preflight --json",
+                "deepcli release-check --json",
+            ],
+            examples: &[
+                "/preflight --dry-run",
+                "/preflight --json --output .deepcli/exports/preflight.json",
+                "deepcli preflight --json",
+                "deepcli release-check --dry-run",
+                "deepcli preflight --quick --json",
+            ],
+            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Use `--json` for the stable `deepcli.preflight.v1` schema."],
         },
         CommandHelp {
             name: "/completion",
@@ -2448,6 +2475,7 @@ fn selftest_required_commands() -> Vec<&'static str> {
         "/help",
         "/quickstart",
         "/selftest",
+        "/preflight",
         "/completion",
         "/doctor",
         "/health",
@@ -2590,6 +2618,490 @@ fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<Str
                 .collect::<Vec<_>>(),
         },
         "issues": report.issues,
+        "nextActions": report.next_actions,
+        "report": report.report,
+    }))?)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct PreflightOptions {
+    json_output: bool,
+    dry_run: bool,
+    quick: bool,
+    fail_fast: bool,
+    output_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightCheckSpec {
+    name: String,
+    command: String,
+    program: Option<PathBuf>,
+    args: Vec<String>,
+    required: bool,
+    skip_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightCheckResult {
+    name: String,
+    command: String,
+    status: String,
+    required: bool,
+    exit_code: Option<i32>,
+    duration_ms: Option<u128>,
+    stdout_chars: usize,
+    stderr_chars: usize,
+    output: Option<String>,
+    note: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightReport {
+    report: String,
+    status: String,
+    dry_run: bool,
+    quick: bool,
+    fail_fast: bool,
+    checks: Vec<PreflightCheckResult>,
+    next_actions: Vec<String>,
+}
+
+fn handle_preflight(workspace: &Path, args: Vec<String>) -> Result<String> {
+    let options = parse_preflight_options(&args)?;
+    let report = build_preflight_report(workspace, &options)?;
+    let output = if options.json_output {
+        format_preflight_json(workspace, &report)?
+    } else {
+        report.report.clone()
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    if report.status == "failed" {
+        return Err(CommandExit::new(output, 1).into());
+    }
+    Ok(output)
+}
+
+fn parse_preflight_options(args: &[String]) -> Result<PreflightOptions> {
+    let mut options = PreflightOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--dry-run" | "--list" | "--plan" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            "--quick" => {
+                options.quick = true;
+                index += 1;
+            }
+            "--fail-fast" => {
+                options.fail_fast = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            value => bail!("unsupported /preflight option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn build_preflight_report(workspace: &Path, options: &PreflightOptions) -> Result<PreflightReport> {
+    let specs = build_preflight_specs(workspace, options)?;
+    let mut checks = Vec::new();
+    for spec in specs {
+        let result = if options.dry_run {
+            preflight_planned_result(&spec)
+        } else {
+            run_preflight_check(workspace, &spec)
+        };
+        let failed = result.status == "failed" && result.required;
+        checks.push(result);
+        if failed && options.fail_fast {
+            break;
+        }
+    }
+
+    let status = if options.dry_run {
+        "planned"
+    } else if checks
+        .iter()
+        .any(|check| check.required && check.status == "failed")
+    {
+        "failed"
+    } else {
+        "ok"
+    }
+    .to_string();
+    let next_actions = preflight_next_actions(&status, &checks);
+    let report = format_preflight_text(workspace, &status, options, &checks, &next_actions);
+
+    Ok(PreflightReport {
+        report,
+        status,
+        dry_run: options.dry_run,
+        quick: options.quick,
+        fail_fast: options.fail_fast,
+        checks,
+        next_actions,
+    })
+}
+
+fn build_preflight_specs(
+    workspace: &Path,
+    options: &PreflightOptions,
+) -> Result<Vec<PreflightCheckSpec>> {
+    let mut specs = Vec::new();
+    let cargo_present = workspace.join("Cargo.toml").exists();
+    let git_present = git_stdout(workspace, &["rev-parse", "--is-inside-work-tree"])
+        .ok()
+        .flatten()
+        .as_deref()
+        .is_some_and(|value| value.trim() == "true");
+
+    specs.push(if cargo_present {
+        process_preflight_spec("format", "cargo", &["fmt", "--check"], true)
+    } else {
+        skipped_preflight_spec("format", "cargo fmt --check", "Cargo.toml not found")
+    });
+
+    specs.push(if git_present {
+        process_preflight_spec("diff-whitespace", "git", &["diff", "--check"], true)
+    } else {
+        skipped_preflight_spec(
+            "diff-whitespace",
+            "git diff --check",
+            "not a git repository",
+        )
+    });
+
+    if options.quick {
+        specs.push(skipped_preflight_spec(
+            "clippy",
+            "cargo clippy --all-targets -- -D warnings",
+            "skipped by --quick",
+        ));
+    } else if cargo_present {
+        specs.push(process_preflight_spec(
+            "clippy",
+            "cargo",
+            &["clippy", "--all-targets", "--", "-D", "warnings"],
+            true,
+        ));
+    } else {
+        specs.push(skipped_preflight_spec(
+            "clippy",
+            "cargo clippy --all-targets -- -D warnings",
+            "Cargo.toml not found",
+        ));
+    }
+
+    let deepcli = std::env::current_exe().context("failed to locate current deepcli binary")?;
+    specs.push(deepcli_preflight_spec(
+        workspace,
+        &deepcli,
+        "selftest",
+        &["/selftest", "--json", "--fail-on-issues"],
+    ));
+    specs.push(deepcli_preflight_spec(
+        workspace,
+        &deepcli,
+        "doctor",
+        &["/doctor", "--quick", "--json"],
+    ));
+    specs.push(deepcli_preflight_spec(
+        workspace,
+        &deepcli,
+        "privacy",
+        &["/privacy", "--json", "--fail-on-findings"],
+    ));
+    if options.quick {
+        specs.push(skipped_preflight_spec(
+            "gate",
+            "deepcli gate --json",
+            "skipped by --quick",
+        ));
+    } else {
+        specs.push(deepcli_preflight_spec(
+            workspace,
+            &deepcli,
+            "gate",
+            &["/gate", "--json"],
+        ));
+    }
+
+    Ok(specs)
+}
+
+fn process_preflight_spec(
+    name: &str,
+    program: &str,
+    args: &[&str],
+    required: bool,
+) -> PreflightCheckSpec {
+    let args = args
+        .iter()
+        .map(|arg| (*arg).to_string())
+        .collect::<Vec<_>>();
+    PreflightCheckSpec {
+        name: name.to_string(),
+        command: display_process_command(program, &args),
+        program: Some(PathBuf::from(program)),
+        args,
+        required,
+        skip_reason: None,
+    }
+}
+
+fn skipped_preflight_spec(name: &str, command: &str, reason: &str) -> PreflightCheckSpec {
+    PreflightCheckSpec {
+        name: name.to_string(),
+        command: command.to_string(),
+        program: None,
+        args: Vec::new(),
+        required: false,
+        skip_reason: Some(reason.to_string()),
+    }
+}
+
+fn deepcli_preflight_spec(
+    workspace: &Path,
+    deepcli: &Path,
+    name: &str,
+    slash_args: &[&str],
+) -> PreflightCheckSpec {
+    let mut args = vec![
+        "-C".to_string(),
+        workspace.display().to_string(),
+        "--config".to_string(),
+        workspace
+            .join(".deepcli")
+            .join("config.json")
+            .display()
+            .to_string(),
+        "--yes".to_string(),
+    ];
+    args.extend(slash_args.iter().map(|arg| (*arg).to_string()));
+    let display_args = slash_args
+        .iter()
+        .map(|arg| arg.trim_start_matches('/'))
+        .collect::<Vec<_>>();
+    PreflightCheckSpec {
+        name: name.to_string(),
+        command: display_process_command("deepcli", &display_args),
+        program: Some(deepcli.to_path_buf()),
+        args,
+        required: true,
+        skip_reason: None,
+    }
+}
+
+fn display_process_command<S: AsRef<str>>(program: &str, args: &[S]) -> String {
+    std::iter::once(program.to_string())
+        .chain(args.iter().map(|arg| arg.as_ref().to_string()))
+        .map(|part| shell_words::quote(&part).to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn preflight_planned_result(spec: &PreflightCheckSpec) -> PreflightCheckResult {
+    PreflightCheckResult {
+        name: spec.name.clone(),
+        command: spec.command.clone(),
+        status: if spec.skip_reason.is_some() {
+            "skipped".to_string()
+        } else {
+            "planned".to_string()
+        },
+        required: spec.required,
+        exit_code: None,
+        duration_ms: None,
+        stdout_chars: 0,
+        stderr_chars: 0,
+        output: None,
+        note: spec.skip_reason.clone(),
+    }
+}
+
+fn run_preflight_check(workspace: &Path, spec: &PreflightCheckSpec) -> PreflightCheckResult {
+    if spec.skip_reason.is_some() || spec.program.is_none() {
+        return preflight_planned_result(spec);
+    }
+    let program = spec.program.as_ref().unwrap();
+    let started = Instant::now();
+    let output = ProcessCommand::new(program)
+        .args(&spec.args)
+        .current_dir(workspace)
+        .output();
+    let duration_ms = started.elapsed().as_millis();
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            PreflightCheckResult {
+                name: spec.name.clone(),
+                command: spec.command.clone(),
+                status: if output.status.success() {
+                    "passed".to_string()
+                } else {
+                    "failed".to_string()
+                },
+                required: spec.required,
+                exit_code: output.status.code(),
+                duration_ms: Some(duration_ms),
+                stdout_chars: stdout.chars().count(),
+                stderr_chars: stderr.chars().count(),
+                output: preflight_output_summary(&stdout, &stderr),
+                note: None,
+            }
+        }
+        Err(error) => PreflightCheckResult {
+            name: spec.name.clone(),
+            command: spec.command.clone(),
+            status: "failed".to_string(),
+            required: spec.required,
+            exit_code: None,
+            duration_ms: Some(duration_ms),
+            stdout_chars: 0,
+            stderr_chars: 0,
+            output: Some(truncate_display(
+                &redact_sensitive_text(&format!("failed to run command: {error}")),
+                700,
+            )),
+            note: None,
+        },
+    }
+}
+
+fn preflight_output_summary(stdout: &str, stderr: &str) -> Option<String> {
+    let raw = if !stderr.trim().is_empty() {
+        stderr
+    } else if !stdout.trim().is_empty() {
+        stdout
+    } else {
+        return None;
+    };
+    Some(truncate_display(
+        &redact_sensitive_text(&raw.replace('\n', "\\n")),
+        900,
+    ))
+}
+
+fn preflight_next_actions(status: &str, checks: &[PreflightCheckResult]) -> Vec<String> {
+    let mut actions = Vec::new();
+    match status {
+        "planned" => {
+            actions.push("run `/preflight --json` to execute the planned checks".to_string());
+        }
+        "failed" => {
+            for check in checks
+                .iter()
+                .filter(|check| check.required && check.status == "failed")
+                .take(4)
+            {
+                actions.push(format!(
+                    "fix `{}` by rerunning `{}` and addressing the output",
+                    check.name, check.command
+                ));
+            }
+            actions.push("rerun `/preflight --json` after fixing failed checks".to_string());
+        }
+        _ => {
+            actions.push("run `/handoff --pr` to prepare a final handoff summary".to_string());
+            actions.push(
+                "commit only after confirming the preflight report matches expectations"
+                    .to_string(),
+            );
+        }
+    }
+    dedup_preserve_order(actions)
+}
+
+fn format_preflight_text(
+    workspace: &Path,
+    status: &str,
+    options: &PreflightOptions,
+    checks: &[PreflightCheckResult],
+    next_actions: &[String],
+) -> String {
+    let mut lines = vec![
+        "deepcli preflight".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("status: {status}"),
+        format!("mode: {}", if options.quick { "quick" } else { "full" }),
+    ];
+    if options.dry_run {
+        lines.push("dry-run: true".to_string());
+    }
+    if options.fail_fast {
+        lines.push("fail-fast: true".to_string());
+    }
+    lines.push("checks:".to_string());
+    for check in checks {
+        let mut line = format!("  - [{}] {}: {}", check.status, check.name, check.command);
+        if let Some(exit_code) = check.exit_code {
+            line.push_str(&format!(" exit={exit_code}"));
+        }
+        if let Some(duration_ms) = check.duration_ms {
+            line.push_str(&format!(" duration={}ms", duration_ms));
+        }
+        if let Some(note) = &check.note {
+            line.push_str(&format!(" note={}", redact_sensitive_text(note)));
+        }
+        lines.push(line);
+        if let Some(output) = &check.output {
+            lines.push(format!("    output: {output}"));
+        }
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
+    lines.join("\n")
+}
+
+fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.preflight.v1",
+        "status": report.status,
+        "workspace": workspace.display().to_string(),
+        "mode": if report.quick { "quick" } else { "full" },
+        "dryRun": report.dry_run,
+        "failFast": report.fail_fast,
+        "counts": {
+            "total": report.checks.len(),
+            "passed": report.checks.iter().filter(|check| check.status == "passed").count(),
+            "failed": report.checks.iter().filter(|check| check.status == "failed").count(),
+            "skipped": report.checks.iter().filter(|check| check.status == "skipped").count(),
+            "planned": report.checks.iter().filter(|check| check.status == "planned").count(),
+        },
+        "checks": report.checks.iter().map(|check| json!({
+            "name": check.name,
+            "command": check.command,
+            "status": check.status,
+            "required": check.required,
+            "exitCode": check.exit_code,
+            "durationMs": check.duration_ms,
+            "stdoutChars": check.stdout_chars,
+            "stderrChars": check.stderr_chars,
+            "output": check.output,
+            "note": check.note,
+        })).collect::<Vec<_>>(),
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
@@ -3489,7 +4001,7 @@ fn completion_words(commands: &[CompletionCommand]) -> String {
 }
 
 fn provider_completion_words() -> &'static str {
-    "ask stream resume tui repl version about quickstart selftest completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
+    "ask stream resume tui repl version about quickstart selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
 }
 
 fn fish_escape(value: &str) -> String {
@@ -3529,6 +4041,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/about"
             | "/quickstart"
             | "/selftest"
+            | "/preflight"
             | "/completion"
             | "/status"
             | "/usage"
@@ -18776,6 +19289,18 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/preflight --json").unwrap(),
+            Some(SlashCommand::Preflight {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/release-check --dry-run").unwrap(),
+            Some(SlashCommand::Preflight {
+                args: vec!["--dry-run".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/completion zsh --output .deepcli/exports/_deepcli").unwrap(),
             Some(SlashCommand::Completion {
                 args: vec![
@@ -19572,6 +20097,14 @@ mod tests {
         assert!(selftest_help.contains("does not create a session or call a provider"));
         assert!(selftest_help.contains("deepcli selftest --json --fail-on-issues"));
 
+        let preflight_help = CommandRouter::help_for(&["preflight".to_string()]).unwrap();
+        assert!(preflight_help.contains("/preflight - "));
+        assert!(preflight_help.contains("running-safe: yes"));
+        assert!(preflight_help.contains("deepcli.preflight.v1"));
+        assert!(preflight_help.contains("does not create a session or call a provider"));
+        assert!(preflight_help.contains("deepcli preflight --json"));
+        assert!(preflight_help.contains("deepcli release-check --dry-run"));
+
         let completion_help = CommandRouter::help_for(&["completion".to_string()]).unwrap();
         assert!(completion_help.contains("/completion - "));
         assert!(completion_help.contains("running-safe: yes"));
@@ -20226,6 +20759,88 @@ mod tests {
         .to_string();
         assert!(output_error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../selftest.json").exists());
+    }
+
+    #[test]
+    fn preflight_dry_run_json_lists_release_checks_without_creating_session() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"preflight-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+
+        let output = handle_preflight(
+            dir.path(),
+            vec![
+                "--dry-run".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/preflight.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.preflight.v1");
+        assert_eq!(value["status"], "planned");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["mode"], "full");
+        for expected in [
+            "format",
+            "diff-whitespace",
+            "clippy",
+            "selftest",
+            "doctor",
+            "privacy",
+            "gate",
+        ] {
+            assert!(value["checks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|check| check["name"] == expected && check["status"] == "planned"));
+        }
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+        assert!(!dir.path().join(".deepcli/sessions").exists());
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/preflight.json")).unwrap();
+        assert_eq!(written, output);
+    }
+
+    #[test]
+    fn preflight_quick_dry_run_skips_slow_checks_and_rejects_unsafe_output() {
+        let dir = tempdir().unwrap();
+        let output = handle_preflight(
+            dir.path(),
+            vec!["--dry-run".into(), "--quick".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["status"], "planned");
+        assert_eq!(value["mode"], "quick");
+        assert!(value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|check| check["name"] == "gate"
+                && check["status"] == "skipped"
+                && check["note"] == "skipped by --quick"));
+
+        let error = handle_preflight(
+            dir.path(),
+            vec!["--output".into(), "../preflight.json".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../preflight.json").exists());
     }
 
     #[test]
