@@ -362,6 +362,7 @@ fn top_level_entries() -> &'static [&'static str] {
         "doctor",
         "trace",
         "logs",
+        "privacy",
         "log",
         "context",
         "permissions",
@@ -553,6 +554,7 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "doctor"
             | "trace"
             | "logs"
+            | "privacy"
             | "log"
             | "context"
             | "permissions"
@@ -653,7 +655,10 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         SlashCommand::Quit | SlashCommand::Stop => true,
         SlashCommand::Status { .. } | SlashCommand::Context => true,
         SlashCommand::Diagnose { .. } => true,
-        SlashCommand::Usage { .. } | SlashCommand::Trace { .. } | SlashCommand::Logs { .. } => true,
+        SlashCommand::Usage { .. }
+        | SlashCommand::Trace { .. }
+        | SlashCommand::Logs { .. }
+        | SlashCommand::Privacy { .. } => true,
         SlashCommand::Verify { .. } => true,
         SlashCommand::Handoff { .. } => true,
         SlashCommand::Permissions { args } => {
@@ -1248,6 +1253,12 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_one_shot_command(&["privacy".into(), "--json".into()]).unwrap(),
+            Some(SlashCommand::Privacy {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
             parse_one_shot_command(&["support".into()]).unwrap(),
             Some(SlashCommand::Diagnose {
                 args: vec![
@@ -1805,6 +1816,8 @@ mod tests {
             vec!["/trace", "--json"],
             vec!["/logs"],
             vec!["/logs", "--json"],
+            vec!["/privacy"],
+            vec!["/privacy", "--json"],
             vec!["/selftest"],
             vec!["/selftest", "--json"],
             vec!["/completion"],
@@ -1937,6 +1950,7 @@ mod tests {
             vec!["models", "--json"],
             vec!["history", "--limit", "5"],
             vec!["health", "--json"],
+            vec!["privacy", "--json"],
             vec!["timeout", "--json"],
             vec!["docker", "--json"],
             vec!["compiler", "--json"],

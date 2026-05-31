@@ -205,6 +205,22 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/logs", "--json", "--output", ".deepcli/exports/logs.json",]
     ));
 
+    let privacy = run_wrapper(&[
+        "privacy",
+        "--json",
+        "--output",
+        ".deepcli/exports/privacy.json",
+    ]);
+    assert!(ends_with_args(
+        &privacy.args,
+        &[
+            "/privacy",
+            "--json",
+            "--output",
+            ".deepcli/exports/privacy.json",
+        ]
+    ));
+
     let selftest = run_wrapper(&["selftest", "--json", "--fail-on-issues"]);
     assert!(ends_with_args(
         &selftest.args,
@@ -907,6 +923,11 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&logs.args, "--provider", "deepseek"));
     assert!(has_adjacent(&logs.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&logs.args, &["/logs", "--limit", "20"]));
+
+    let privacy = run_wrapper(&["deepseek", "privacy", "--json"]);
+    assert!(has_adjacent(&privacy.args, "--provider", "deepseek"));
+    assert!(has_adjacent(&privacy.args, "--model", "deepseek-v4-pro"));
+    assert!(ends_with_args(&privacy.args, &["/privacy", "--json"]));
 
     let selftest = run_wrapper(&["deepseek", "selftest", "--json"]);
     assert!(has_adjacent(&selftest.args, "--provider", "deepseek"));

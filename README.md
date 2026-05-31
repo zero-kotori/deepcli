@@ -82,6 +82,7 @@ deepcli status --json
 deepcli usage --json
 deepcli trace --limit 30
 deepcli logs --limit 80
+deepcli privacy --json
 deepcli accept --json
 deepcli gate --json
 deepcli handoff --pr
