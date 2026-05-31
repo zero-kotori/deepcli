@@ -245,6 +245,12 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/benchmark", "--fail-below", "85"]
     ));
 
+    let benchmark_status = run_wrapper(&["benchmark", "status", "--json"]);
+    assert!(ends_with_args(
+        &benchmark_status.args,
+        &["/benchmark", "status", "--json"]
+    ));
+
     let preflight = run_wrapper(&["preflight", "--dry-run", "--json"]);
     assert!(ends_with_args(
         &preflight.args,
@@ -976,6 +982,22 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&scorecard.args, "--provider", "deepseek"));
     assert!(has_adjacent(&scorecard.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&scorecard.args, &["/scorecard", "--json"]));
+
+    let benchmark_status = run_wrapper(&["deepseek", "benchmark", "status", "--json"]);
+    assert!(has_adjacent(
+        &benchmark_status.args,
+        "--provider",
+        "deepseek"
+    ));
+    assert!(has_adjacent(
+        &benchmark_status.args,
+        "--model",
+        "deepseek-v4-pro"
+    ));
+    assert!(ends_with_args(
+        &benchmark_status.args,
+        &["/benchmark", "status", "--json"]
+    ));
 
     let preflight = run_wrapper(&["deepseek", "preflight", "--dry-run", "--json"]);
     assert!(has_adjacent(&preflight.args, "--provider", "deepseek"));

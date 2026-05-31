@@ -742,8 +742,8 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [run|record|summary|list|show|scorecard] [--json] [--output path]",
-            summary: "Run, record, summarize, and inspect local benchmark evidence artifacts.",
+            listing: "/benchmark [presets|run|record|status|summary|list|show|scorecard] [--json] [--output path]",
+            summary: "Run, record, assess, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
                 "/benchmark --json",
@@ -753,6 +753,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark run --command <cmd> [--timeout seconds] [--fail-on-command] [--json]",
                 "/benchmark run -- <cmd>",
                 "/benchmark record [--json] [--suite name] [--case name] [--command <cmd>] [--notes text]",
+                "/benchmark status [--json] [--output path]",
                 "/benchmark summary [--json] [--limit n]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
@@ -762,13 +763,14 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark run --preset cargo-test --json --fail-on-command",
                 "/benchmark run --command 'cargo test' --json --fail-on-command",
                 "/benchmark run --timeout 30 -- printf ok",
+                "/benchmark status --json",
                 "/benchmark summary --json",
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
                 "/benchmark show latest --json",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
         },
         CommandHelp {
             name: "/selftest",
@@ -2416,9 +2418,10 @@ fn build_scorecard_report(
     let project_config_present = project_config_path(workspace).exists();
     let git_identity = build_git_identity_report(workspace, &config.project.git_identity);
     let provider_model = active_default_model(config);
-    let benchmark_artifact_count = benchmark_artifact_count(workspace);
     let exported_scorecard_present = workspace.join(".deepcli/exports/scorecard.json").is_file();
-    let benchmark_artifacts_present = benchmark_artifact_count > 0 || exported_scorecard_present;
+    let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
+    let benchmark_status =
+        build_benchmark_status_report(workspace, &benchmark_artifacts, Utc::now());
 
     let mut categories = vec![
         scorecard_command_category(
@@ -2675,23 +2678,77 @@ fn build_scorecard_report(
             "benchmark rubric is anchored to docs/ai product requirements",
         );
     }
-    if benchmark_artifacts_present {
-        let evidence = match (benchmark_artifact_count, exported_scorecard_present) {
-            (count, true) if count > 0 => {
-                format!("{count} benchmark artifact(s) and an exported scorecard are present")
+    match benchmark_status.status {
+        "ready" => {
+            scorecard_add_evidence(
+                &mut categories[7],
+                3,
+                &format!(
+                    "recent meaningful benchmark evidence is present: {}",
+                    benchmark_status
+                        .latest_meaningful
+                        .as_ref()
+                        .map(|artifact| artifact.artifact_path.as_str())
+                        .unwrap_or("<unknown>")
+                ),
+            );
+        }
+        "failing" | "stale" => {
+            categories[7].score = categories[7].score.saturating_sub(2);
+            scorecard_add_evidence(
+                &mut categories[7],
+                0,
+                &format!(
+                    "benchmark status is {} with {} artifact(s)",
+                    benchmark_status.status, benchmark_status.artifact_count
+                ),
+            );
+            for gap in &benchmark_status.gaps {
+                scorecard_add_gap(
+                    &mut categories[7],
+                    gap,
+                    "run `/benchmark run --preset cargo-test --json --fail-on-command`",
+                );
             }
-            (count, false) if count > 0 => format!("{count} benchmark artifact(s) are present"),
-            (0, true) => "an exported scorecard artifact is present".to_string(),
-            _ => "local scorecard or benchmark artifacts are present".to_string(),
-        };
-        scorecard_add_evidence(&mut categories[7], 3, &evidence);
-    } else {
-        categories[7].score = categories[7].score.saturating_sub(3);
-        scorecard_add_gap(
-            &mut categories[7],
-            "no local benchmark artifact found under .deepcli/benchmarks or .deepcli/exports/scorecard.json",
-            "run `/benchmark run --preset cargo-test --json --fail-on-command` or export `/scorecard --json --output .deepcli/exports/scorecard.json`",
-        );
+        }
+        "weak" => {
+            categories[7].score = categories[7].score.saturating_sub(3);
+            scorecard_add_evidence(
+                &mut categories[7],
+                0,
+                &format!(
+                    "benchmark artifacts exist but evidence is weak: {} artifact(s), {} smoke artifact(s)",
+                    benchmark_status.artifact_count, benchmark_status.smoke_count
+                ),
+            );
+            for gap in &benchmark_status.gaps {
+                scorecard_add_gap(
+                    &mut categories[7],
+                    gap,
+                    "run `/benchmark run --preset cargo-test --json --fail-on-command`",
+                );
+            }
+        }
+        _ => {
+            categories[7].score = categories[7].score.saturating_sub(3);
+            if exported_scorecard_present {
+                scorecard_add_evidence(
+                    &mut categories[7],
+                    0,
+                    "an exported scorecard exists, but no benchmark run evidence was found",
+                );
+            }
+            let gap = if exported_scorecard_present {
+                "no local benchmark run artifact found under .deepcli/benchmarks; exported scorecard alone is weak benchmark evidence"
+            } else {
+                "no local benchmark artifact found under .deepcli/benchmarks"
+            };
+            scorecard_add_gap(
+                &mut categories[7],
+                gap,
+                "run `/benchmark run --preset cargo-test --json --fail-on-command`",
+            );
+        }
     }
 
     for category in &mut categories {
@@ -2738,6 +2795,8 @@ fn build_scorecard_report(
         "run `/benchmark run --preset cargo-test --json --fail-on-command` after each product round"
             .to_string(),
     );
+    next_actions
+        .push("run `/benchmark status --json` to inspect benchmark evidence quality".to_string());
     next_actions.push("run `/preflight --json` before commit or push".to_string());
     next_actions = dedup_preserve_order(next_actions);
     let report = format_scorecard_text(
@@ -2939,8 +2998,12 @@ const DEFAULT_BENCHMARK_SUITE: &str = "product";
 const DEFAULT_BENCHMARK_CASE: &str = "scorecard";
 const DEFAULT_BENCHMARK_RUN_CASE: &str = "command";
 const BENCHMARK_ARTIFACT_SCHEMA: &str = "deepcli.benchmark.record.v1";
+const BENCHMARK_STATUS_SCHEMA: &str = "deepcli.benchmark.status.v1";
 const DEFAULT_BENCHMARK_TIMEOUT_SECONDS: u64 = 120;
 const BENCHMARK_OUTPUT_SAMPLE_CHARS: usize = 8_000;
+const BENCHMARK_EVIDENCE_STALE_AFTER_DAYS: i64 = 7;
+const MEANINGFUL_BENCHMARK_PRESETS: &[&str] =
+    &["cargo-test", "preflight-quick", "selftest", "scorecard"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BenchmarkRecordOptions {
@@ -3013,6 +3076,12 @@ struct BenchmarkSummaryOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BenchmarkStatusOptions {
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BenchmarkPresetsOptions {
     json_output: bool,
     output_path: Option<String>,
@@ -3041,6 +3110,43 @@ struct BenchmarkArtifact {
     value: Value,
     created_at: Option<DateTime<Utc>>,
     modified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkStatusReport {
+    status: &'static str,
+    artifact_count: usize,
+    executable_count: usize,
+    passed_count: usize,
+    failed_count: usize,
+    timeout_count: usize,
+    recorded_count: usize,
+    other_count: usize,
+    smoke_count: usize,
+    meaningful_count: usize,
+    meaningful_executable_count: usize,
+    meaningful_passed_count: usize,
+    meaningful_failed_count: usize,
+    meaningful_timeout_count: usize,
+    latest_artifact: Option<BenchmarkStatusArtifact>,
+    latest_meaningful: Option<BenchmarkStatusArtifact>,
+    latest_meaningful_age_seconds: Option<i64>,
+    seen_meaningful_presets: Vec<String>,
+    missing_meaningful_presets: Vec<String>,
+    gaps: Vec<String>,
+    next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkStatusArtifact {
+    artifact_path: String,
+    created_at: Option<DateTime<Utc>>,
+    suite: String,
+    case_name: String,
+    preset: Option<String>,
+    status: String,
+    ran_by_deepcli: Option<bool>,
+    duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3125,6 +3231,7 @@ fn handle_benchmark(
         "run" | "exec" => handle_benchmark_run(workspace, config, registry, rest),
         "record" | "save" => handle_benchmark_record(workspace, config, registry, rest),
         "presets" | "preset" | "catalog" => handle_benchmark_presets(workspace, rest),
+        "status" | "health" | "doctor" => handle_benchmark_status(workspace, rest),
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
@@ -3134,7 +3241,7 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected presets, run, record, summary, list, show, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run, record, status, summary, list, show, or scorecard"
         ),
     }
 }
@@ -3386,6 +3493,7 @@ fn apply_benchmark_run_preset(
     if options.command.is_some() {
         bail!("`--preset` cannot be combined with `--command` or `-- <cmd>`");
     }
+    options.preset = Some(preset.name.to_string());
     options.command = Some(redact_sensitive_text(preset.command));
     if !suite_explicit {
         options.suite = preset.suite.to_string();
@@ -3648,6 +3756,7 @@ fn build_benchmark_record_json(
         "scorecard": scorecard,
         "nextActions": [
             "deepcli benchmark list --json",
+            "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
@@ -3727,6 +3836,7 @@ fn build_benchmark_run_json(
         "scorecard": scorecard,
         "nextActions": [
             "deepcli benchmark list --json",
+            "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
@@ -4070,6 +4180,432 @@ fn parse_benchmark_presets_options(args: &[String]) -> Result<BenchmarkPresetsOp
     Ok(options)
 }
 
+fn handle_benchmark_status(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_status_options(args)?;
+    let artifacts = load_benchmark_artifacts(workspace)?;
+    let report = build_benchmark_status_report(workspace, &artifacts, Utc::now());
+    let output = if options.json_output {
+        format_benchmark_status_json(workspace, &report)?
+    } else {
+        format_benchmark_status_text(workspace, &report)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_status_options(args: &[String]) -> Result<BenchmarkStatusOptions> {
+    let mut options = BenchmarkStatusOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark status option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn build_benchmark_status_report(
+    _workspace: &Path,
+    artifacts: &[BenchmarkArtifact],
+    now: DateTime<Utc>,
+) -> BenchmarkStatusReport {
+    let mut report = BenchmarkStatusReport {
+        status: "missing",
+        artifact_count: artifacts.len(),
+        executable_count: 0,
+        passed_count: 0,
+        failed_count: 0,
+        timeout_count: 0,
+        recorded_count: 0,
+        other_count: 0,
+        smoke_count: 0,
+        meaningful_count: 0,
+        meaningful_executable_count: 0,
+        meaningful_passed_count: 0,
+        meaningful_failed_count: 0,
+        meaningful_timeout_count: 0,
+        latest_artifact: artifacts.first().map(benchmark_status_artifact),
+        latest_meaningful: None,
+        latest_meaningful_age_seconds: None,
+        seen_meaningful_presets: benchmark_seen_meaningful_presets(artifacts),
+        missing_meaningful_presets: Vec::new(),
+        gaps: Vec::new(),
+        next_actions: benchmark_status_next_actions(),
+    };
+    report.missing_meaningful_presets = MEANINGFUL_BENCHMARK_PRESETS
+        .iter()
+        .filter(|preset| {
+            !report
+                .seen_meaningful_presets
+                .iter()
+                .any(|seen| seen == **preset)
+        })
+        .map(|preset| (*preset).to_string())
+        .collect();
+
+    for artifact in artifacts {
+        let status = benchmark_artifact_status(&artifact.value);
+        match status {
+            "passed" => {
+                report.executable_count += 1;
+                report.passed_count += 1;
+            }
+            "failed" => {
+                report.executable_count += 1;
+                report.failed_count += 1;
+            }
+            "timeout" => {
+                report.executable_count += 1;
+                report.timeout_count += 1;
+            }
+            "recorded" => report.recorded_count += 1,
+            _ => report.other_count += 1,
+        }
+
+        if benchmark_artifact_is_smoke(&artifact.value) {
+            report.smoke_count += 1;
+        }
+
+        if !benchmark_artifact_is_meaningful(&artifact.value) {
+            continue;
+        }
+        report.meaningful_count += 1;
+        match status {
+            "passed" => {
+                report.meaningful_executable_count += 1;
+                report.meaningful_passed_count += 1;
+            }
+            "failed" => {
+                report.meaningful_executable_count += 1;
+                report.meaningful_failed_count += 1;
+            }
+            "timeout" => {
+                report.meaningful_executable_count += 1;
+                report.meaningful_timeout_count += 1;
+            }
+            _ => {}
+        }
+        if report.latest_meaningful.is_none() && matches!(status, "passed" | "failed" | "timeout") {
+            report.latest_meaningful = Some(benchmark_status_artifact(artifact));
+        }
+    }
+
+    if let Some(latest) = &report.latest_meaningful {
+        report.latest_meaningful_age_seconds = latest
+            .created_at
+            .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0));
+    }
+
+    report.status = classify_benchmark_status(&report);
+    report.gaps = benchmark_status_gaps(&report);
+    report
+}
+
+fn benchmark_status_next_actions() -> Vec<String> {
+    vec![
+        "deepcli benchmark presets --json".to_string(),
+        "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
+        "deepcli benchmark summary --json".to_string(),
+        "deepcli scorecard --json".to_string(),
+    ]
+}
+
+fn classify_benchmark_status(report: &BenchmarkStatusReport) -> &'static str {
+    if report.artifact_count == 0 {
+        return "missing";
+    }
+    if report.meaningful_executable_count == 0 {
+        return "weak";
+    }
+    let Some(latest) = &report.latest_meaningful else {
+        return "weak";
+    };
+    match latest.status.as_str() {
+        "failed" | "timeout" => "failing",
+        "passed" => {
+            let stale_after_seconds = BENCHMARK_EVIDENCE_STALE_AFTER_DAYS * 24 * 60 * 60;
+            if report
+                .latest_meaningful_age_seconds
+                .is_some_and(|age| age > stale_after_seconds)
+            {
+                "stale"
+            } else {
+                "ready"
+            }
+        }
+        _ => "weak",
+    }
+}
+
+fn benchmark_status_gaps(report: &BenchmarkStatusReport) -> Vec<String> {
+    match report.status {
+        "missing" => vec![
+            "no local benchmark artifact found under .deepcli/benchmarks".to_string(),
+        ],
+        "weak" if report.smoke_count == report.artifact_count && report.artifact_count > 0 => {
+            vec![
+                "only smoke benchmark artifacts found; smoke validates plumbing but not product capability"
+                    .to_string(),
+            ]
+        }
+        "weak" if report.meaningful_count > 0 => vec![
+            "meaningful benchmark artifacts are record-only or unknown; no recent executable pass/fail evidence was found"
+                .to_string(),
+        ],
+        "weak" => vec![
+            "no meaningful benchmark preset evidence found; custom or record-only artifacts are not enough"
+                .to_string(),
+        ],
+        "failing" => {
+            let detail = report
+                .latest_meaningful
+                .as_ref()
+                .map(|artifact| {
+                    format!(
+                        "{} status={}",
+                        artifact.artifact_path, artifact.status
+                    )
+                })
+                .unwrap_or_else(|| "<unknown>".to_string());
+            vec![format!("latest meaningful benchmark failed or timed out: {detail}")]
+        }
+        "stale" => {
+            let detail = report
+                .latest_meaningful
+                .as_ref()
+                .map(|artifact| artifact.artifact_path.clone())
+                .unwrap_or_else(|| "<unknown>".to_string());
+            vec![format!(
+                "latest meaningful benchmark is older than {} days: {detail}",
+                BENCHMARK_EVIDENCE_STALE_AFTER_DAYS
+            )]
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn benchmark_status_artifact(artifact: &BenchmarkArtifact) -> BenchmarkStatusArtifact {
+    BenchmarkStatusArtifact {
+        artifact_path: artifact.relative_path.clone(),
+        created_at: artifact.created_at,
+        suite: artifact_string_field(&artifact.value, "suite", "<unknown>"),
+        case_name: artifact_string_field(&artifact.value, "case", "<unknown>"),
+        preset: benchmark_artifact_preset(&artifact.value).map(ToString::to_string),
+        status: benchmark_artifact_status(&artifact.value).to_string(),
+        ran_by_deepcli: benchmark_artifact_ran_by_deepcli(&artifact.value),
+        duration_ms: benchmark_artifact_duration_ms(&artifact.value),
+    }
+}
+
+fn benchmark_status_artifact_json(artifact: &Option<BenchmarkStatusArtifact>) -> Value {
+    let Some(artifact) = artifact else {
+        return Value::Null;
+    };
+    json!({
+        "artifactPath": artifact.artifact_path,
+        "createdAt": artifact.created_at.map(|time| time.to_rfc3339()),
+        "suite": artifact.suite,
+        "case": artifact.case_name,
+        "preset": artifact.preset,
+        "status": artifact.status,
+        "ranByDeepcli": artifact.ran_by_deepcli,
+        "durationMs": artifact.duration_ms,
+    })
+}
+
+fn format_benchmark_status_json(
+    workspace: &Path,
+    report: &BenchmarkStatusReport,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": BENCHMARK_STATUS_SCHEMA,
+        "status": report.status,
+        "workspace": workspace.display().to_string(),
+        "staleAfterDays": BENCHMARK_EVIDENCE_STALE_AFTER_DAYS,
+        "artifactCount": report.artifact_count,
+        "totals": {
+            "executableCount": report.executable_count,
+            "passedCount": report.passed_count,
+            "failedCount": report.failed_count,
+            "timeoutCount": report.timeout_count,
+            "recordedCount": report.recorded_count,
+            "otherCount": report.other_count,
+            "smokeCount": report.smoke_count,
+        },
+        "meaningful": {
+            "artifactCount": report.meaningful_count,
+            "executableCount": report.meaningful_executable_count,
+            "passedCount": report.meaningful_passed_count,
+            "failedCount": report.meaningful_failed_count,
+            "timeoutCount": report.meaningful_timeout_count,
+        },
+        "presetCoverage": {
+            "required": MEANINGFUL_BENCHMARK_PRESETS,
+            "seen": report.seen_meaningful_presets,
+            "missing": report.missing_meaningful_presets,
+        },
+        "latestArtifact": benchmark_status_artifact_json(&report.latest_artifact),
+        "latestMeaningfulArtifact": benchmark_status_artifact_json(&report.latest_meaningful),
+        "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
+        "gaps": report.gaps,
+        "nextActions": report.next_actions,
+    }))?)
+}
+
+fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport) -> String {
+    let mut lines = vec![
+        "deepcli benchmark status".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("status: {}", report.status),
+        format!("artifacts: {}", report.artifact_count),
+        format!(
+            "totals: executable={} passed={} failed={} timeout={} recorded={} smoke={}",
+            report.executable_count,
+            report.passed_count,
+            report.failed_count,
+            report.timeout_count,
+            report.recorded_count,
+            report.smoke_count
+        ),
+        format!(
+            "meaningful: artifacts={} executable={} passed={} failed={} timeout={}",
+            report.meaningful_count,
+            report.meaningful_executable_count,
+            report.meaningful_passed_count,
+            report.meaningful_failed_count,
+            report.meaningful_timeout_count
+        ),
+    ];
+    if let Some(latest) = &report.latest_artifact {
+        lines.push(format!(
+            "latest artifact: {} status={} preset={} case={}",
+            latest.artifact_path,
+            latest.status,
+            latest.preset.as_deref().unwrap_or("n/a"),
+            latest.case_name
+        ));
+    }
+    if let Some(latest) = &report.latest_meaningful {
+        let age = report
+            .latest_meaningful_age_seconds
+            .map(|value| format!("{value}s"))
+            .unwrap_or_else(|| "unknown".to_string());
+        lines.push(format!(
+            "latest meaningful: {} status={} age={}",
+            latest.artifact_path, latest.status, age
+        ));
+    }
+    lines.push(format!(
+        "meaningful presets seen: {}",
+        if report.seen_meaningful_presets.is_empty() {
+            "none".to_string()
+        } else {
+            report.seen_meaningful_presets.join(", ")
+        }
+    ));
+    if !report.gaps.is_empty() {
+        lines.push("gaps:".to_string());
+        lines.extend(report.gaps.iter().map(|gap| format!("  - {gap}")));
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(
+        report
+            .next_actions
+            .iter()
+            .map(|action| format!("  - {action}")),
+    );
+    lines.join("\n")
+}
+
+fn benchmark_seen_meaningful_presets(artifacts: &[BenchmarkArtifact]) -> Vec<String> {
+    MEANINGFUL_BENCHMARK_PRESETS
+        .iter()
+        .filter(|preset| {
+            artifacts.iter().any(|artifact| {
+                benchmark_artifact_canonical_preset(&artifact.value)
+                    .is_some_and(|seen| seen == **preset)
+            })
+        })
+        .map(|preset| (*preset).to_string())
+        .collect()
+}
+
+fn benchmark_artifact_is_smoke(value: &Value) -> bool {
+    benchmark_artifact_canonical_preset(value) == Some("smoke")
+        || artifact_string_field(value, "case", "").eq_ignore_ascii_case("smoke")
+}
+
+fn benchmark_artifact_is_meaningful(value: &Value) -> bool {
+    if let Some(preset) = benchmark_artifact_canonical_preset(value) {
+        return MEANINGFUL_BENCHMARK_PRESETS.contains(&preset);
+    }
+    benchmark_artifact_matches_meaningful_command(value)
+}
+
+fn benchmark_artifact_matches_meaningful_command(value: &Value) -> bool {
+    let case_name = artifact_string_field(value, "case", "");
+    let commands = benchmark_artifact_declared_commands(value);
+    BENCHMARK_PRESETS
+        .iter()
+        .filter(|preset| MEANINGFUL_BENCHMARK_PRESETS.contains(&preset.name))
+        .any(|preset| {
+            case_name == preset.case_name
+                && commands
+                    .iter()
+                    .any(|command| command.trim() == preset.command)
+        })
+}
+
+fn benchmark_artifact_declared_commands(value: &Value) -> Vec<String> {
+    value
+        .get("declaredCommands")
+        .and_then(Value::as_array)
+        .map(|commands| {
+            commands
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToString::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn benchmark_artifact_preset(value: &Value) -> Option<&str> {
+    value.get("preset").and_then(Value::as_str)
+}
+
+fn benchmark_artifact_canonical_preset(value: &Value) -> Option<&'static str> {
+    let preset = benchmark_artifact_preset(value)?;
+    benchmark_preset_by_name(preset)
+        .ok()
+        .map(|preset| preset.name)
+}
+
+fn benchmark_artifact_ran_by_deepcli(value: &Value) -> Option<bool> {
+    value
+        .get("execution")
+        .and_then(|execution| execution.get("ranByDeepcli"))
+        .and_then(Value::as_bool)
+}
+
 fn handle_benchmark_summary(workspace: &Path, args: &[String]) -> Result<String> {
     let options = parse_benchmark_summary_options(args)?;
     let mut artifacts = load_benchmark_artifacts(workspace)?;
@@ -4307,12 +4843,6 @@ fn resolve_benchmark_artifact(workspace: &Path, target: &str) -> Result<Benchmar
         .ok_or_else(|| anyhow::anyhow!("benchmark artifact `{target}` was not found"))
 }
 
-fn benchmark_artifact_count(workspace: &Path) -> usize {
-    load_benchmark_artifacts(workspace)
-        .map(|artifacts| artifacts.len())
-        .unwrap_or_default()
-}
-
 fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact]) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.list.v1",
@@ -4324,6 +4854,7 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
             "deepcli benchmark presets --json",
             "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             "deepcli benchmark record --json",
+            "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
@@ -4357,6 +4888,7 @@ fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
         "nextActions": [
             "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             "deepcli benchmark run --preset preflight-quick --json --fail-on-command",
+            "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli scorecard --json",
         ],
@@ -4395,6 +4927,7 @@ fn format_benchmark_presets_text(workspace: &Path) -> String {
     lines.push("next actions:".to_string());
     lines
         .push("  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
+    lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.join("\n")
 }
@@ -4559,6 +5092,7 @@ fn format_benchmark_summary_json(
         "nextActions": [
             "deepcli benchmark presets --json",
             "deepcli benchmark run --preset cargo-test --json --fail-on-command",
+            "deepcli benchmark status --json",
             "deepcli benchmark list --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
@@ -4708,6 +5242,7 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
             "  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
         );
         lines.push("  - deepcli benchmark record --json".to_string());
+        lines.push("  - deepcli benchmark status --json".to_string());
         lines.push("  - deepcli benchmark summary --json".to_string());
         lines.push("  - deepcli scorecard --json".to_string());
         return lines.join("\n");
@@ -4742,6 +5277,7 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
     }
     lines.push("next actions:".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
+    lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
     lines.join("\n")
@@ -4861,6 +5397,7 @@ fn format_benchmark_artifact_text(
     lines
         .push("  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
     lines.push("  - deepcli benchmark list --json".to_string());
+    lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
@@ -22374,6 +22911,12 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/benchmark status --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec!["status".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/benchmark summary --json").unwrap(),
             Some(SlashCommand::Benchmark {
                 args: vec!["summary".to_string(), "--json".to_string()]
@@ -23207,10 +23750,12 @@ mod tests {
         let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
         assert!(bench_help.contains("/benchmark - "));
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
+        assert!(bench_help.contains("deepcli.benchmark.status.v1"));
         assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
         assert!(bench_help.contains("/benchmark presets"));
         assert!(bench_help.contains("--preset <name>"));
         assert!(bench_help.contains("/benchmark record"));
+        assert!(bench_help.contains("/benchmark status"));
         assert!(bench_help.contains("/benchmark summary"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
@@ -23961,7 +24506,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(
-                |category| category["id"] == "benchmark_evidence" && category["status"] == "strong"
+                |category| category["id"] == "benchmark_evidence" && category["status"] != "strong"
             ));
         let artifact_path = value["artifactPath"].as_str().unwrap();
         assert!(dir.path().join(artifact_path).exists());
@@ -24085,6 +24630,201 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../presets.json").exists());
+    }
+
+    fn write_benchmark_status_test_artifact(
+        workspace: &std::path::Path,
+        file_name: &str,
+        created_at: DateTime<Utc>,
+        preset: &str,
+        case_name: &str,
+        status: &str,
+    ) -> String {
+        let relative_path = format!(".deepcli/benchmarks/{file_name}");
+        let artifact = json!({
+            "schema": BENCHMARK_ARTIFACT_SCHEMA,
+            "createdAt": created_at.to_rfc3339(),
+            "artifactPath": relative_path,
+            "suite": "product",
+            "case": case_name,
+            "preset": preset,
+            "declaredCommands": ["cargo test"],
+            "execution": {
+                "mode": "command",
+                "ranByDeepcli": true,
+                "status": status,
+                "commands": [{
+                    "command": "cargo test",
+                    "status": status,
+                    "exitCode": if status == "passed" { Some(0) } else { Some(1) },
+                    "timedOut": status == "timeout",
+                    "durationMs": 42,
+                    "stdoutChars": 2,
+                    "stderrChars": 0,
+                    "stdoutSample": "ok",
+                    "stderrSample": "",
+                    "error": Value::Null,
+                }],
+            },
+        });
+        let path = workspace.join(&relative_path);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, serde_json::to_string_pretty(&artifact).unwrap()).unwrap();
+        relative_path
+    }
+
+    #[test]
+    fn benchmark_status_classifies_missing_smoke_and_ready_evidence() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let missing = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let missing_value: Value = serde_json::from_str(&missing).unwrap();
+        assert_eq!(missing_value["schema"], BENCHMARK_STATUS_SCHEMA);
+        assert_eq!(missing_value["status"], "missing");
+        assert_eq!(missing_value["artifactCount"], 0);
+        assert_eq!(missing_value["meaningful"]["passedCount"], 0);
+        assert!(missing_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("run --preset cargo-test")));
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--output".into(), "../status.json".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+
+        handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "run".into(),
+                "--json".into(),
+                "--preset".into(),
+                "smoke".into(),
+                "--fail-on-command".into(),
+            ],
+        )
+        .unwrap();
+        let weak = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let weak_value: Value = serde_json::from_str(&weak).unwrap();
+        assert_eq!(weak_value["status"], "weak");
+        assert_eq!(weak_value["totals"]["smokeCount"], 1);
+        assert_eq!(weak_value["meaningful"]["executableCount"], 0);
+        assert!(weak_value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().contains("only smoke")));
+
+        let scorecard =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let scorecard_value: Value = serde_json::from_str(&scorecard).unwrap();
+        let benchmark_category = scorecard_value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["id"] == "benchmark_evidence")
+            .unwrap();
+        assert_ne!(benchmark_category["status"], "strong");
+        assert!(benchmark_category["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().contains("only smoke")));
+
+        let ready_path = write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            Utc::now() + chrono::Duration::seconds(1),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        let ready = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let ready_value: Value = serde_json::from_str(&ready).unwrap();
+        assert_eq!(ready_value["status"], "ready");
+        assert_eq!(ready_value["meaningful"]["passedCount"], 1);
+        assert_eq!(
+            ready_value["latestMeaningfulArtifact"]["artifactPath"],
+            ready_path
+        );
+    }
+
+    #[test]
+    fn benchmark_status_flags_failing_and_stale_meaningful_evidence() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            Utc::now() + chrono::Duration::seconds(1),
+            "cargo-test",
+            "cargo-test",
+            "failed",
+        );
+        let failing = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let failing_value: Value = serde_json::from_str(&failing).unwrap();
+        assert_eq!(failing_value["status"], "failing");
+        assert_eq!(failing_value["meaningful"]["failedCount"], 1);
+
+        let stale_dir = tempdir().unwrap();
+        write_benchmark_status_test_artifact(
+            stale_dir.path(),
+            "20000101T000000Z-product-cargo-test.json",
+            Utc::now() - chrono::Duration::days(BENCHMARK_EVIDENCE_STALE_AFTER_DAYS + 1),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        let stale = handle_benchmark(
+            stale_dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let stale_value: Value = serde_json::from_str(&stale).unwrap();
+        assert_eq!(stale_value["status"], "stale");
+        assert!(stale_value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().contains("older than")));
     }
 
     #[test]
