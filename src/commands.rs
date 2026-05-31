@@ -27,6 +27,7 @@ use crossterm::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -741,8 +742,8 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [run|record|list|show|scorecard] [--json] [--output path]",
-            summary: "Run, record, and inspect local benchmark evidence artifacts.",
+            listing: "/benchmark [run|record|summary|list|show|scorecard] [--json] [--output path]",
+            summary: "Run, record, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
                 "/benchmark --json",
@@ -750,18 +751,20 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark run --command <cmd> [--timeout seconds] [--fail-on-command] [--json]",
                 "/benchmark run -- <cmd>",
                 "/benchmark record [--json] [--suite name] [--case name] [--command <cmd>] [--notes text]",
+                "/benchmark summary [--json] [--limit n]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
             ],
             examples: &[
                 "/benchmark run --command 'cargo test' --json --fail-on-command",
                 "/benchmark run --timeout 30 -- printf ok",
+                "/benchmark summary --json",
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
                 "/benchmark show latest --json",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `list` and `show` inspect artifacts."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
         },
         CommandHelp {
             name: "/selftest",
@@ -2995,6 +2998,13 @@ struct BenchmarkListOptions {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BenchmarkSummaryOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BenchmarkShowOptions {
     json_output: bool,
@@ -3016,6 +3026,7 @@ impl Default for BenchmarkShowOptions {
 struct BenchmarkArtifact {
     relative_path: String,
     value: Value,
+    created_at: Option<DateTime<Utc>>,
     modified_at: Option<DateTime<Utc>>,
 }
 
@@ -3035,6 +3046,7 @@ fn handle_benchmark(
         "scorecard" | "rubric" => handle_scorecard(workspace, config, registry, rest.to_vec()),
         "run" | "exec" => handle_benchmark_run(workspace, config, registry, rest),
         "record" | "save" => handle_benchmark_record(workspace, config, registry, rest),
+        "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
         "latest" => {
@@ -3043,7 +3055,7 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected run, record, list, show, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected run, record, summary, list, show, or scorecard"
         ),
     }
 }
@@ -3465,6 +3477,7 @@ fn build_benchmark_record_json(
         "scorecard": scorecard,
         "nextActions": [
             "deepcli benchmark list --json",
+            "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
         ],
@@ -3542,6 +3555,7 @@ fn build_benchmark_run_json(
         "scorecard": scorecard,
         "nextActions": [
             "deepcli benchmark list --json",
+            "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
         ],
@@ -3844,6 +3858,65 @@ fn handle_benchmark_list(workspace: &Path, args: &[String]) -> Result<String> {
     Ok(output)
 }
 
+fn handle_benchmark_summary(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_summary_options(args)?;
+    let mut artifacts = load_benchmark_artifacts(workspace)?;
+    if let Some(limit) = options.limit {
+        artifacts.truncate(limit);
+    }
+    let summaries = build_benchmark_case_summaries(&artifacts);
+    let output = if options.json_output {
+        format_benchmark_summary_json(workspace, &artifacts, &summaries)?
+    } else {
+        format_benchmark_summary_text(workspace, artifacts.len(), &summaries)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_summary_options(args: &[String]) -> Result<BenchmarkSummaryOptions> {
+    let mut options = BenchmarkSummaryOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--limit" => {
+                options.limit = Some(parse_positive_usize(
+                    required_arg(args, index + 1, "limit")?,
+                    "limit",
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--limit=") => {
+                options.limit = Some(parse_positive_usize(
+                    value.trim_start_matches("--limit="),
+                    "limit",
+                )?);
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark summary option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
 fn parse_benchmark_list_options(args: &[String]) -> Result<BenchmarkListOptions> {
     let mut options = BenchmarkListOptions::default();
     let mut index = 0;
@@ -3971,12 +4044,27 @@ fn load_benchmark_artifacts(workspace: &Path) -> Result<Vec<BenchmarkArtifact>> 
         let modified_at = entry.metadata()?.modified().ok().map(DateTime::<Utc>::from);
         artifacts.push(BenchmarkArtifact {
             relative_path,
+            created_at: benchmark_artifact_created_at(&value),
             value,
             modified_at,
         });
     }
-    artifacts.sort_by(|left, right| right.relative_path.cmp(&left.relative_path));
+    artifacts.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.modified_at.cmp(&left.modified_at))
+            .then_with(|| right.relative_path.cmp(&left.relative_path))
+    });
     Ok(artifacts)
+}
+
+fn benchmark_artifact_created_at(value: &Value) -> Option<DateTime<Utc>> {
+    value
+        .get("createdAt")
+        .and_then(Value::as_str)
+        .and_then(|created_at| DateTime::parse_from_rfc3339(created_at).ok())
+        .map(|created_at| created_at.with_timezone(&Utc))
 }
 
 fn resolve_benchmark_artifact(workspace: &Path, target: &str) -> Result<BenchmarkArtifact> {
@@ -3984,7 +4072,7 @@ fn resolve_benchmark_artifact(workspace: &Path, target: &str) -> Result<Benchmar
     if target == "latest" {
         return artifacts.into_iter().next().ok_or_else(|| {
             anyhow::anyhow!(
-                "no benchmark artifacts found under .deepcli/benchmarks; run `/benchmark record` first"
+                "no benchmark artifacts found under .deepcli/benchmarks; run `/benchmark run --command 'cargo test' --json --fail-on-command` or `/benchmark record` first"
             )
         });
     }
@@ -4023,6 +4111,7 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
         "nextActions": [
             "deepcli benchmark run --command 'cargo test' --json --fail-on-command",
             "deepcli benchmark record --json",
+            "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
         ],
@@ -4036,8 +4125,302 @@ fn benchmark_artifact_summary_json(artifact: &BenchmarkArtifact) -> Value {
         "modifiedAt": artifact.modified_at.map(|time| time.to_rfc3339()),
         "suite": artifact.value.get("suite").cloned().unwrap_or(Value::Null),
         "case": artifact.value.get("case").cloned().unwrap_or(Value::Null),
+        "execution": benchmark_artifact_execution_summary_json(&artifact.value),
         "scorecard": artifact.value.get("scorecard").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn benchmark_artifact_execution_summary_json(value: &Value) -> Value {
+    let execution = value.get("execution").unwrap_or(&Value::Null);
+    if !execution.is_object() {
+        return Value::Null;
+    }
+    json!({
+        "mode": execution.get("mode").cloned().unwrap_or(Value::Null),
+        "status": execution.get("status").cloned().unwrap_or(Value::Null),
+        "ranByDeepcli": execution.get("ranByDeepcli").cloned().unwrap_or(Value::Null),
+        "durationMs": benchmark_artifact_duration_ms(value),
+    })
+}
+
+#[derive(Debug, Clone, Default)]
+struct BenchmarkCaseSummary {
+    suite: String,
+    case_name: String,
+    total: usize,
+    executable: usize,
+    passed: usize,
+    failed: usize,
+    timed_out: usize,
+    recorded: usize,
+    other: usize,
+    latest_status: String,
+    latest_artifact_path: String,
+    latest_created_at: String,
+    latest_duration_ms: Option<u64>,
+    average_duration_ms: Option<u64>,
+    min_duration_ms: Option<u64>,
+    max_duration_ms: Option<u64>,
+    duration_count: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BenchmarkCaseAccumulator {
+    summary: BenchmarkCaseSummary,
+    duration_sum_ms: u128,
+}
+
+fn build_benchmark_case_summaries(artifacts: &[BenchmarkArtifact]) -> Vec<BenchmarkCaseSummary> {
+    let mut cases: BTreeMap<(String, String), BenchmarkCaseAccumulator> = BTreeMap::new();
+    for artifact in artifacts {
+        let suite = artifact_string_field(&artifact.value, "suite", "<unknown>");
+        let case_name = artifact_string_field(&artifact.value, "case", "<unknown>");
+        let status = benchmark_artifact_status(&artifact.value).to_string();
+        let duration_ms = benchmark_artifact_duration_ms(&artifact.value);
+        let created_at = artifact_string_field(&artifact.value, "createdAt", "<unknown>");
+        let entry = cases
+            .entry((suite.clone(), case_name.clone()))
+            .or_insert_with(|| BenchmarkCaseAccumulator {
+                summary: BenchmarkCaseSummary {
+                    suite: suite.clone(),
+                    case_name: case_name.clone(),
+                    latest_status: status.clone(),
+                    latest_artifact_path: artifact.relative_path.clone(),
+                    latest_created_at: created_at.clone(),
+                    latest_duration_ms: duration_ms,
+                    ..BenchmarkCaseSummary::default()
+                },
+                duration_sum_ms: 0,
+            });
+        entry.summary.total += 1;
+        match status.as_str() {
+            "passed" => {
+                entry.summary.executable += 1;
+                entry.summary.passed += 1;
+            }
+            "failed" => {
+                entry.summary.executable += 1;
+                entry.summary.failed += 1;
+            }
+            "timeout" => {
+                entry.summary.executable += 1;
+                entry.summary.timed_out += 1;
+            }
+            "recorded" => {
+                entry.summary.recorded += 1;
+            }
+            _ => {
+                entry.summary.other += 1;
+            }
+        }
+        if let Some(duration_ms) = duration_ms {
+            entry.summary.duration_count += 1;
+            entry.duration_sum_ms += duration_ms as u128;
+            entry.summary.min_duration_ms = Some(
+                entry
+                    .summary
+                    .min_duration_ms
+                    .map_or(duration_ms, |current| current.min(duration_ms)),
+            );
+            entry.summary.max_duration_ms = Some(
+                entry
+                    .summary
+                    .max_duration_ms
+                    .map_or(duration_ms, |current| current.max(duration_ms)),
+            );
+        }
+    }
+    cases
+        .into_values()
+        .map(|mut case| {
+            if case.summary.duration_count > 0 {
+                case.summary.average_duration_ms =
+                    Some((case.duration_sum_ms / case.summary.duration_count as u128) as u64);
+            }
+            case.summary
+        })
+        .collect()
+}
+
+fn artifact_string_field(value: &Value, key: &str, fallback: &str) -> String {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn benchmark_artifact_status(value: &Value) -> &str {
+    value
+        .get("execution")
+        .and_then(|execution| execution.get("status"))
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+}
+
+fn benchmark_artifact_duration_ms(value: &Value) -> Option<u64> {
+    let commands = value
+        .get("execution")
+        .and_then(|execution| execution.get("commands"))
+        .and_then(Value::as_array)?;
+    let mut total = 0u64;
+    let mut found = false;
+    for command in commands {
+        if let Some(duration) = command.get("durationMs").and_then(Value::as_u64) {
+            total = total.saturating_add(duration);
+            found = true;
+        }
+    }
+    found.then_some(total)
+}
+
+fn format_benchmark_summary_json(
+    workspace: &Path,
+    artifacts: &[BenchmarkArtifact],
+    summaries: &[BenchmarkCaseSummary],
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.benchmark.summary.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "artifactCount": artifacts.len(),
+        "caseCount": summaries.len(),
+        "totals": benchmark_summary_totals_json(summaries),
+        "cases": summaries.iter().map(benchmark_case_summary_json).collect::<Vec<_>>(),
+        "nextActions": [
+            "deepcli benchmark run --command 'cargo test' --json --fail-on-command",
+            "deepcli benchmark list --json",
+            "deepcli benchmark show latest --json",
+            "deepcli scorecard --json",
+        ],
+    }))?)
+}
+
+fn benchmark_summary_totals_json(summaries: &[BenchmarkCaseSummary]) -> Value {
+    let total = summaries.iter().map(|case| case.total).sum::<usize>();
+    let executable = summaries.iter().map(|case| case.executable).sum::<usize>();
+    let passed = summaries.iter().map(|case| case.passed).sum::<usize>();
+    let failed = summaries.iter().map(|case| case.failed).sum::<usize>();
+    let timed_out = summaries.iter().map(|case| case.timed_out).sum::<usize>();
+    let recorded = summaries.iter().map(|case| case.recorded).sum::<usize>();
+    let other = summaries.iter().map(|case| case.other).sum::<usize>();
+    json!({
+        "total": total,
+        "executableCount": executable,
+        "passedCount": passed,
+        "failedCount": failed,
+        "timeoutCount": timed_out,
+        "recordedCount": recorded,
+        "otherCount": other,
+        "passRatePercent": benchmark_pass_rate_percent(passed, executable),
+    })
+}
+
+fn benchmark_case_summary_json(summary: &BenchmarkCaseSummary) -> Value {
+    json!({
+        "suite": summary.suite,
+        "case": summary.case_name,
+        "total": summary.total,
+        "executableCount": summary.executable,
+        "passedCount": summary.passed,
+        "failedCount": summary.failed,
+        "timeoutCount": summary.timed_out,
+        "recordedCount": summary.recorded,
+        "otherCount": summary.other,
+        "passRatePercent": benchmark_pass_rate_percent(summary.passed, summary.executable),
+        "latest": {
+            "status": summary.latest_status,
+            "artifactPath": summary.latest_artifact_path,
+            "createdAt": summary.latest_created_at,
+            "durationMs": summary.latest_duration_ms,
+        },
+        "duration": {
+            "count": summary.duration_count,
+            "averageMs": summary.average_duration_ms,
+            "minMs": summary.min_duration_ms,
+            "maxMs": summary.max_duration_ms,
+        },
+    })
+}
+
+fn benchmark_pass_rate_percent(passed: usize, executable: usize) -> Value {
+    if executable == 0 {
+        Value::Null
+    } else {
+        json!(((passed as u64) * 100 + (executable as u64 / 2)) / executable as u64)
+    }
+}
+
+fn format_benchmark_summary_text(
+    workspace: &Path,
+    artifact_count: usize,
+    summaries: &[BenchmarkCaseSummary],
+) -> String {
+    let mut lines = vec![
+        "deepcli benchmark summary".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("artifacts: {artifact_count}"),
+        format!("case count: {}", summaries.len()),
+    ];
+    if summaries.is_empty() {
+        lines.push("history: none".to_string());
+        lines.push("next actions:".to_string());
+        lines.push(
+            "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
+        );
+        lines.push("  - deepcli benchmark list --json".to_string());
+        return lines.join("\n");
+    }
+    lines.push("cases:".to_string());
+    for summary in summaries {
+        let pass_rate = benchmark_pass_rate_percent(summary.passed, summary.executable)
+            .as_u64()
+            .map(|rate| format!("{rate}%"))
+            .unwrap_or_else(|| "n/a".to_string());
+        lines.push(format!("  - {}/{}", summary.suite, summary.case_name));
+        lines.push(format!(
+            "    total={} executable={} passed={} failed={} timeout={} recorded={} pass_rate={}",
+            summary.total,
+            summary.executable,
+            summary.passed,
+            summary.failed,
+            summary.timed_out,
+            summary.recorded,
+            pass_rate
+        ));
+        lines.push(format!(
+            "    latest={} duration={}ms artifact={}",
+            summary.latest_status,
+            summary
+                .latest_duration_ms
+                .map(|duration| duration.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            summary.latest_artifact_path
+        ));
+        if summary.duration_count > 0 {
+            lines.push(format!(
+                "    duration_avg={}ms min={}ms max={}ms samples={}",
+                summary
+                    .average_duration_ms
+                    .map(|duration| duration.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+                summary
+                    .min_duration_ms
+                    .map(|duration| duration.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+                summary
+                    .max_duration_ms
+                    .map(|duration| duration.to_string())
+                    .unwrap_or_else(|| "n/a".to_string()),
+                summary.duration_count
+            ));
+        }
+    }
+    lines.push("next actions:".to_string());
+    lines.push("  - deepcli benchmark list --json".to_string());
+    lines.push("  - deepcli benchmark show latest --json".to_string());
+    lines.push("  - deepcli scorecard --json".to_string());
+    lines.join("\n")
 }
 
 fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact]) -> String {
@@ -4053,6 +4436,7 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
             "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
         );
         lines.push("  - deepcli benchmark record --json".to_string());
+        lines.push("  - deepcli benchmark summary --json".to_string());
         lines.push("  - deepcli scorecard --json".to_string());
         return lines.join("\n");
     }
@@ -4085,6 +4469,7 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
         ));
     }
     lines.push("next actions:".to_string());
+    lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
     lines.join("\n")
@@ -4204,6 +4589,7 @@ fn format_benchmark_artifact_text(
         "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
     );
     lines.push("  - deepcli benchmark list --json".to_string());
+    lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
     lines.join("\n")
@@ -21699,6 +22085,12 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/benchmark summary --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec!["summary".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/selftest --json --fail-on-issues").unwrap(),
             Some(SlashCommand::Selftest {
                 args: vec!["--json".to_string(), "--fail-on-issues".to_string()]
@@ -22526,7 +22918,9 @@ mod tests {
         let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
         assert!(bench_help.contains("/benchmark - "));
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
+        assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
         assert!(bench_help.contains("/benchmark record"));
+        assert!(bench_help.contains("/benchmark summary"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
         assert!(selftest_help.contains("/selftest - "));
@@ -23364,6 +23758,14 @@ mod tests {
         assert_eq!(list_value["schema"], "deepcli.benchmark.list.v1");
         assert_eq!(list_value["artifactCount"], 1);
         assert_eq!(list_value["artifacts"][0]["artifactPath"], artifact_path);
+        assert!(list_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("benchmark summary --json")));
 
         let show = handle_benchmark(
             dir.path(),
@@ -23386,6 +23788,122 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("no local benchmark artifact found")));
+    }
+
+    #[test]
+    fn benchmark_summary_aggregates_history() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "run".into(),
+                "--json".into(),
+                "--suite".into(),
+                "local".into(),
+                "--case".into(),
+                "echo".into(),
+                "--command".into(),
+                "printf ok".into(),
+                "--timeout".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "run".into(),
+                "--json".into(),
+                "--suite".into(),
+                "local".into(),
+                "--case".into(),
+                "echo".into(),
+                "--command".into(),
+                "exit 4".into(),
+                "--timeout".into(),
+                "5".into(),
+            ],
+        )
+        .unwrap();
+        handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "record".into(),
+                "--json".into(),
+                "--suite".into(),
+                "product".into(),
+                "--case".into(),
+                "scorecard".into(),
+            ],
+        )
+        .unwrap();
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["summary".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.benchmark.summary.v1");
+        assert_eq!(value["artifactCount"], 3);
+        assert_eq!(value["caseCount"], 2);
+        assert_eq!(value["totals"]["total"], 3);
+        assert_eq!(value["totals"]["executableCount"], 2);
+        assert_eq!(value["totals"]["passedCount"], 1);
+        assert_eq!(value["totals"]["failedCount"], 1);
+        assert_eq!(value["totals"]["recordedCount"], 1);
+        assert_eq!(value["totals"]["passRatePercent"], 50);
+        let cases = value["cases"].as_array().unwrap();
+        let local_echo = cases
+            .iter()
+            .find(|case| case["suite"] == "local" && case["case"] == "echo")
+            .unwrap();
+        assert_eq!(local_echo["total"], 2);
+        assert_eq!(local_echo["executableCount"], 2);
+        assert_eq!(local_echo["passedCount"], 1);
+        assert_eq!(local_echo["failedCount"], 1);
+        assert_eq!(local_echo["passRatePercent"], 50);
+        assert!(local_echo["duration"]["averageMs"].is_u64());
+        assert!(local_echo["duration"]["minMs"].is_u64());
+        assert!(local_echo["duration"]["maxMs"].is_u64());
+        assert_eq!(local_echo["latest"]["status"], "failed");
+        assert!(local_echo["latest"]["artifactPath"]
+            .as_str()
+            .unwrap()
+            .starts_with(".deepcli/benchmarks/"));
+
+        let product_scorecard = cases
+            .iter()
+            .find(|case| case["suite"] == "product" && case["case"] == "scorecard")
+            .unwrap();
+        assert_eq!(product_scorecard["recordedCount"], 1);
+        assert!(product_scorecard["passRatePercent"].is_null());
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "summary".into(),
+                "--output".into(),
+                "../summary.json".into(),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../summary.json").exists());
     }
 
     #[test]
