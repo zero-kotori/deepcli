@@ -748,7 +748,7 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [presets|run|record|status|gate|summary|list|show|scorecard] [--json] [--output path]",
+            listing: "/benchmark [presets|run|record|status|gate|summary|list|show|clean|scorecard] [--json] [--output path]",
             summary: "Run, record, assess, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
@@ -764,6 +764,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark summary [--json] [--limit n]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
+                "/benchmark clean [--json] [--dry-run|--force] [--keep n] [--older-than-days n] [--all]",
             ],
             examples: &[
                 "/benchmark presets --json",
@@ -776,9 +777,11 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
                 "/benchmark show latest --json",
+                "/benchmark clean --dry-run --keep 20 --json",
+                "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
         },
         CommandHelp {
             name: "/round",
@@ -3440,6 +3443,16 @@ struct BenchmarkSummaryOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BenchmarkCleanupOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    force: bool,
+    keep: Option<usize>,
+    older_than_days: Option<i64>,
+    all: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BenchmarkStatusOptions {
     json_output: bool,
     output_path: Option<String>,
@@ -3607,13 +3620,14 @@ fn handle_benchmark(
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
+        "clean" | "cleanup" | "prune" => handle_benchmark_cleanup(workspace, rest),
         "latest" => {
             let mut show_args = vec!["latest".to_string()];
             show_args.extend(rest.iter().cloned());
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected presets, run, record, status, gate, summary, list, show, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run, record, status, gate, summary, list, show, clean, or scorecard"
         ),
     }
 }
@@ -4713,6 +4727,7 @@ fn benchmark_status_next_actions() -> Vec<String> {
         "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
         "deepcli benchmark gate --json".to_string(),
         "deepcli benchmark summary --json".to_string(),
+        "deepcli benchmark clean --dry-run --json".to_string(),
         "deepcli scorecard --json".to_string(),
     ]
 }
@@ -5098,6 +5113,170 @@ fn parse_benchmark_list_options(args: &[String]) -> Result<BenchmarkListOptions>
     Ok(options)
 }
 
+fn handle_benchmark_cleanup(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_cleanup_options(args)?;
+    let artifacts = load_benchmark_artifacts(workspace)?;
+    let candidates = benchmark_cleanup_candidates(&artifacts, &options, Utc::now());
+    let mut deleted = Vec::new();
+    if options.force {
+        for artifact in &candidates {
+            let path = benchmark_artifact_workspace_path(workspace, artifact)?;
+            if path.is_file() {
+                fs::remove_file(&path)
+                    .with_context(|| format!("failed to remove {}", path.display()))?;
+                deleted.push(artifact.relative_path.clone());
+            }
+        }
+    }
+    let output = if options.json_output {
+        format_benchmark_cleanup_json(workspace, &options, &artifacts, &candidates, &deleted)?
+    } else {
+        format_benchmark_cleanup_text(workspace, &options, &artifacts, &candidates, &deleted)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_cleanup_options(args: &[String]) -> Result<BenchmarkCleanupOptions> {
+    let mut options = BenchmarkCleanupOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--dry-run" => {
+                options.force = false;
+                index += 1;
+            }
+            "--force" | "--delete" => {
+                options.force = true;
+                index += 1;
+            }
+            "--keep" => {
+                options.keep = Some(parse_nonnegative_usize(
+                    required_arg(args, index + 1, "keep count")?,
+                    "keep",
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--keep=") => {
+                options.keep = Some(parse_nonnegative_usize(
+                    value.trim_start_matches("--keep="),
+                    "keep",
+                )?);
+                index += 1;
+            }
+            "--older-than-days" | "--older-than" => {
+                options.older_than_days = Some(parse_nonnegative_i64(
+                    required_arg(args, index + 1, "days")?,
+                    "older-than-days",
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--older-than-days=") => {
+                options.older_than_days = Some(parse_nonnegative_i64(
+                    value.trim_start_matches("--older-than-days="),
+                    "older-than-days",
+                )?);
+                index += 1;
+            }
+            value if value.starts_with("--older-than=") => {
+                options.older_than_days = Some(parse_nonnegative_i64(
+                    value.trim_start_matches("--older-than="),
+                    "older-than-days",
+                )?);
+                index += 1;
+            }
+            "--all" => {
+                options.all = true;
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark clean option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_nonnegative_usize(raw: &str, label: &str) -> Result<usize> {
+    let value = raw
+        .parse::<usize>()
+        .with_context(|| format!("invalid {label} `{raw}`"))?;
+    Ok(value)
+}
+
+fn parse_nonnegative_i64(raw: &str, label: &str) -> Result<i64> {
+    let value = raw
+        .parse::<i64>()
+        .with_context(|| format!("invalid {label} `{raw}`"))?;
+    if value < 0 {
+        bail!("{label} must be zero or greater");
+    }
+    Ok(value)
+}
+
+fn benchmark_cleanup_keep_count(options: &BenchmarkCleanupOptions) -> usize {
+    if options.all && options.keep.is_none() {
+        0
+    } else {
+        options.keep.unwrap_or(20)
+    }
+}
+
+fn benchmark_cleanup_candidates<'a>(
+    artifacts: &'a [BenchmarkArtifact],
+    options: &BenchmarkCleanupOptions,
+    now: DateTime<Utc>,
+) -> Vec<&'a BenchmarkArtifact> {
+    let keep = benchmark_cleanup_keep_count(options);
+    artifacts
+        .iter()
+        .enumerate()
+        .filter(|(index, artifact)| {
+            if *index < keep {
+                return false;
+            }
+            if let Some(days) = options.older_than_days {
+                return artifact
+                    .created_at
+                    .map(|created_at| now.signed_duration_since(created_at).num_days() >= days)
+                    .unwrap_or(false);
+            }
+            true
+        })
+        .map(|(_, artifact)| artifact)
+        .collect()
+}
+
+fn benchmark_artifact_workspace_path(
+    workspace: &Path,
+    artifact: &BenchmarkArtifact,
+) -> Result<PathBuf> {
+    let relative = artifact.relative_path.as_str();
+    if !relative.starts_with(".deepcli/benchmarks/")
+        || relative.contains("..")
+        || relative.contains('\\')
+    {
+        bail!("benchmark artifact path is outside .deepcli/benchmarks: {relative}");
+    }
+    Ok(workspace.join(relative))
+}
+
 fn handle_benchmark_show(workspace: &Path, args: &[String]) -> Result<String> {
     let options = parse_benchmark_show_options(args)?;
     let artifact = resolve_benchmark_artifact(workspace, &options.target)?;
@@ -5249,9 +5428,57 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
             "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
+            "deepcli benchmark clean --dry-run --json",
             "deepcli scorecard --json",
         ],
     }))?)
+}
+
+fn format_benchmark_cleanup_json(
+    workspace: &Path,
+    options: &BenchmarkCleanupOptions,
+    artifacts: &[BenchmarkArtifact],
+    candidates: &[&BenchmarkArtifact],
+    deleted: &[String],
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.benchmark.cleanup.v1",
+        "status": benchmark_cleanup_status(options, candidates, deleted),
+        "workspace": workspace.display().to_string(),
+        "dryRun": !options.force,
+        "force": options.force,
+        "keep": benchmark_cleanup_keep_count(options),
+        "olderThanDays": options.older_than_days,
+        "all": options.all,
+        "artifactCount": artifacts.len(),
+        "candidateCount": candidates.len(),
+        "deletedCount": deleted.len(),
+        "candidates": candidates
+            .iter()
+            .map(|artifact| benchmark_artifact_summary_json(artifact))
+            .collect::<Vec<_>>(),
+        "deleted": deleted,
+        "nextActions": benchmark_cleanup_next_actions(options, candidates.is_empty()),
+        "report": format_benchmark_cleanup_text(workspace, options, artifacts, candidates, deleted),
+    }))?)
+}
+
+fn benchmark_cleanup_status(
+    options: &BenchmarkCleanupOptions,
+    candidates: &[&BenchmarkArtifact],
+    deleted: &[String],
+) -> &'static str {
+    if candidates.is_empty() {
+        "empty"
+    } else if options.force {
+        if deleted.is_empty() {
+            "unchanged"
+        } else {
+            "deleted"
+        }
+    } else {
+        "planned"
+    }
 }
 
 fn benchmark_artifact_summary_json(artifact: &BenchmarkArtifact) -> Value {
@@ -5282,6 +5509,7 @@ fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
             "deepcli benchmark run --preset preflight-quick --json --fail-on-command",
             "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
+            "deepcli benchmark clean --dry-run --json",
             "deepcli scorecard --json",
         ],
     }))?)
@@ -5321,6 +5549,7 @@ fn format_benchmark_presets_text(workspace: &Path) -> String {
         .push("  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
     lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
+    lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
     lines.join("\n")
 }
 
@@ -5636,6 +5865,7 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
         lines.push("  - deepcli benchmark record --json".to_string());
         lines.push("  - deepcli benchmark status --json".to_string());
         lines.push("  - deepcli benchmark summary --json".to_string());
+        lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
         lines.push("  - deepcli scorecard --json".to_string());
         return lines.join("\n");
     }
@@ -5671,8 +5901,101 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
+    lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
     lines.join("\n")
+}
+
+fn format_benchmark_cleanup_text(
+    workspace: &Path,
+    options: &BenchmarkCleanupOptions,
+    artifacts: &[BenchmarkArtifact],
+    candidates: &[&BenchmarkArtifact],
+    deleted: &[String],
+) -> String {
+    let mut lines = vec![
+        "deepcli benchmark cleanup".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("mode: {}", if options.force { "delete" } else { "dry-run" }),
+        format!("artifacts: {}", artifacts.len()),
+        format!("keep: {}", benchmark_cleanup_keep_count(options)),
+        format!("candidates: {}", candidates.len()),
+        format!("deleted: {}", deleted.len()),
+    ];
+    if let Some(days) = options.older_than_days {
+        lines.push(format!("older-than-days: {days}"));
+    }
+    if candidates.is_empty() {
+        lines.push("candidate artifacts: none".to_string());
+    } else {
+        lines.push("candidate artifacts:".to_string());
+        for artifact in candidates {
+            lines.push(format!("  - {}", artifact.relative_path));
+            lines.push(format!(
+                "    created: {} status={} preset={}",
+                artifact
+                    .value
+                    .get("createdAt")
+                    .and_then(Value::as_str)
+                    .unwrap_or("<unknown>"),
+                benchmark_artifact_status(&artifact.value),
+                benchmark_artifact_preset(&artifact.value).unwrap_or("<none>")
+            ));
+        }
+    }
+    if !deleted.is_empty() {
+        lines.push("deleted artifacts:".to_string());
+        lines.extend(deleted.iter().map(|path| format!("  - {path}")));
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(
+        benchmark_cleanup_next_actions(options, candidates.is_empty())
+            .into_iter()
+            .map(|action| format!("  - {action}")),
+    );
+    lines.join("\n")
+}
+
+fn benchmark_cleanup_next_actions(options: &BenchmarkCleanupOptions, empty: bool) -> Vec<String> {
+    if empty {
+        return vec![
+            "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
+            "deepcli benchmark status --json".to_string(),
+        ];
+    }
+    if options.force {
+        vec![
+            "deepcli benchmark status --json".to_string(),
+            "deepcli benchmark summary --json".to_string(),
+            "deepcli round --json".to_string(),
+        ]
+    } else {
+        vec![
+            benchmark_cleanup_force_command(options),
+            "deepcli benchmark list --json".to_string(),
+            "deepcli benchmark status --json".to_string(),
+        ]
+    }
+}
+
+fn benchmark_cleanup_force_command(options: &BenchmarkCleanupOptions) -> String {
+    let mut command = vec![
+        "deepcli".to_string(),
+        "benchmark".to_string(),
+        "clean".to_string(),
+        "--force".to_string(),
+    ];
+    if options.all && options.keep.is_none() {
+        command.push("--all".to_string());
+    } else {
+        command.push("--keep".to_string());
+        command.push(benchmark_cleanup_keep_count(options).to_string());
+    }
+    if let Some(days) = options.older_than_days {
+        command.push("--older-than-days".to_string());
+        command.push(days.to_string());
+    }
+    command.join(" ")
 }
 
 fn format_benchmark_artifact_text(
@@ -23335,6 +23658,16 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/benchmark clean --dry-run --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec![
+                    "clean".to_string(),
+                    "--dry-run".to_string(),
+                    "--json".to_string()
+                ]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/selftest --json --fail-on-issues").unwrap(),
             Some(SlashCommand::Selftest {
                 args: vec!["--json".to_string(), "--fail-on-issues".to_string()]
@@ -24164,6 +24497,7 @@ mod tests {
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
         assert!(bench_help.contains("deepcli.benchmark.status.v1"));
         assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
+        assert!(bench_help.contains("deepcli.benchmark.cleanup.v1"));
         assert!(bench_help.contains("/benchmark presets"));
         assert!(bench_help.contains("--preset <name>"));
         assert!(bench_help.contains("/benchmark record"));
@@ -24172,6 +24506,8 @@ mod tests {
         assert!(bench_help.contains("--fail-on-not-ready"));
         assert!(bench_help.contains("non-zero exit"));
         assert!(bench_help.contains("/benchmark summary"));
+        assert!(bench_help.contains("/benchmark clean"));
+        assert!(bench_help.contains("--keep n"));
 
         let round_help = CommandRouter::help_for(&["round".to_string()]).unwrap();
         assert!(round_help.contains("/round - "));
@@ -25365,6 +25701,132 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_cleanup_previews_and_deletes_old_artifacts() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let now = Utc::now();
+
+        let newest_path = write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990103T000000Z-product-cargo-test.json",
+            now + chrono::Duration::seconds(3),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        let old_path = write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            now + chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        let oldest_path = write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990101T000000Z-product-scorecard.json",
+            now + chrono::Duration::seconds(1),
+            "scorecard",
+            "scorecard",
+            "failed",
+        );
+
+        let dry_run = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "clean".into(),
+                "--json".into(),
+                "--dry-run".into(),
+                "--keep".into(),
+                "1".into(),
+            ],
+        )
+        .unwrap();
+        let dry_value: Value = serde_json::from_str(&dry_run).unwrap();
+        assert_eq!(dry_value["schema"], "deepcli.benchmark.cleanup.v1");
+        assert_eq!(dry_value["status"], "planned");
+        assert_eq!(dry_value["dryRun"], true);
+        assert_eq!(dry_value["artifactCount"], 3);
+        assert_eq!(dry_value["candidateCount"], 2);
+        assert_eq!(dry_value["deletedCount"], 0);
+        assert_eq!(dry_value["candidates"][0]["artifactPath"], old_path);
+        assert_eq!(dry_value["candidates"][1]["artifactPath"], oldest_path);
+        assert!(dry_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("benchmark clean --force --keep 1")));
+        assert!(dir.path().join(&newest_path).exists());
+        assert!(dir.path().join(&old_path).exists());
+        assert!(dir.path().join(&oldest_path).exists());
+
+        let forced = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "clean".into(),
+                "--json".into(),
+                "--keep".into(),
+                "1".into(),
+                "--force".into(),
+            ],
+        )
+        .unwrap();
+        let forced_value: Value = serde_json::from_str(&forced).unwrap();
+        assert_eq!(forced_value["status"], "deleted");
+        assert_eq!(forced_value["dryRun"], false);
+        assert_eq!(forced_value["deletedCount"], 2);
+        assert!(dir.path().join(&newest_path).exists());
+        assert!(!dir.path().join(&old_path).exists());
+        assert!(!dir.path().join(&oldest_path).exists());
+
+        let status = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let status_value: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status_value["artifactCount"], 1);
+        assert_eq!(status_value["latestArtifact"]["artifactPath"], newest_path);
+
+        let empty = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "clean".into(),
+                "--json".into(),
+                "--keep".into(),
+                "20".into(),
+            ],
+        )
+        .unwrap();
+        let empty_value: Value = serde_json::from_str(&empty).unwrap();
+        assert_eq!(empty_value["status"], "empty");
+        assert_eq!(empty_value["candidateCount"], 0);
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["clean".into(), "--output".into(), "../cleanup.json".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../cleanup.json").exists());
+    }
+
+    #[test]
     fn benchmark_record_list_show_and_scorecard_are_structured() {
         let dir = tempdir().unwrap();
         let config = AppConfig::default();
@@ -25420,6 +25882,14 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("benchmark summary --json")));
+        assert!(list_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("benchmark clean --dry-run")));
 
         let show = handle_benchmark(
             dir.path(),
