@@ -239,6 +239,15 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
     let scorecard = run_wrapper(&["scorecard", "--json"]);
     assert!(ends_with_args(&scorecard.args, &["/scorecard", "--json"]));
 
+    let round = run_wrapper(&["round", "--json"]);
+    assert!(ends_with_args(&round.args, &["/round", "--json"]));
+
+    let iterate = run_wrapper(&["iterate", "--json", "--fail-on-gaps"]);
+    assert!(ends_with_args(
+        &iterate.args,
+        &["/iterate", "--json", "--fail-on-gaps"]
+    ));
+
     let benchmark = run_wrapper(&["benchmark", "--fail-below", "85"]);
     assert!(ends_with_args(
         &benchmark.args,
@@ -988,6 +997,11 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&scorecard.args, "--provider", "deepseek"));
     assert!(has_adjacent(&scorecard.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&scorecard.args, &["/scorecard", "--json"]));
+
+    let round = run_wrapper(&["deepseek", "round", "--json"]);
+    assert!(has_adjacent(&round.args, "--provider", "deepseek"));
+    assert!(has_adjacent(&round.args, "--model", "deepseek-v4-pro"));
+    assert!(ends_with_args(&round.args, &["/round", "--json"]));
 
     let benchmark_status = run_wrapper(&["deepseek", "benchmark", "status", "--json"]);
     assert!(has_adjacent(

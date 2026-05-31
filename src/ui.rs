@@ -5393,8 +5393,31 @@ fn prioritize_running_safe_suggestions(
             other.push(suggestion);
         }
     }
+    running_safe.sort_by_key(|summary| running_safe_palette_priority(summary.name));
     running_safe.extend(other);
     running_safe
+}
+
+fn running_safe_palette_priority(name: &str) -> usize {
+    match name {
+        "/help" => 0,
+        "/version" => 1,
+        "/status" => 2,
+        "/usage" => 3,
+        "/health" => 4,
+        "/logs" => 5,
+        "/trace" => 6,
+        "/stop" => 7,
+        "/quit" => 8,
+        "/selftest" => 9,
+        "/preflight" => 10,
+        "/completion" => 11,
+        "/round" => 12,
+        "/scorecard" => 13,
+        "/benchmark" => 14,
+        "/recipes" => 15,
+        _ => 100,
+    }
 }
 
 fn slash_command_query(input: &str) -> Option<String> {
@@ -6489,6 +6512,9 @@ mod tests {
         assert!(running_suggestions
             .iter()
             .any(|summary| summary.name == "/logs" && summary.running_safe));
+        assert!(running_suggestions
+            .iter()
+            .any(|summary| summary.name == "/round" && summary.running_safe));
         assert!(running_suggestions
             .iter()
             .any(|summary| summary.name == "/selftest" && summary.running_safe));

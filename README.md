@@ -87,6 +87,7 @@ deepcli logs --limit 80
 deepcli privacy --json
 deepcli recipes release --json
 deepcli scorecard --json
+deepcli round --json
 deepcli preflight --json
 deepcli accept --json
 deepcli gate --json
@@ -102,6 +103,8 @@ deepcli recipes
 deepcli recipes release --json
 deepcli playbook support
 deepcli scorecard --json
+deepcli round --json
+deepcli round --json --fail-on-gaps
 deepcli benchmark --fail-below 85
 deepcli benchmark presets --json
 deepcli benchmark status --json
@@ -114,7 +117,7 @@ deepcli benchmark summary --json
 
 `recipes` / `playbook` 是本地只读入口，用于按 start、code、debug、release、support、environment、shell 等主题查看可复制命令，不创建 session、不调用 Provider。
 
-`scorecard` 是本地只读产品能力评分入口，用于按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据查看 SOTA 差距；支持稳定 `deepcli.scorecard.v1` JSON、workspace 内 `--output` 和 `--fail-below` 门禁。`benchmark` 保留 scorecard 兼容参数，同时支持 `presets/run/record/status/gate/summary/list/show` 在 `.deepcli/benchmarks/` 下发现推荐 workload、执行、记录、评估证据质量、门禁、汇总和查看稳定 `deepcli.benchmark.record.v1` / `deepcli.benchmark.status.v1` / `deepcli.benchmark.summary.v1` 证据 artifact；`status` 会把证据分为 missing、weak、failing、stale 或 ready，避免只有 smoke artifact 也被当作强 benchmark；`gate` 等价于 `status --fail-on-not-ready`，便于 CI 或发布脚本在证据不足时返回非零；该目录默认本地忽略，不会误提交凭据或机器路径。
+`scorecard` 是本地只读产品能力评分入口，用于按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据查看 SOTA 差距；支持稳定 `deepcli.scorecard.v1` JSON、workspace 内 `--output` 和 `--fail-below` 门禁。`round` 聚合 scorecard 与 benchmark status，输出稳定 `deepcli.round.v1`，用于每轮产品设计/工程实现后的迭代复盘和下一步动作判断；`--fail-on-gaps` 可让 CI 在本轮证据未 ready 时失败。`benchmark` 保留 scorecard 兼容参数，同时支持 `presets/run/record/status/gate/summary/list/show` 在 `.deepcli/benchmarks/` 下发现推荐 workload、执行、记录、评估证据质量、门禁、汇总和查看稳定 `deepcli.benchmark.record.v1` / `deepcli.benchmark.status.v1` / `deepcli.benchmark.summary.v1` 证据 artifact；`status` 会把证据分为 missing、weak、failing、stale 或 ready，避免只有 smoke artifact 也被当作强 benchmark；`gate` 等价于 `status --fail-on-not-ready`，便于 CI 或发布脚本在证据不足时返回非零；该目录默认本地忽略，不会误提交凭据或机器路径。
 
 准备本地环境：
 
@@ -151,6 +154,7 @@ git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor --quick --json
 ./scripts/deepcli scorecard --json
+./scripts/deepcli round --json
 ./scripts/deepcli benchmark list --json
 ./scripts/deepcli benchmark status --json
 ./scripts/deepcli benchmark gate --json

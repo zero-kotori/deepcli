@@ -13,6 +13,7 @@ fn mvp_slash_commands_are_registered() {
         "/recipes",
         "/scorecard",
         "/benchmark",
+        "/round",
         "/selftest",
         "/preflight",
         "/completion",

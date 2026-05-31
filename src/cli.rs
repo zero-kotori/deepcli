@@ -358,6 +358,9 @@ fn top_level_entries() -> &'static [&'static str] {
         "benchmark",
         "bench",
         "sota",
+        "round",
+        "iterate",
+        "iteration",
         "selftest",
         "preflight",
         "release-check",
@@ -561,6 +564,9 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "benchmark"
             | "bench"
             | "sota"
+            | "round"
+            | "iterate"
+            | "iteration"
             | "selftest"
             | "preflight"
             | "release-check"
@@ -675,6 +681,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Recipes { .. }
         | SlashCommand::Scorecard { .. }
         | SlashCommand::Benchmark { .. }
+        | SlashCommand::Round { .. }
         | SlashCommand::Selftest { .. }
         | SlashCommand::Preflight { .. }
         | SlashCommand::Completion { .. } => true,
@@ -1238,6 +1245,18 @@ mod tests {
             parse_one_shot_command(&["scorecard".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Scorecard {
                 args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["round".into(), "--json".into()]).unwrap(),
+            Some(SlashCommand::Round {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["iterate".into(), "--fail-on-gaps".into()]).unwrap(),
+            Some(SlashCommand::Round {
+                args: vec!["--fail-on-gaps".to_string()]
             })
         );
         assert_eq!(
@@ -1885,6 +1904,7 @@ mod tests {
             vec!["/recipes", "release", "--json"],
             vec!["/scorecard", "--json"],
             vec!["/benchmark", "--json"],
+            vec!["/round", "--json"],
             vec!["/selftest"],
             vec!["/selftest", "--json"],
             vec!["/preflight", "--dry-run"],
