@@ -744,7 +744,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/health docker --json",
                 "deepcli health",
             ],
-            notes: &["Plain `/health` maps to `/doctor --quick`, so it checks config, credentials, sessions, and tests without slower environment probing or provider calls. `/health shell` maps to `/doctor --quick shell` and checks PATH, legacy command residue, and shell completion status. `/health docker` and `/health compiler` map to `/env check <target>` for read-only environment readiness."],
+            notes: &["Plain `/health` maps to `/doctor --quick`, so it checks config, credentials, sessions, and tests without slower environment probing or provider calls. `/health shell` maps to `/doctor --quick shell` and checks PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion status. `/health docker` and `/health compiler` map to `/env check <target>` for read-only environment readiness."],
         },
         CommandHelp {
             name: "/support",
@@ -802,7 +802,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/doctor --output <workspace-relative-path>",
             ],
             examples: &["/doctor --quick", "/doctor shell --json", "/doctor docker --json", "/doctor --quick --json --output .deepcli/exports/doctor.json", "/doctor --fix --quick", "/doctor --probe-provider --provider deepseek"],
-            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, and provider turn timeout for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema and `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, and provider turn timeout for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema and `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/trace",
@@ -5763,6 +5763,13 @@ fn doctor_shell_command_json(status: &DoctorShellCommandStatus) -> Value {
         "present": status.path.is_some(),
         "executable": status.executable,
         "path": status.path.as_ref().map(|path| path.display().to_string()),
+        "canonicalPath": status.canonical_path.as_ref().map(|path| path.display().to_string()),
+        "workspaceMatch": status.workspace_match,
+        "expectedWorkspacePaths": status
+            .expected_workspace_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
     })
 }
 
@@ -5803,10 +5810,11 @@ fn build_doctor_shell_section_in(
         completions.push(completion_status_report_in(home, shell, &script)?);
     }
 
-    let deepcli = shell_command_status_in("deepcli", path_entries);
+    let expected_deepcli_paths = expected_deepcli_workspace_paths(workspace);
+    let deepcli = shell_command_status_in("deepcli", path_entries, &expected_deepcli_paths);
     let legacy_commands = legacy_command_names()
         .iter()
-        .map(|name| shell_command_status_in(name, path_entries))
+        .map(|name| shell_command_status_in(name, path_entries, &[]))
         .collect::<Vec<_>>();
     let next_actions =
         doctor_shell_next_actions(workspace, &deepcli, &legacy_commands, &completions);
@@ -5815,8 +5823,12 @@ fn build_doctor_shell_section_in(
         "shell install:".to_string(),
         format!("  PATH entries: {}", path_entries.len()),
         format!("  deepcli: {}", format_shell_command_status(&deepcli)),
-        "  legacy commands:".to_string(),
+        "  expected workspace commands:".to_string(),
     ];
+    for path in &expected_deepcli_paths {
+        lines.push(format!("    - {}", path.display()));
+    }
+    lines.push("  legacy commands:".to_string());
     for status in &legacy_commands {
         lines.push(format!(
             "    - {}: {}",
@@ -5844,20 +5856,38 @@ fn build_doctor_shell_section_in(
     })
 }
 
-fn shell_command_status_in(name: &str, path_entries: &[PathBuf]) -> DoctorShellCommandStatus {
+fn shell_command_status_in(
+    name: &str,
+    path_entries: &[PathBuf],
+    expected_workspace_paths: &[PathBuf],
+) -> DoctorShellCommandStatus {
     let path = find_command_on_path_in(name, path_entries);
+    let canonical_path = path.as_ref().and_then(|path| fs::canonicalize(path).ok());
     let executable = path.as_ref().is_some_and(|path| is_executable_file(path));
-    let status = match (&path, executable) {
-        (Some(_), true) => "found",
-        (Some(_), false) => "not_executable",
-        (None, _) => "missing",
+    let workspace_match = if path.is_some() && !expected_workspace_paths.is_empty() {
+        Some(matches_expected_workspace_path(
+            path.as_ref(),
+            canonical_path.as_ref(),
+            expected_workspace_paths,
+        ))
+    } else {
+        None
+    };
+    let status = match (&path, executable, workspace_match) {
+        (Some(_), true, Some(false)) => "found_external",
+        (Some(_), true, _) => "found",
+        (Some(_), false, _) => "not_executable",
+        (None, _, _) => "missing",
     }
     .to_string();
     DoctorShellCommandStatus {
         name: name.to_string(),
         path,
+        canonical_path,
         executable,
         status,
+        workspace_match,
+        expected_workspace_paths: expected_workspace_paths.to_vec(),
     }
 }
 
@@ -5891,12 +5921,59 @@ fn legacy_command_names() -> Vec<String> {
     vec![format!("deep{}cli", "_"), format!("deep{}cli", "-")]
 }
 
+fn expected_deepcli_workspace_paths(workspace: &Path) -> Vec<PathBuf> {
+    vec![
+        workspace.join("scripts").join("deepcli"),
+        workspace.join("target").join("debug").join("deepcli"),
+    ]
+}
+
+fn matches_expected_workspace_path(
+    path: Option<&PathBuf>,
+    canonical_path: Option<&PathBuf>,
+    expected_paths: &[PathBuf],
+) -> bool {
+    let observed = path
+        .into_iter()
+        .chain(canonical_path)
+        .cloned()
+        .collect::<Vec<_>>();
+    expected_paths.iter().any(|expected| {
+        observed.contains(expected)
+            || fs::canonicalize(expected)
+                .ok()
+                .is_some_and(|canonical_expected| observed.contains(&canonical_expected))
+    })
+}
+
 fn format_shell_command_status(status: &DoctorShellCommandStatus) -> String {
-    match (&status.path, status.executable) {
-        (Some(path), true) => format!("found ({})", path.display()),
-        (Some(path), false) => format!("not executable ({})", path.display()),
-        (None, _) => "missing".to_string(),
+    match (&status.path, status.executable, status.workspace_match) {
+        (Some(path), true, Some(true)) => {
+            format!(
+                "found workspace command ({})",
+                format_path_with_canonical(path, status)
+            )
+        }
+        (Some(path), true, Some(false)) => {
+            format!(
+                "found external command ({})",
+                format_path_with_canonical(path, status)
+            )
+        }
+        (Some(path), true, None) => format!("found ({})", path.display()),
+        (Some(path), false, _) => format!("not executable ({})", path.display()),
+        (None, _, _) => "missing".to_string(),
     }
+}
+
+fn format_path_with_canonical(path: &Path, status: &DoctorShellCommandStatus) -> String {
+    let canonical = status
+        .canonical_path
+        .as_ref()
+        .filter(|canonical| canonical.as_path() != path)
+        .map(|canonical| format!(" -> {}", canonical.display()))
+        .unwrap_or_default();
+    format!("{}{canonical}", path.display())
 }
 
 fn doctor_shell_next_actions(
@@ -5914,6 +5991,10 @@ fn doctor_shell_next_actions(
         (Some(path), false) => actions.push(format!(
             "make `deepcli` executable: run `chmod +x {}`",
             path.display()
+        )),
+        (Some(_), true) if deepcli.workspace_match == Some(false) => actions.push(format!(
+            "repoint `deepcli` to this checkout: run `ln -sf {} ~/.local/bin/deepcli`",
+            workspace.join("scripts").join("deepcli").display()
         )),
         (Some(_), true) => {}
     }
@@ -6007,8 +6088,11 @@ struct DoctorEnvironmentSection {
 struct DoctorShellCommandStatus {
     name: String,
     path: Option<PathBuf>,
+    canonical_path: Option<PathBuf>,
     executable: bool,
     status: String,
+    workspace_match: Option<bool>,
+    expected_workspace_paths: Vec<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -18179,6 +18263,7 @@ mod tests {
         assert!(health_help.contains("/doctor --quick"));
         assert!(health_help.contains("/health shell --json"));
         assert!(health_help.contains("/health docker --json"));
+        assert!(health_help.contains("resolves to this workspace"));
         assert!(health_help.contains("shell completion status"));
         assert!(health_help.contains("without slower environment probing or provider calls"));
 
@@ -18216,6 +18301,7 @@ mod tests {
         assert!(doctor_help.contains("/doctor [docker|compiler]"));
         assert!(doctor_help.contains("/doctor docker --json"));
         assert!(doctor_help.contains("shortcuts for `/env check <target>`"));
+        assert!(doctor_help.contains("resolves to this workspace"));
         assert!(doctor_help.contains("shell completion state"));
         assert!(doctor_help.contains("/doctor --json"));
         assert!(doctor_help.contains("/doctor --output"));
@@ -22656,6 +22742,11 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["mode"]["quick"], true);
         assert_eq!(value["environment"]["status"], "skipped");
         assert_eq!(value["shell"]["deepcli"]["name"], "deepcli");
+        assert!(value["shell"]["deepcli"]["expectedWorkspacePaths"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().ends_with("/scripts/deepcli")));
         assert_eq!(
             value["shell"]["legacyCommands"].as_array().unwrap().len(),
             2
@@ -22666,6 +22757,51 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .contains("shell install:"));
         assert!(SessionStore::new(dir.path()).list().unwrap().is_empty());
+    }
+
+    #[test]
+    fn shell_doctor_distinguishes_current_workspace_command_from_external_command() {
+        let workspace = tempdir().unwrap();
+        let scripts_dir = workspace.path().join("scripts");
+        fs::create_dir_all(&scripts_dir).unwrap();
+        let launcher = scripts_dir.join("deepcli");
+        write_test_executable(&launcher);
+
+        let workspace_status = shell_command_status_in(
+            "deepcli",
+            std::slice::from_ref(&scripts_dir),
+            &expected_deepcli_workspace_paths(workspace.path()),
+        );
+        assert_eq!(workspace_status.status, "found");
+        assert_eq!(workspace_status.workspace_match, Some(true));
+        assert!(format_shell_command_status(&workspace_status).contains("workspace command"));
+
+        let external = tempdir().unwrap();
+        let external_command = external.path().join("deepcli");
+        write_test_executable(&external_command);
+        let external_status = shell_command_status_in(
+            "deepcli",
+            &[external.path().to_path_buf()],
+            &expected_deepcli_workspace_paths(workspace.path()),
+        );
+        assert_eq!(external_status.status, "found_external");
+        assert_eq!(external_status.workspace_match, Some(false));
+
+        let actions = doctor_shell_next_actions(workspace.path(), &external_status, &[], &[]);
+        assert!(actions
+            .iter()
+            .any(|action| action.contains("repoint `deepcli` to this checkout")));
+    }
+
+    fn write_test_executable(path: &Path) {
+        fs::write(path, "#!/usr/bin/env bash\nexit 0\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut permissions = fs::metadata(path).unwrap().permissions();
+            permissions.set_mode(0o755);
+            fs::set_permissions(path, permissions).unwrap();
+        }
     }
 
     #[tokio::test]
