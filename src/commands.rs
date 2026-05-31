@@ -785,7 +785,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
         },
         CommandHelp {
             name: "/round",
@@ -3359,6 +3359,15 @@ fn round_benchmark_status_json(report: &BenchmarkStatusReport) -> Value {
         "artifactCount": report.artifact_count,
         "meaningfulArtifactCount": report.meaningful_count,
         "meaningfulExecutableCount": report.meaningful_executable_count,
+        "presetCoverage": {
+            "required": MEANINGFUL_BENCHMARK_PRESETS,
+            "seen": report.seen_meaningful_presets,
+            "missing": report.missing_meaningful_presets,
+            "requiredStatus": report.required_preset_statuses
+                .iter()
+                .map(benchmark_required_preset_status_json)
+                .collect::<Vec<_>>(),
+        },
         "latestArtifact": benchmark_status_artifact_json(&report.latest_artifact),
         "latestMeaningfulArtifact": benchmark_status_artifact_json(&report.latest_meaningful),
         "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
@@ -3557,8 +3566,18 @@ struct BenchmarkStatusReport {
     latest_meaningful_age_seconds: Option<i64>,
     seen_meaningful_presets: Vec<String>,
     missing_meaningful_presets: Vec<String>,
+    required_preset_statuses: Vec<BenchmarkRequiredPresetStatus>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkRequiredPresetStatus {
+    preset: String,
+    status: String,
+    artifact: Option<BenchmarkStatusArtifact>,
+    age_seconds: Option<i64>,
+    gap: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -5014,6 +5033,7 @@ fn build_benchmark_status_report(
         latest_meaningful_age_seconds: None,
         seen_meaningful_presets: benchmark_seen_meaningful_presets(artifacts),
         missing_meaningful_presets: Vec::new(),
+        required_preset_statuses: Vec::new(),
         gaps: Vec::new(),
         next_actions: benchmark_status_next_actions(),
     };
@@ -5081,6 +5101,7 @@ fn build_benchmark_status_report(
             .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0));
     }
 
+    report.required_preset_statuses = benchmark_required_preset_statuses(artifacts, now);
     report.status = classify_benchmark_status(&report);
     report.gaps = benchmark_status_gaps(&report);
     report
@@ -5106,27 +5127,43 @@ fn classify_benchmark_status(report: &BenchmarkStatusReport) -> &'static str {
     if report.meaningful_executable_count == 0 {
         return "weak";
     }
-    let Some(latest) = &report.latest_meaningful else {
-        return "weak";
-    };
-    match latest.status.as_str() {
-        "failed" | "timeout" => "failing",
-        "passed" => {
-            let stale_after_seconds = BENCHMARK_EVIDENCE_STALE_AFTER_DAYS * 24 * 60 * 60;
-            if report
-                .latest_meaningful_age_seconds
-                .is_some_and(|age| age > stale_after_seconds)
-            {
-                "stale"
-            } else {
-                "ready"
-            }
-        }
-        _ => "weak",
+    if report
+        .required_preset_statuses
+        .iter()
+        .any(|preset| matches!(preset.status.as_str(), "failed" | "timeout"))
+    {
+        return "failing";
+    }
+    if report
+        .required_preset_statuses
+        .iter()
+        .any(|preset| matches!(preset.status.as_str(), "missing" | "weak"))
+    {
+        return "incomplete";
+    }
+    if report
+        .required_preset_statuses
+        .iter()
+        .any(|preset| preset.status == "stale")
+    {
+        return "stale";
+    }
+    if report
+        .required_preset_statuses
+        .iter()
+        .all(|preset| preset.status == "passed")
+    {
+        "ready"
+    } else {
+        "weak"
     }
 }
 
 fn benchmark_status_gaps(report: &BenchmarkStatusReport) -> Vec<String> {
+    let required_gaps = benchmark_required_preset_gaps(report);
+    if matches!(report.status, "incomplete" | "failing" | "stale") && !required_gaps.is_empty() {
+        return required_gaps;
+    }
     match report.status {
         "missing" => vec![
             "no local benchmark artifact found under .deepcli/benchmarks".to_string(),
@@ -5170,6 +5207,118 @@ fn benchmark_status_gaps(report: &BenchmarkStatusReport) -> Vec<String> {
             )]
         }
         _ => Vec::new(),
+    }
+}
+
+fn benchmark_required_preset_gaps(report: &BenchmarkStatusReport) -> Vec<String> {
+    report
+        .required_preset_statuses
+        .iter()
+        .filter_map(|preset| preset.gap.clone())
+        .collect()
+}
+
+fn benchmark_required_preset_statuses(
+    artifacts: &[BenchmarkArtifact],
+    now: DateTime<Utc>,
+) -> Vec<BenchmarkRequiredPresetStatus> {
+    MEANINGFUL_BENCHMARK_PRESETS
+        .iter()
+        .map(|preset_name| match benchmark_preset_by_name(preset_name) {
+            Ok(preset) => benchmark_required_preset_status(artifacts, now, preset),
+            Err(_) => BenchmarkRequiredPresetStatus {
+                preset: (*preset_name).to_string(),
+                status: "missing".to_string(),
+                artifact: None,
+                age_seconds: None,
+                gap: Some(format!(
+                    "required benchmark preset is not registered: {preset_name}"
+                )),
+            },
+        })
+        .collect()
+}
+
+fn benchmark_required_preset_status(
+    artifacts: &[BenchmarkArtifact],
+    now: DateTime<Utc>,
+    preset: &BenchmarkPreset,
+) -> BenchmarkRequiredPresetStatus {
+    let latest_any = artifacts
+        .iter()
+        .find(|artifact| benchmark_artifact_matches_preset(&artifact.value, preset));
+    let latest_executable = artifacts.iter().find(|artifact| {
+        benchmark_artifact_matches_preset(&artifact.value, preset)
+            && matches!(
+                benchmark_artifact_status(&artifact.value),
+                "passed" | "failed" | "timeout"
+            )
+    });
+    let Some(artifact) = latest_executable else {
+        return if let Some(artifact) = latest_any {
+            BenchmarkRequiredPresetStatus {
+                preset: preset.name.to_string(),
+                status: "weak".to_string(),
+                artifact: Some(benchmark_status_artifact(artifact)),
+                age_seconds: artifact
+                    .created_at
+                    .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0)),
+                gap: Some(format!(
+                    "required benchmark preset `{}` has only record-only or unknown evidence; run `/benchmark run-suite --json --fail-on-command`",
+                    preset.name
+                )),
+            }
+        } else {
+            BenchmarkRequiredPresetStatus {
+                preset: preset.name.to_string(),
+                status: "missing".to_string(),
+                artifact: None,
+                age_seconds: None,
+                gap: Some(format!(
+                    "missing required benchmark preset `{}`; run `/benchmark run-suite --json --fail-on-command`",
+                    preset.name
+                )),
+            }
+        };
+    };
+
+    let status = benchmark_artifact_status(&artifact.value);
+    let age_seconds = artifact
+        .created_at
+        .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0));
+    let stale_after_seconds = BENCHMARK_EVIDENCE_STALE_AFTER_DAYS * 24 * 60 * 60;
+    let artifact_path = artifact.relative_path.clone();
+    let (status, gap) = match status {
+        "passed" if age_seconds.is_some_and(|age| age > stale_after_seconds) => (
+            "stale".to_string(),
+            Some(format!(
+                "required benchmark preset `{}` is older than {} days: {}",
+                preset.name, BENCHMARK_EVIDENCE_STALE_AFTER_DAYS, artifact_path
+            )),
+        ),
+        "passed" => ("passed".to_string(), None),
+        "failed" | "timeout" => (
+            status.to_string(),
+            Some(format!(
+                "required benchmark preset `{}` latest executable artifact is {}: {}",
+                preset.name, status, artifact_path
+            )),
+        ),
+        _ => (
+            "weak".to_string(),
+            Some(format!(
+                "required benchmark preset `{}` has non-executable latest evidence; run `/benchmark run-suite --json --fail-on-command`",
+                preset.name
+            )),
+        ),
+    };
+
+    BenchmarkRequiredPresetStatus {
+        preset: preset.name.to_string(),
+        status,
+        artifact: Some(benchmark_status_artifact(artifact)),
+        age_seconds,
+        gap,
     }
 }
 
@@ -5234,6 +5383,10 @@ fn format_benchmark_status_json(
             "required": MEANINGFUL_BENCHMARK_PRESETS,
             "seen": report.seen_meaningful_presets,
             "missing": report.missing_meaningful_presets,
+            "requiredStatus": report.required_preset_statuses
+                .iter()
+                .map(benchmark_required_preset_status_json)
+                .collect::<Vec<_>>(),
         },
         "latestArtifact": benchmark_status_artifact_json(&report.latest_artifact),
         "latestMeaningfulArtifact": benchmark_status_artifact_json(&report.latest_meaningful),
@@ -5241,6 +5394,16 @@ fn format_benchmark_status_json(
         "gaps": report.gaps,
         "nextActions": report.next_actions,
     }))?)
+}
+
+fn benchmark_required_preset_status_json(status: &BenchmarkRequiredPresetStatus) -> Value {
+    json!({
+        "preset": status.preset,
+        "status": status.status,
+        "artifact": benchmark_status_artifact_json(&status.artifact),
+        "ageSeconds": status.age_seconds,
+        "gap": status.gap,
+    })
 }
 
 fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport) -> String {
@@ -5295,6 +5458,20 @@ fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport
             report.seen_meaningful_presets.join(", ")
         }
     ));
+    if !report.required_preset_statuses.is_empty() {
+        lines.push("required presets:".to_string());
+        for preset in &report.required_preset_statuses {
+            let artifact = preset
+                .artifact
+                .as_ref()
+                .map(|artifact| artifact.artifact_path.as_str())
+                .unwrap_or("none");
+            lines.push(format!(
+                "  - {}: status={} artifact={}",
+                preset.preset, preset.status, artifact
+            ));
+        }
+    }
     if !report.gaps.is_empty() {
         lines.push("gaps:".to_string());
         lines.extend(report.gaps.iter().map(|gap| format!("  - {gap}")));
@@ -5335,17 +5512,24 @@ fn benchmark_artifact_is_meaningful(value: &Value) -> bool {
 }
 
 fn benchmark_artifact_matches_meaningful_command(value: &Value) -> bool {
-    let case_name = artifact_string_field(value, "case", "");
-    let commands = benchmark_artifact_declared_commands(value);
     BENCHMARK_PRESETS
         .iter()
         .filter(|preset| MEANINGFUL_BENCHMARK_PRESETS.contains(&preset.name))
-        .any(|preset| {
-            case_name == preset.case_name
-                && commands
-                    .iter()
-                    .any(|command| command.trim() == preset.command)
-        })
+        .any(|preset| benchmark_artifact_matches_preset_command(value, preset))
+}
+
+fn benchmark_artifact_matches_preset(value: &Value, preset: &BenchmarkPreset) -> bool {
+    benchmark_artifact_canonical_preset(value) == Some(preset.name)
+        || benchmark_artifact_matches_preset_command(value, preset)
+}
+
+fn benchmark_artifact_matches_preset_command(value: &Value, preset: &BenchmarkPreset) -> bool {
+    let case_name = artifact_string_field(value, "case", "");
+    let commands = benchmark_artifact_declared_commands(value);
+    case_name == preset.case_name
+        && commands
+            .iter()
+            .any(|command| command.trim() == preset.command)
 }
 
 fn benchmark_artifact_declared_commands(value: &Value) -> Vec<String> {
@@ -26531,12 +26715,71 @@ mod tests {
             .iter()
             .any(|gap| gap.as_str().unwrap().contains("only smoke")));
 
-        let ready_path = write_benchmark_status_test_artifact(
+        let cargo_path = write_benchmark_status_test_artifact(
             dir.path(),
             "20990101T000000Z-product-cargo-test.json",
             Utc::now() + chrono::Duration::seconds(1),
             "cargo-test",
             "cargo-test",
+            "passed",
+        );
+        let incomplete = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let incomplete_value: Value = serde_json::from_str(&incomplete).unwrap();
+        assert_eq!(incomplete_value["status"], "incomplete");
+        assert_eq!(incomplete_value["ready"], false);
+        assert_eq!(incomplete_value["hasGaps"], true);
+        assert_eq!(incomplete_value["meaningful"]["passedCount"], 1);
+        assert_eq!(
+            incomplete_value["latestMeaningfulArtifact"]["artifactPath"],
+            cargo_path
+        );
+        assert!(incomplete_value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap
+                .as_str()
+                .unwrap()
+                .contains("missing required benchmark preset `preflight-quick`")));
+        assert!(incomplete_value["presetCoverage"]["requiredStatus"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|preset| preset["preset"] == "cargo-test" && preset["status"] == "passed"));
+        assert!(incomplete_value["presetCoverage"]["requiredStatus"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|preset| preset["preset"] == "selftest" && preset["status"] == "missing"));
+
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            Utc::now() + chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990103T000000Z-product-selftest.json",
+            Utc::now() + chrono::Duration::seconds(3),
+            "selftest",
+            "selftest",
+            "passed",
+        );
+        let scorecard_path = write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990104T000000Z-product-scorecard.json",
+            Utc::now() + chrono::Duration::seconds(4),
+            "scorecard",
+            "scorecard",
             "passed",
         );
         let ready = handle_benchmark(
@@ -26550,10 +26793,10 @@ mod tests {
         assert_eq!(ready_value["status"], "ready");
         assert_eq!(ready_value["ready"], true);
         assert_eq!(ready_value["hasGaps"], false);
-        assert_eq!(ready_value["meaningful"]["passedCount"], 1);
+        assert_eq!(ready_value["meaningful"]["passedCount"], 4);
         assert_eq!(
             ready_value["latestMeaningfulArtifact"]["artifactPath"],
-            ready_path
+            scorecard_path
         );
 
         let ready_gate = handle_benchmark(
@@ -26593,12 +26836,38 @@ mod tests {
         assert_eq!(failing_value["meaningful"]["failedCount"], 1);
 
         let stale_dir = tempdir().unwrap();
+        let stale_created_at =
+            Utc::now() - chrono::Duration::days(BENCHMARK_EVIDENCE_STALE_AFTER_DAYS + 1);
         write_benchmark_status_test_artifact(
             stale_dir.path(),
             "20000101T000000Z-product-cargo-test.json",
-            Utc::now() - chrono::Duration::days(BENCHMARK_EVIDENCE_STALE_AFTER_DAYS + 1),
+            stale_created_at,
             "cargo-test",
             "cargo-test",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            stale_dir.path(),
+            "20000102T000000Z-product-preflight-quick.json",
+            stale_created_at + chrono::Duration::seconds(1),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            stale_dir.path(),
+            "20000103T000000Z-product-selftest.json",
+            stale_created_at + chrono::Duration::seconds(2),
+            "selftest",
+            "selftest",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            stale_dir.path(),
+            "20000104T000000Z-product-scorecard.json",
+            stale_created_at + chrono::Duration::seconds(3),
+            "scorecard",
+            "scorecard",
             "passed",
         );
         let stale = handle_benchmark(
