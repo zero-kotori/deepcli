@@ -742,7 +742,7 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [presets|run|record|status|summary|list|show|scorecard] [--json] [--output path]",
+            listing: "/benchmark [presets|run|record|status|gate|summary|list|show|scorecard] [--json] [--output path]",
             summary: "Run, record, assess, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
@@ -753,7 +753,8 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark run --command <cmd> [--timeout seconds] [--fail-on-command] [--json]",
                 "/benchmark run -- <cmd>",
                 "/benchmark record [--json] [--suite name] [--case name] [--command <cmd>] [--notes text]",
-                "/benchmark status [--json] [--output path]",
+                "/benchmark status [--json] [--output path] [--fail-on-not-ready]",
+                "/benchmark gate [--json] [--output path]",
                 "/benchmark summary [--json] [--limit n]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
@@ -764,13 +765,14 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark run --command 'cargo test' --json --fail-on-command",
                 "/benchmark run --timeout 30 -- printf ok",
                 "/benchmark status --json",
+                "/benchmark gate --json",
                 "/benchmark summary --json",
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
                 "/benchmark show latest --json",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
         },
         CommandHelp {
             name: "/selftest",
@@ -2539,6 +2541,7 @@ fn build_scorecard_report(
                 "deepcli scorecard --json",
                 "deepcli preflight --json",
                 "deepcli benchmark presets --json",
+                "deepcli benchmark gate --json",
                 "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             ],
         ),
@@ -2797,6 +2800,9 @@ fn build_scorecard_report(
     );
     next_actions
         .push("run `/benchmark status --json` to inspect benchmark evidence quality".to_string());
+    next_actions.push(
+        "run `/benchmark gate --json` before release to enforce benchmark evidence".to_string(),
+    );
     next_actions.push("run `/preflight --json` before commit or push".to_string());
     next_actions = dedup_preserve_order(next_actions);
     let report = format_scorecard_text(
@@ -3079,6 +3085,7 @@ struct BenchmarkSummaryOptions {
 struct BenchmarkStatusOptions {
     json_output: bool,
     output_path: Option<String>,
+    fail_on_not_ready: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -3232,6 +3239,13 @@ fn handle_benchmark(
         "record" | "save" => handle_benchmark_record(workspace, config, registry, rest),
         "presets" | "preset" | "catalog" => handle_benchmark_presets(workspace, rest),
         "status" | "health" | "doctor" => handle_benchmark_status(workspace, rest),
+        "gate" | "check" => {
+            let mut gate_args = rest.to_vec();
+            if !benchmark_status_args_request_failure(&gate_args) {
+                gate_args.push("--fail-on-not-ready".to_string());
+            }
+            handle_benchmark_status(workspace, &gate_args)
+        }
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
@@ -3241,9 +3255,18 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected presets, run, record, status, summary, list, show, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run, record, status, gate, summary, list, show, or scorecard"
         ),
     }
+}
+
+fn benchmark_status_args_request_failure(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--fail-on-not-ready" | "--fail-on-gaps" | "--strict"
+        )
+    })
 }
 
 fn benchmark_args_are_scorecard_compatible(args: &[String]) -> bool {
@@ -4192,6 +4215,9 @@ fn handle_benchmark_status(workspace: &Path, args: &[String]) -> Result<String> 
     if let Some(output_path) = &options.output_path {
         write_command_output(workspace, output_path, &output)?;
     }
+    if options.fail_on_not_ready && report.status != "ready" {
+        return Err(CommandExit::new(output, 1).into());
+    }
     Ok(output)
 }
 
@@ -4214,6 +4240,10 @@ fn parse_benchmark_status_options(args: &[String]) -> Result<BenchmarkStatusOpti
                     &mut options.output_path,
                     value.trim_start_matches("--output="),
                 )?;
+                index += 1;
+            }
+            "--fail-on-not-ready" | "--fail-on-gaps" | "--strict" => {
+                options.fail_on_not_ready = true;
                 index += 1;
             }
             value => bail!("unsupported /benchmark status option `{value}`"),
@@ -4323,6 +4353,7 @@ fn benchmark_status_next_actions() -> Vec<String> {
     vec![
         "deepcli benchmark presets --json".to_string(),
         "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
+        "deepcli benchmark gate --json".to_string(),
         "deepcli benchmark summary --json".to_string(),
         "deepcli scorecard --json".to_string(),
     ]
@@ -4438,6 +4469,8 @@ fn format_benchmark_status_json(
     Ok(serde_json::to_string_pretty(&json!({
         "schema": BENCHMARK_STATUS_SCHEMA,
         "status": report.status,
+        "ready": report.status == "ready",
+        "hasGaps": !report.gaps.is_empty(),
         "workspace": workspace.display().to_string(),
         "staleAfterDays": BENCHMARK_EVIDENCE_STALE_AFTER_DAYS,
         "artifactCount": report.artifact_count,
@@ -4475,6 +4508,7 @@ fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport
         "deepcli benchmark status".to_string(),
         format!("workspace: {}", workspace.display()),
         format!("status: {}", report.status),
+        format!("ready: {}", report.status == "ready"),
         format!("artifacts: {}", report.artifact_count),
         format!(
             "totals: executable={} passed={} failed={} timeout={} recorded={} smoke={}",
@@ -22917,6 +22951,12 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/benchmark gate --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec!["gate".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/benchmark summary --json").unwrap(),
             Some(SlashCommand::Benchmark {
                 args: vec!["summary".to_string(), "--json".to_string()]
@@ -23756,6 +23796,9 @@ mod tests {
         assert!(bench_help.contains("--preset <name>"));
         assert!(bench_help.contains("/benchmark record"));
         assert!(bench_help.contains("/benchmark status"));
+        assert!(bench_help.contains("/benchmark gate"));
+        assert!(bench_help.contains("--fail-on-not-ready"));
+        assert!(bench_help.contains("non-zero exit"));
         assert!(bench_help.contains("/benchmark summary"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
@@ -24689,6 +24732,8 @@ mod tests {
         let missing_value: Value = serde_json::from_str(&missing).unwrap();
         assert_eq!(missing_value["schema"], BENCHMARK_STATUS_SCHEMA);
         assert_eq!(missing_value["status"], "missing");
+        assert_eq!(missing_value["ready"], false);
+        assert_eq!(missing_value["hasGaps"], true);
         assert_eq!(missing_value["artifactCount"], 0);
         assert_eq!(missing_value["meaningful"]["passedCount"], 0);
         assert!(missing_value["nextActions"]
@@ -24696,6 +24741,19 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().contains("run --preset cargo-test")));
+
+        let missing_gate = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["gate".into(), "--json".into()],
+        )
+        .unwrap_err();
+        let exit = missing_gate.downcast_ref::<CommandExit>().unwrap();
+        assert_eq!(exit.code, 1);
+        let gate_value: Value = serde_json::from_str(&exit.output).unwrap();
+        assert_eq!(gate_value["schema"], BENCHMARK_STATUS_SCHEMA);
+        assert_eq!(gate_value["status"], "missing");
 
         let traversal = handle_benchmark(
             dir.path(),
@@ -24729,6 +24787,7 @@ mod tests {
         .unwrap();
         let weak_value: Value = serde_json::from_str(&weak).unwrap();
         assert_eq!(weak_value["status"], "weak");
+        assert_eq!(weak_value["ready"], false);
         assert_eq!(weak_value["totals"]["smokeCount"], 1);
         assert_eq!(weak_value["meaningful"]["executableCount"], 0);
         assert!(weak_value["gaps"]
@@ -24770,11 +24829,23 @@ mod tests {
         .unwrap();
         let ready_value: Value = serde_json::from_str(&ready).unwrap();
         assert_eq!(ready_value["status"], "ready");
+        assert_eq!(ready_value["ready"], true);
+        assert_eq!(ready_value["hasGaps"], false);
         assert_eq!(ready_value["meaningful"]["passedCount"], 1);
         assert_eq!(
             ready_value["latestMeaningfulArtifact"]["artifactPath"],
             ready_path
         );
+
+        let ready_gate = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["gate".into(), "--json".into()],
+        )
+        .unwrap();
+        let ready_gate_value: Value = serde_json::from_str(&ready_gate).unwrap();
+        assert_eq!(ready_gate_value["status"], "ready");
     }
 
     #[test]
