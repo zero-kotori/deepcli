@@ -74,7 +74,7 @@ impl SkillStore {
         fs::write(
             &instruction_path,
             format!(
-                "# {name}\n\n## Purpose\n\n{description}\n\n## Trigger\n\n{}\n\n## Workflow\n\n1. Confirm the task matches this skill.\n2. Read only the files needed for the task.\n3. Produce the smallest safe change and verify it.\n\n## Limits\n\n- Max sub-agent depth: 1.\n- All file, shell, network, and git operations still go through deep-cli permissions.\n",
+                "# {name}\n\n## Purpose\n\n{description}\n\n## Trigger\n\n{}\n\n## Workflow\n\n1. Confirm the task matches this skill.\n2. Read only the files needed for the task.\n3. Produce the smallest safe change and verify it.\n\n## Limits\n\n- Max sub-agent depth: 1.\n- All file, shell, network, and git operations still go through deepcli permissions.\n",
                 metadata.trigger
             ),
         )

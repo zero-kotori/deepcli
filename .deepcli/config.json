@@ -1,8 +1,8 @@
 {
   "version": 1,
   "project": {
-    "name": "deep-cli",
-    "command": "deep-cli",
+    "name": "deepcli",
+    "command": "deepcli",
     "implementationLanguage": "rust",
     "language": "zh-CN"
   },

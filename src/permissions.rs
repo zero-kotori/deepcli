@@ -470,7 +470,7 @@ mod tests {
         let request = ToolRequest {
             tool: "setup_environment".to_string(),
             surface: ToolSurface::Docker,
-            command: Some("deep-cli environment setup docker".to_string()),
+            command: Some("deepcli environment setup docker".to_string()),
             path: Some(PathBuf::from("/tmp/project")),
             network_target: Some("ghcr.io, docker.io".to_string()),
             writes_files: true,

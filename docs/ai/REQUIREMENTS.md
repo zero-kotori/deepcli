@@ -1,8 +1,8 @@
-# deep-cli 需求文档
+# deepcli 需求文档
 
 ## 1. 最终需求理解
 
-`deep-cli` 是一个面向 CLI 用户的开源 AI 编程代理工具，使用 DeepSeek API 作为核心 provider，同时预留多 provider 能力。产品目标是对齐 Claude Code、Codex CLI 一类 SOTA 编程 CLI 的核心能力，包括代码理解、自动修改、多轮执行、工具调用、审批流、安全沙箱、长任务续跑、Git/PR 工作流、Skill 生成与调用、多种 `/` 指令和完整任务循环。
+`deepcli` 是一个面向 CLI 用户的开源 AI 编程代理工具，使用 DeepSeek API 作为核心 provider，同时预留多 provider 能力。产品目标是对齐 Claude Code、Codex CLI 一类 SOTA 编程 CLI 的核心能力，包括代码理解、自动修改、多轮执行、工具调用、审批流、安全沙箱、长任务续跑、Git/PR 工作流、Skill 生成与调用、多种 `/` 指令和完整任务循环。
 
 项目需要形成自己的差异化能力，而不是复制现有工具源码。可参考同类产品的交互模式和用户体验，但核心架构、工具执行、权限控制、会话管理、Skill 系统、命令系统和配置系统都应由本项目独立实现。
 
@@ -37,7 +37,14 @@
 完整版本在 MVP 基础上增强以下能力：
 
 - 多 provider 成熟支持：DeepSeek、Kimi、OpenAI、Anthropic、本地模型或兼容 OpenAI API 的服务。
-- 更完整的 TUI：展示计划、工具调用、diff、token/上下文消耗、审批、日志、任务状态。
+- 更完整的 TUI：展示任务观察面板、计划、工具调用、diff、token/上下文消耗、模型/凭据/配置健康、Prompt/Skill/Agent 能力库、验收交付门禁、审批、旁路问题、测试状态、环境证据、日志、任务状态；任务观察区应支持 Overview、Result、Changes、Usage、Health、Library、Deliver、Tools、Tests、Environment、Approvals、Trace 等可切换视图；Agent 后台运行时也应从当前 session 文件持续读取观察数据，header 继续显示真实 session/provider/model 元数据；Overview、Trace 应展示最近一次 deepcli/error 输出摘要，让用户能立即判断刚执行的动作是否成功；Result 视图应展示最近一次 deepcli/error 输出的状态、摘要和正文片段，并提供 trace/status/history 快捷动作，避免用户只能从长聊天记录里找命令结果；Result 视图中的长输出应支持 PageUp/PageDown、Ctrl-Home/Ctrl-End 和鼠标/触控板滚轮独立回看，且新输出到达或提交新输入时自动回到最新结果；Changes 视图应展示节流刷新的 Git 工作区 dirty/clean 状态、staged/unstaged/untracked 数量、变更文件列表、受行数限制的 staged/unstaged patch 预览，并支持在 TUI 内按文件切换和 PageUp/PageDown 滚动选中文件 patch，以及当前 session 的 diff 记录数量、最近变更文件、增删行摘要和 `/diff`、`/review`、`/handoff` 快捷动作，帮助用户不用离开 TUI 就能判断本轮代码改动范围；Overview、Result、Changes、Usage、Health、Library、Deliver、Tests、Environment、Trace 等视图中的快捷命令应支持空输入框时用 Up/Down 选择、Enter 或鼠标点击直接执行，含占位符的命令应先预填到 message box 供用户编辑；终端高度较小时，面板截断应优先保留当前选中的快捷动作，而不是只保留顶部详情；Usage 视图应汇总 provider turn 数、耗时、token、请求体大小、上下文压缩和 cache 命中率，并给出 `/usage`、`/trace`、`/logs`、`/status` 快捷命令；Health 视图应展示当前 provider/model、默认 provider、API key/credentials/env 状态、配置路径、权限模式、provider 超时和快捷修复命令，API key 缺失时应直接提供 `/credentials set <provider>` 安全隐藏输入入口；Library 视图应展示内置/自定义 prompt 数、项目 skill 数、子 Agent 任务数和最近条目，并给出 `/prompt`、`/skill`、`/agent` 快捷命令；Tests 视图应展示最近测试证据，并给出 `/test discover`、`/test run`、`/accept`、`/gate` 快捷命令；Deliver 视图应汇总 plan、测试、环境、审批、旁路问题和失败工具的交付 checklist，并根据最近环境 target 给出 `/review`、`/test run`、`/accept --env-check`、`/gate --env-check`、`/handoff --env-check` 快捷命令；Environment 视图应展示最近 Docker/编译器环境检查或安装证据，并根据最近证据给出对应 target 的 `/env check`、`/env plan`、可编辑 `/setup --smoke`、`/env test`、`/accept --env-check`、`/gate --env-check`、`/handoff --env-check` 快捷命令；Approvals 视图中可直接选择、批准或拒绝待审批请求，也能为开放的 by-the-way 问题打开原生回答框并保存答案。
+- Changes 视图的文件级 patch 交互应同时支持键盘 `[`/`]`、PageUp/PageDown、Ctrl-Home/Ctrl-End，以及鼠标点击变更文件列表和在工具区用鼠标/触控板滚轮滚动当前 patch。
+- 任务观察区 tab 应同时支持键盘快捷键和鼠标点击切换，避免用户看到可视 tab 却只能记快捷键。
+- Resume session 选择器应支持键盘、直接输入过滤、鼠标点击选择和鼠标/触控板滚轮移动选择，保持与主 TUI 工具区一致的交互能力。
+- Slash 命令建议面板应支持键盘、鼠标/触控板滚轮切换候选，以及鼠标点击候选命令补全到 message box，避免用户必须记住 Tab 补全。
+- Tools 视图中的工具调用应默认折叠；支持键盘 Up/Down/PageUp/PageDown/Home/End 选择、Enter 展开/折叠、鼠标点击展开/折叠、鼠标/触控板滚轮移动选择，并确保当前选中工具在面板高度不足时仍可见；展开当前工具时应在 TUI 内显示多行详情预览，并支持 `Ctrl-O` 预填完整工具输出命令、`Ctrl-F` 预填失败工具输出命令，避免失败工具只露出一行截断信息或让用户手输 `/session tools`。
+- Approvals 视图应支持鼠标/触控板滚轮移动当前审批或 BTW 选择，并支持鼠标点击列表项选中；鼠标点击不得直接批准、拒绝或提交回答，避免误触安全敏感操作。
+- 凭据输入和 by-the-way 回答等临时输入弹层应复用 message box 的光标编辑、删除、Home/End、Ctrl-A/E/U/K 和 bracketed paste 能力；凭据输入必须隐藏显示且不得进入普通消息历史或日志。
 - 多 Agent 协作：planner、implementer、reviewer、tester、data collector 等角色协作。
 - 长任务调度：任务暂停、恢复、失败续跑、历史查看、结构化 trace 和回放。
 - GitHub 开源协作：issue/PR 上下文读取、创建 PR、review comment 处理。
@@ -62,38 +69,67 @@
 
 ### 5.1 CLI 入口
 
-- `deep-cli` 命令入口。
-- 在当前目录启动 Agent。
+- `deepcli` 命令入口。
+- 在当前目录直接执行 `deepcli` 应默认启动带 message box 和任务观察面板的 TUI；旧版行式 REPL 仅作为显式 `--repl` 或 `deepcli repl` 兼容入口保留。
 - 支持一次性任务参数。
+- 启动 wrapper 和 Rust 二进制本体都应支持高频 slash 命令、provider 与模式的顶层别名，例如 `deepcli doctor --quick`、`deepcli version --json`、`deepcli about --json`、`deepcli health --json`、`deepcli doctor docker --json`、`deepcli diagnose`、`deepcli diagnose docker --json`、`deepcli models --json`、`deepcli providers --json`、`deepcli use kimi`、`deepcli switch deepseek deepseek-v4-pro`、`deepcli provider kimi`、`deepcli provider --json`、`deepcli history --limit 10`、`deepcli cleanup sessions --json`、`deepcli accept --json`、`deepcli gate --json`、`deepcli login deepseek`、`deepcli auth deepseek`、`deepcli apikey deepseek`、`deepcli key deepseek`、`deepcli logout deepseek`、`deepcli timeout 900`、`deepcli timeout --json`、`deepcli check docker --json`、`deepcli docker --json`、`deepcli compiler setup --smoke`、`deepcli test docker --json`、`deepcli setup docker --smoke`、`deepcli install compiler --smoke`、`deepcli init --quick`、`deepcli status`、`deepcli selftest --json`、`deepcli completion zsh`、`deepcli completion json`、`deepcli trace`、`deepcli logs --limit 80`、`deepcli help doctor`、`deepcli session history --limit 20`、`deepcli sessions --all`、`deepcli stream <prompt>`、`deepcli resume [session_id]`；provider 快捷入口也应支持 `deepcli deepseek doctor --quick`、`deepcli deepseek version --json`、`deepcli deepseek about --json`、`deepcli deepseek health`、`deepcli deepseek providers`、`deepcli deepseek use`、`deepcli deepseek switch kimi`、`deepcli deepseek provider --json`、`deepcli deepseek history`、`deepcli deepseek cleanup sessions --json`、`deepcli deepseek accept --json`、`deepcli deepseek gate --json`、`deepcli deepseek login`、`deepcli deepseek logout`、`deepcli deepseek auth --stdin`、`deepcli deepseek timeout 900`、`deepcli deepseek doctor docker`、`deepcli deepseek diagnose`、`deepcli deepseek diagnose compiler`、`deepcli deepseek check docker`、`deepcli deepseek docker`、`deepcli deepseek compiler setup --smoke`、`deepcli deepseek test compiler`、`deepcli deepseek setup docker --smoke`、`deepcli deepseek help doctor`、`deepcli deepseek logs --limit 80`、`deepcli deepseek selftest --json`、`deepcli deepseek completion json`、`deepcli deepseek stream <prompt>` 这类组合，不能在二进制直连时误当作普通 prompt 发给模型。
+- `ask` 和 `stream` 模式必须要求非空 prompt；`deepcli ask`、`deepcli stream`、`deepcli deepseek ask`、`deepcli kimi stream` 等缺参调用应本地报错，不得退回 TUI、创建 session 或调用 provider。
+- 对明显像拼错的顶层命令或未知 CLI 命令加本地拦截，例如 `deepcli doctro --quick` 应提示 `doctor` 建议和 `deepcli ask ...` 逃生路径，不能创建 session 或调用 provider。
+- 本地 one-shot slash 命令，例如 `/help`、`/version`、`/about`、`/quickstart`、`/selftest`、`/completion`、`/init`、`/diagnose`、`/doctor`、`/status`、`/usage`、`/next`、`/accept`、`/gate`、`/verify`、`/handoff`、`/trace`、`/logs`、`/context`、`/permissions show`、`/credentials status|template|import-env|set|remove`、`/login`、`/logout`、`/auth`、`/apikey`、`/key`、`/config show|sources|validate|get`、`/timeout [show|set|reset]`、`/model show|list|set`、`/model <provider>`、`/provider`、`/use`、`/switch`、`/prompt list|get|render`、`/skill list|run`、`/agent list|show`、`/env`/`/setup`/`/install`、`/session list|search|next|diagnose|show|history|summary|tools|tests|diffs|backups|export`、`/cleanup [sessions]` 和无 id 的 `/resume`，不应创建空会话或先调用 provider；其中 `/init` 与 `/doctor --fix` 可以创建低风险本地项目结构，`/credentials set`、`/login`、`/credentials remove`、`/logout` 等凭据写入/移除命令、`/model set` 等模型配置写入命令和 `/timeout set|reset` 等 provider 超时配置写入命令可以写入本地文件，但不能创建 session 记录或调用 provider。只读 one-shot 命令即使使用 `--yes` 临时授权，也不应为了授权本身写入 `.deepcli/authorization.json` 或污染被检查仓库。
 - 支持交互式会话。
-- 支持恢复历史会话。
+- 支持恢复历史会话；TUI 恢复后应加载完整已持久化用户/assistant 消息，并通过单条消息截断保护界面性能，而不是只显示最近固定条数。
 
 ### 5.2 Message Box
 
 - 支持正常 IDE 常用组合键。
-- `Shift+Enter` 换行，`Enter` 提交。
-- 支持多行输入、历史输入、粘贴大段文本。
-- 支持 Agent 运行期间提出 by-the-way 小问题，不打断主任务。
-- 支持从 message box 打开相同目录的新终端。
+- `Shift+Enter` 换行，`Enter` 提交；支持 Left/Right、Home/End、Delete、Backspace、Ctrl-A/Ctrl-E、Ctrl-U/Ctrl-K 等常用行编辑快捷键，并在输入框中显示真实光标位置。
+- 支持多行输入、历史输入、bracketed paste 粘贴大段文本；粘贴内容应插入当前光标位置并规范化 CRLF/CR 换行。
+- 输入 `/` 时展示可筛选的命令帮助面板，支持上下选择、Tab 补全，并显示 usage、examples、注意事项和运行中可安全执行标记；Agent 运行中应优先展示 running-safe 命令。
+- 对 `1`、`ok`、`继续` 等低信息输入应先本地追问并给出 `/help`、`/status`、`/session history` 等可执行提示；追问后会话进入 `waiting_user`，用户的短回复不应再次触发同一追问循环。
+- 支持 Agent 运行期间执行本地 `/status`、`/usage`、`/trace`、`/logs`、`/selftest`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 与 by-the-way 问题记录、查看、回答和清理；`/stop` 应中断当前任务并保留可恢复会话，`/quit` 在运行中应先停止任务再退出。
+- 支持从 message box 打开相同目录的新终端；Agent 正在运行时也应作为 running-safe 本地命令立即执行。
+- 消息区应支持 PageUp/PageDown 或鼠标/触控板滚轮回看历史消息，Ctrl-Home/Ctrl-End 跳转到最早/最新消息，长任务中不应只能看到最后几条输出。
 
 ### 5.3 `/` 指令
 
 建议 MVP 至少支持：
 
-- `/help`：展示可用指令。
-- `/status`：展示任务状态、token 消耗、上下文消耗。
-- `/permissions`：查看或调整当前目录权限。
-- `/config`：查看有效配置来源。
-- `/model`：切换或查看 provider/model。
+- `/help [command|all]` 与 `/quickstart [--check] [--json] [--output path] [--fail-on-missing]`：展示可用指令；支持按命令查看 usage、examples、notes，也支持输出完整指令指南；无参数 `/quickstart` 应给出启动、配置凭据、切换模型、编程、恢复会话、环境准备和 `/accept`/`/gate` 验收交付的一页式路线，且作为 authorization-free 本地只读命令不创建会话、不调用 provider；`--check`/`--json`/`--output` 应在不创建 session、不调用 provider 的前提下检查当前 workspace 的项目配置、授权、默认 provider 凭据、历史 session、测试发现、deepcli package version、注册 slash 命令数和 provider turn timeout，并输出稳定 `deepcli.quickstart.v1` schema，供 TUI、CI 和外部 onboarding UI 使用；`--fail-on-missing` 应在缺少项目配置、默认 provider API key 或可发现测试时保留当前文本/JSON 报告并返回非零退出码，便于 CI、安装脚本和首次使用验收做 readiness gate。
+- `/selftest [--json] [--output path] [--fail-on-issues]`：面向 deepcli 产品自身的本地验收入口，聚合命令注册、项目配置、默认 provider 凭据、可恢复 session、日志、测试发现和支持入口状态；不得创建 session 或调用 provider；`--json` 输出稳定 `deepcli.selftest.v1` schema，包含 ready/status、commands、config、provider、sessions、logs、tests、issues、nextActions 和 report；`--output` 必须限制在 workspace 内；`--fail-on-issues` 在命令面缺失、项目配置缺失、默认 provider API key 缺失或无可发现测试时保留报告并返回非零，供安装脚本、CI 和迁移后验收使用。
+- `/completion [bash|zsh|fish|json|install|status] [--force] [--json] [--output path]`：本地生成、安装或检查 shell 补全脚本，或输出机器可读命令目录，覆盖顶层命令、provider 快捷入口、常用环境/诊断参数和通用选项；不得创建 session 或调用 provider；无参数输出安装示例；`json` 输出稳定 `deepcli.completion.v1` schema，包含 program、version、shells、providers、install 和 commands；`install [bash|zsh|fish]` 默认 dry-run，只展示将写入的用户 HOME 补全路径、字节数和 reload 提示，只有显式 `--force` 才写入 allowlisted shell completion 文件；`install --json` 输出稳定 `deepcli.completion.install.v1` schema，包含 shell、targetPath、status、dryRun、force、bytes、parentCreated、nextActions 和 report；`status [bash|zsh|fish] --json` 应比较已安装文件与当前生成脚本，输出稳定 `deepcli.completion.status.v1` schema，包含 shell、targetPath、status(missing/stale/up_to_date)、installed、upToDate、expectedBytes、installedBytes、nextActions 和 report；`--output` 必须限制在 workspace 内，供安装脚本、外部 UI、文档生成和 shell integration 测试使用。
+- `/version [--json] [--output path]` 与 `/about [--json] [--output path]`：输出比 `deepcli --version` 更完整的本地产品和支持元数据，包括 package version、workspace、项目配置存在性、默认 provider、默认模型、provider 数量、provider turn 超时、注册 slash 命令数和 next actions；该入口用于 issue、支持包、安装验收和新用户自检，不创建 session、不调用 provider；`--json` 输出稳定 `deepcli.version.v1` schema，`--output` 必须限制在 workspace 内，`/about` 是 `/version` 的别名。
+- `/init`：初始化当前项目的 `.deepcli/` 本地状态、忽略规则和配置骨架，并输出后续凭据、环境和测试建议；默认只做低风险本地 scaffold，支持 `--quick`/`--no-env` 跳过环境探测。
+- `/status [--json] [--output path]`：展示当前或最近有记录活动的 session 状态、token 消耗、provider turn、请求体大小、上下文压缩和下一步诊断入口；无 active session 时应回退到最近真实会话，而不是只显示 `session: <none>`；`--json` 输出稳定 `deepcli.status.v1` schema，`--output` 可把当前文本或 JSON 状态报告写入 workspace 内 artifact，且不能允许路径逃逸。
+- `/usage [--json] [--output path] [session_id|--current]`：展示会话用量汇总和诊断摘要，支持指定 session；提示 provider 慢响应、请求体过大、上下文压缩、provider 探测失败、工具失败和测试失败等信号；一次性命令创建的空 session 不应遮蔽最近有活动或审计记录的会话；`--json` 输出稳定 `deepcli.usage.v1` schema，包含 provider turn、token、cache、request size、context compaction、diagnostics 和 next actions，`--output` 可把当前文本或 JSON 用量诊断写入 workspace 内 artifact，且不能允许路径逃逸。
+- `/diagnose [--quick|--full-env] [--probe-provider] [--provider <name>] [--limit n] [--json] [--output path] [--bundle dir] [session_id|--current]` 与 `/support [bundle-dir] [diagnose options]`：全局一键诊断入口，默认快速检查 workspace 配置、凭据、provider readiness、测试发现和最近可诊断 session；没有历史 session 时必须输出 workspace-only 诊断和明确 next actions，而不是报错；`--full-env` 才执行可能较慢的 Docker/Colima 环境检查，`--probe-provider` 才执行在线 provider 探测；`/diagnose docker|compiler` 应作为 `/env check docker|compiler` 的只读环境诊断直达入口，而不是把 `docker`/`compiler` 当作 session id；`--json` 输出稳定 schema，`--output` 可把当前文本或 JSON 诊断报告写入 workspace 内 artifact，且不能允许路径逃逸；`--bundle dir` 应在 workspace 内生成脱敏支持包，至少包含 issue 模板、version/about 元数据、diagnose、quickstart、status、usage、trace、logs、session list 和 manifest，便于用户反馈慢响应、凭据配置、工具失败、版本配置和环境问题；`/support` 应作为 `/diagnose --bundle` 的直达快捷入口，默认写入 `.deepcli/support/latest`，让用户不必记忆长选项。
+- `/next [--json] [--output path] [session_id|--current]`：作为 `/session next` 的快捷入口，聚合当前或最近可行动会话中的待审批、开放 by-the-way 问题、失败/拒绝工具、失败测试、未完成计划和 paused/failed/waiting_user 状态，并给出可直接复制的恢复、诊断和查看命令；无当前 session 或当前为空时应优先回退到最近有 next action 信号的会话，再回退到最近有记录活动的会话；`--json` 输出稳定 `deepcli.next.v1` schema，包含 session metadata、signals、nextActions、quickLinks 和原始 report，`--output` 可把当前文本或 JSON next action 报告写入 workspace 内 artifact，且不能允许路径逃逸。
+- `/doctor` 与 `/health`：诊断项目配置、权限、凭据、provider readiness、测试发现和环境状态；报告应直接包含 deepcli package version、注册命令数、默认 provider/model 相关配置和 provider turn timeout，避免高频健康检查还要额外运行 `/version` 才能反馈问题；支持 `--quick`/`--no-env` 跳过可能较慢的 Docker/Colima 环境检查，支持 `--fix` 自动补齐低风险本地项目结构，支持 `--probe-provider` 显式执行在线 provider 探测；`/doctor shell` 与 `/health shell` 应作为本地安装健康检查，默认 quick，检查 `deepcli` 是否在 PATH、旧命令残留和 bash/zsh/fish completion 是否 missing/stale/up_to_date；`/health` 应作为 `/doctor --quick` 的直达入口，`/doctor docker|compiler` 和 `/health docker|compiler` 应作为 `/env check docker|compiler` 的只读环境诊断直达入口，避免把目标名当作非法 option；并根据环境检查、shell 安装状态和已发现测试给出可直接执行的下一步命令；next actions 应始终包含 `/quickstart`，让首次诊断用户能回到完整启动/配置/编程/验收路线；支持 `--json` 输出稳定 `deepcli.doctor.v1` schema，包含 version、provider、readiness、sessions、tests、shell、environment 和 next actions，并支持 `--output path` 将当前文本或 JSON 输出写入 workspace 内 artifact。
+- `/trace [--limit n] [--json] [--output path] [session_id|--current]`：展示会话审计时间线，用于定位 provider 响应、provider 探测、工具调用、测试、审批和模型切换耗时问题；一次性命令创建的空 session 不应遮蔽最近有审计记录的会话；`--json` 输出稳定 `deepcli.trace.v1` schema，包含 sessionSource、limit、total/shown events、脱敏后的审计事件 payload 和原始文本 trace，`--output` 可把当前文本或 JSON trace 写入 workspace 内 artifact，且不能允许路径逃逸。
+- `/logs [--list|--file name] [--limit n] [--json] [--output path]`：本地只读查看 `.deepcli/logs`，默认 tail 最近修改的日志文件，`--list` 只列文件，`--file` 选择指定日志；输出必须脱敏，不创建 session、不调用 provider；`--json` 输出稳定 `deepcli.logs.v1` schema，包含日志目录、文件列表、选中文件、tail 行、截断状态、next actions 和原始报告，`--output` 必须限制在 workspace 内。
+- `/permissions`：查看或调整当前目录权限；`/permissions [show] [--json] [--output path]` 应输出默认权限模式、sandbox 能力、风险策略、哪些操作需要审批以及 next actions，JSON 使用稳定 `deepcli.permissions.show.v1` schema，`--output` 必须限制在 workspace 内；`set-mode` 继续用于修改默认权限模式。
+- `/credentials`、`/login`、`/logout`、`/auth`、`/apikey` 与 `/key`：查看 provider 凭据状态、生成本地模板、从环境变量导入 API key，通过隐藏输入框/标准输入安全写入 API key，或移除本地文件中的 API key；`/credentials status [provider] [--json] [--output path]` 应输出每个 provider 的文件、环境变量、apiKey 配置状态、模型、endpoint、解析错误和 next actions，JSON 使用稳定 `deepcli.credentials.status.v1` schema，`--output` 必须限制在 workspace 内；`/login [provider] [--stdin] [--force]`、`/auth`、`/apikey` 和 `/key` 都应作为 `/credentials set` 的直达入口，`/logout [provider]` 应作为 `/credentials remove` 的直达入口，省略 provider 时使用当前 provider override 或默认 provider；`/credentials remove` 应只清除本地 credentials 文件中的 `apiKey`，保留 provider/model/endpoint 等元数据，并在对应环境变量仍存在时提醒用户环境变量仍会生效；任何凭据写入或移除入口都必须本地执行，不创建 session、不先调用 provider；任何输出、日志、trace 和会话记录都不得暴露明文凭据。
+- `/config`：查看有效配置、来源、校验结果，并安全读取或修改单个配置项；`/config show|sources|validate|get <path>` 应支持 `--json` 输出稳定 `deepcli.config.inspect.v1` schema，并支持 `--output path` 将当前文本或 JSON 输出写入 workspace 内 artifact；结构化输出不得包含明文凭据，只能展示配置、来源、存在性和 configured/missing 状态。
+- `/timeout [show|set <seconds>|reset] [--json] [--output path]`：作为 `agent.providerTurnTimeoutSeconds` 的高频本地入口，用于慢响应排查和临时调整 provider turn 超时；`/timeout` 与 `/timeout show` 展示当前有效超时、配置路径和排查 next actions，`/timeout <seconds>` 与 `/timeout set <seconds>` 写入项目 `.deepcli/config.json`，`/timeout reset` 恢复默认配置；所有形态都不得创建 session 或调用 provider，运行中会话执行写入时应重新加载 runtime config 并记录脱敏 audit；`--json` 输出稳定 `deepcli.timeout.v1` schema，`--output` 必须限制在 workspace 内。
+- `/model`、`/provider`、`/use`、`/switch`、`/models` 与 `/providers`：查看、列出并切换当前会话使用的 provider/model；`/model [show|list] [--json] [--output path]` 应输出默认 provider、当前会话 provider/model、provider 类型、模型、凭据/环境变量配置状态、capabilities、next actions 和原始报告，JSON 使用稳定 `deepcli.model.inspect.v1` schema，`--output` 必须限制在 workspace 内；`/models` 和 `/providers` 应作为 `/model list` 的只读直达入口，不创建空 session、不调用 provider；`/model set <provider> [model]`、`/model <provider> [model]`、`/provider <provider> [model]`、`/use <provider> [model]` 与 `/switch <provider> [model]` 均应作为本地模型切换入口，更新当前会话与项目配置；作为 one-shot 命令时必须在构造 AgentRuntime 前完成，不创建空 session、不调用 provider。
 - `/plan`：查看当前计划。
-- `/diff`：查看待应用或已应用修改。
-- `/review`：触发 auto-reviewer 或人工 review。
-- `/test`：发现并运行测试命令。
-- `/env`：检测、安装、配置和验证本地任务环境，例如 Docker/Colima 和 compiler-dev 镜像。
+- `/diff [--staged] [--path path] [--stat|--name-only] [--limit n]`：查看待应用或已应用修改；普通 `/diff` 优先显示当前 Git diff，在 Git diff 不可用或为空时回退展示会话记录的 diff 历史；`/diff --staged` 保持 Git staged diff 语义；`--path` 可重复传入工作区相对路径前缀，只显示匹配路径的 Git diff 或 session diff；大 diff 场景下可先用 `--stat` 或 `--name-only` 渐进查看，再用 `--limit` 限制完整 diff 输出。
+- `/review [--path path]`：触发 auto-reviewer 或人工 review；优先审查当前 Git diff，在 Git diff 不可用或为空时回退审查会话记录的 diff 历史，避免非 Git 目录和空 one-shot 会话丢失审查上下文；`--path` 可重复传入工作区相对路径前缀，与 `/verify --path` 保持一致，便于从 scoped 验收继续 scoped review；同类发现应去重计数并只展示少量脱敏示例，避免大 diff 中重复噪声淹没关键风险；风险扫描应解析 diff 文件路径，只对新增危险命令报警，敏感信息扫描应区分真实密钥值和源码中的字段名/状态文本，并降低测试/文档路径、测试上下文和检测器字面量造成的误报。
+- `/accept [verify options]` 与 `/gate [verify options]`：面向“我该如何验收”的高频入口，分别作为 `/verify --run-tests` 和 `/verify --run-tests --fail-on-blockers` 的易记别名；如果用户显式提供 `--test-command <command>` 或 `-- <command>`，应使用该命令作为测试证据而不是重复注入默认测试发现；二者复用 `/verify` 的 path/env/json/output/schema/blocker 语义，不创建 session、不调用 provider；`/gate` 在存在 blocker 时必须保留报告输出并返回非零退出码，适合 CI、安装验收和最终交付脚本。
+- `/verify [--run-tests|--test-command <command>] [--env-check [docker|compiler]] [--path path] [--limit n] [--json] [--output path] [--fail-on-blockers] [session_id|--current]`：生成聚合验收报告，汇总 Git status、Git diff 或 session diff fallback、auto-reviewer 风险、最近测试记录、可选环境 readiness、失败工具、待审批、开放旁路问题和未完成计划；`--path` 可重复传入工作区相对路径前缀，只审查匹配路径的 Git diff 或 session diff，便于在大 diff 中做模块级验收；`--run-tests` 使用自动发现的测试命令，`--test-command` 使用指定命令，二者都必须走 `run_tests` 工具和权限策略，并把本次测试结果纳入报告；`--env-check docker|compiler` 使用只读 `check_environment` 工具把 Docker/编译器环境证据纳入报告，环境未 ready 或检查失败时必须成为 blocker，并给出 `/setup ... --smoke` 或 `/env plan ... --smoke --json` next action；`printf ok`、`echo ok`、`true` 等只证明 shell 可执行的 smoke 命令必须标为弱测试证据，不能解除验收 blocker；已有强测试通过但早于当前 diff 或 scoped diff 最新变更时，也必须标为过期证据并要求重新跑测试；无 session 时，若本次报告显式运行并通过了强测试，可降级为 workspace-only verification 提示而不是硬 blocker；auto-reviewer 的 high finding 必须进入 blockers，medium finding 应作为 review warnings 展示并给出 next action，避免警告噪声把真正的验收阻断淹没；该命令只给出证据和 next actions，不应在测试缺失、环境未 ready 或存在 blocker 时暗示可以验收；脚本和 CI 可使用 `--json` 读取结构化 `status`、`hasBlockers`、`blockers`、`environment` 和 `nextActions`，使用 `--output` 把所选格式写入 workspace 内 artifact，且不能允许路径逃逸，并使用 `--fail-on-blockers` 在仍有 blockers 时返回非零退出码；`--json --output ... --fail-on-blockers` 在返回非零退出码时仍必须向 stdout 和输出文件写入有效 JSON。
+- `/handoff [--path path] [--limit n] [--env-check [docker|compiler]] [--format text|markdown|json|pr] [--output path] [--fail-on-blockers] [session_id|--current]`：生成交付摘要，面向用户汇报、PR 描述或脚本自动化，汇总 workspace、session、Git 状态、diff 统计、review 风险、最近测试、可选环境 readiness 和 blockers；`--env-check docker|compiler` 使用只读 `check_environment` 工具把 Docker/编译器环境证据纳入交付报告和 PR 描述，环境未 ready 或检查失败时必须成为 blocker，并给出 `/setup ... --smoke` 或 `/env plan ... --smoke --json` next action；无测试、无强测试证据、强测试证据早于当前 diff 或 scoped diff 最新变更、环境未 ready、无 diff、无 session 或 high-risk review findings 时必须明确列为 blocker，不能生成“已完成”式结论。默认 text 输出保持适合终端阅读；`--markdown` 输出应适合直接粘贴到消息或评论；`--pr`/`--format pr` 输出应使用 Summary、Changes、Test Plan、Environment、Risks and Blockers、Checklist 结构，适合直接粘贴到 PR 描述；`--json` 输出应包含稳定 schema、status、hasBlockers、blockers、environment 和 nextActions，便于脚本消费；默认不写文件，显式 `--output` 时才把所选格式写入 workspace 内文件，且不能允许路径逃逸；`--fail-on-blockers` 在 blockers 非空时保留报告输出并返回非零退出码，便于 CI 或交付脚本 gate。
+- `/test`：发现并运行测试命令；`/test [discover] [--json] [--output path]` 应输出发现到的测试命令、来源、Docker 需求、可用性、next actions 和原始报告，`/test run [--json] [--output path] [-- <command>]` 应输出执行命令、exit code、stdout/stderr、passed 状态、next actions 和原始报告，JSON 使用稳定 `deepcli.test.inspect.v1` schema，`--output` 必须限制在 workspace 内；测试运行必须继续走工具权限策略，并在 active session 可用时记录测试证据。
+- `/env`：检查、规划、安装和验证 Docker/编译器环境；所有形态都应作为本地 one-shot 命令运行，不创建空会话、不先调用 provider；`/env check [docker|compiler] [--json] [--output path]` 和 `/env plan [docker|compiler] [--smoke] [--json] [--output path]` 是只读预检，`/env setup [docker|compiler] [--smoke] [--json] [--output path]` 与 `/env test [docker|compiler] [--json] [--output path]` 继续走权限策略。`/check [docker|compiler]` 和 `deepcli check ...` 应作为 `/env check ...` 的直达入口；`/docker`、`/compiler`、`deepcli docker` 和 `deepcli compiler` 应作为 target-first `/env check <target>` 的只读入口，`/docker setup --smoke`、`/compiler test --json` 等 action 形式应映射到 `/env <action> <target>`；`deepcli test docker|compiler` 应映射到 `/env test docker|compiler`，但 `deepcli test run|discover` 仍保留项目测试语义。文本输出应同时展示 recommended 和 next actions，让用户看到可直接执行的 `/setup <target> --smoke` 以及预览用 `/env plan <target> --smoke --json`；JSON 使用稳定 `deepcli.env.inspect.v1` schema，包含 target、ready/status、checks、recommended action、would-run steps/actions、stdout/stderr 摘要、next actions 和原始报告；`--output` 必须限制在 workspace 内，用于 TUI 环境面板、CI artifact、安装验收和下一步测试 gate。
+- `/env`、`/setup`、`/install`：检测、计划、安装、配置和验证本地任务环境，例如 Docker/Colima 和 compiler-dev 镜像；`/setup [docker|compiler]` 应作为 `/env setup` 的直达入口，`/install [docker|compiler]` 应作为 `/env install` 的直达入口，二者继续复用同一权限策略、环境工具和 JSON/output 行为；`/env plan` 必须在执行安装或拉镜像前展示 would-run 步骤、风险和后续命令。
 - `/git`：查看 Git 状态或执行受控 Git 操作。
-- `/prompt`：管理自定义 prompt 和内置 prompt。
-- `/skill`：发现、生成、注册、调用 Skill。
-- `/resume`：恢复会话。
+- `/web`：通过受权限控制的网络工具执行 Web 搜索；支持 `/web search <query>`、`/web <query>` 和 `/search <query>`，查询内容先经过敏感信息拦截，结果应在摘要为空时回退展示相关主题。
+- `/prompt`：管理自定义 prompt 和内置 prompt；自定义 prompt 可覆盖同名内置 prompt，并可删除恢复内置默认；`/prompt list|get <name>|render <name> ... [--json] [--output path]` 应输出 prompt 来源、路径、正文长度、渲染上下文、渲染结果、next actions 和原始报告，JSON 使用稳定 `deepcli.prompt.inspect.v1` schema，`--output` 必须限制在 workspace 内；Agent 工具层应能列出、读取和渲染可复用 prompt，渲染时支持 workspace、cwd、branch、diff、file、file_content 和自定义变量。
+- `/skill`：发现、生成、注册、调用 Skill；`/skill list|run <name> [--json] [--output path]` 应输出 Skill 元数据、路径、触发条件、最大深度、指令正文、next actions 和原始报告，JSON 使用稳定 `deepcli.skill.inspect.v1` schema，`--output` 必须限制在 workspace 内；Agent 工具层应能先列出已注册 Skill，再读取并执行匹配 Skill 的指令。
+- `/agent`：查看和创建子 Agent 任务描述符；`/agent list|show <id> [--json] [--output path]` 应输出子任务 id/shortId、父 session、任务描述、深度、写入范围、状态、创建/更新时间、持久化路径、next actions 和原始报告，JSON 使用稳定 `deepcli.agent.inspect.v1` schema，`show` 应支持唯一短 id 前缀，`--output` 必须限制在 workspace 内；`spawn` 继续作为写操作走工具权限与最大深度限制。
+- `/approval`：查看、批准、拒绝和清理待审批请求；`/approval list [--json] [--output path] [session_id|--current] [--all]` 未显式指定 session 时，应避免 one-shot 空 session 遮蔽最近待处理审批，并支持稳定 `deepcli.approval.list.v1` schema 与 workspace 内 artifact 输出；`approve/deny <id>` 应能通过审批 id 在历史会话中定位唯一请求。
+- `/btw`：旁路记录、查看、回答和清理 by-the-way 小问题；`/btw list [--json] [--output path] [session_id|--current] [--all]` 未显式指定 session 时，应避免 one-shot 空 session 遮蔽最近开放问题，并支持稳定 `deepcli.btw.list.v1` schema 与 workspace 内 artifact 输出；`answer <id>` 应能通过问题 id 在历史会话中定位唯一问题。
+- `/resume`：恢复会话；TUI 选择器应按最近活动排序，默认隐藏空 one-shot 会话，支持直接输入字符按 title、id、provider、model 过滤，并在确认前预览所选会话的状态、活动量、summary 和最近消息；确认恢复后消息区应加载该会话完整已持久化用户/assistant 历史；启动入口 `deepcli resume` 在未指定 session id 时也应先打开同一套可过滤选择器，而不是自动恢复最近会话；手输 session id 时应支持唯一短前缀并在歧义时明确提示。
+- `/stop`：中断当前 TUI 中正在运行的 Agent 任务，将会话标记为 paused，并允许之后通过 `/resume` 继续。
+- `/session`、`/history` 与 `/cleanup`：查看、导出和排查会话；首次真实用户任务应自动生成可读 session title，标题从用户任务归一化、截断并脱敏，用户仍可用 `/rename` 或 `/session rename` 覆盖；`/history` 应作为 `/session list` 的会话历史直达入口；`/session list [--all] [--limit n] [--json] [--output path]` 默认隐藏空 one-shot 会话并支持 `--all` 查看完整列表、`--limit n`/`-n n` 限制长列表输出，列表应同时展示可复制的短 id 与完整 id，`--json` 输出稳定 `deepcli.session.list.v1` schema，供 resume picker、外部历史页和脚本消费；`/session search <query> [--limit n] [--json] [--output path]` 可跨标题、summary、消息、工具、测试、diff 和 backup 搜索历史会话，文本和 JSON 命中结果都必须脱敏，`--json` 输出稳定 `deepcli.session.search.v1` schema；`/session next [--json] [--output path] [session_id|--current]` 可聚合恢复建议和 next actions；`/session diagnose [--limit n] [--json] [--output path] [session_id|--current]` 输出信号计数、最近失败工具、最近测试、未完成计划和快速诊断命令，`--json` 输出稳定 `deepcli.session.diagnose.v1` schema，`--output` 可把当前文本或 JSON 会话诊断写入 workspace 内 artifact，且不能允许路径逃逸；`/session show|history|summary|tools|tests|diffs|backups` 都应支持 `--json` 输出稳定 `deepcli.session.inspect.v1` schema，并支持 `--output` 把当前文本或 JSON 查看结果写入 workspace 内 artifact，且不能允许路径逃逸；`/session tools --failed [--limit n]` 直达最近失败或被拒绝的工具调用并给出下一步诊断建议，未显式指定 session 时应回退到最近存在失败工具的会话；`/session rename <session_id|--current> <title>` 可直接重命名历史会话而不必先恢复它；`/cleanup [sessions] [--dry-run|--force] [--json] [--output path]` 应作为 `/session prune-empty` 的易记维护入口；`/session prune-empty [--dry-run|--force] [--json] [--output path]` 可预览并显式确认清理无 activity 且无标题的空会话，默认必须 dry-run 并跳过当前会话和有标题的空会话；`--json` 输出稳定 `deepcli.session.prune_empty.v1` schema，包含候选删除、跳过当前、跳过有标题空会话、实际删除数量和 next actions，供外部历史页、脚本和 TUI 清理确认使用；所有需要 session id 的查看、导出、审批、旁路和恢复操作都应支持唯一短前缀并在歧义时明确提示；`/session diffs` 可回看会话中记录的历史文件 diff；`/session backups` 可回看文件修改前的备份内容；`/session restore-backup <name|latest> [--path <target>] [--dry-run]` 可预览或通过权限工具链恢复备份，新备份应记录原始目标路径以便省略 `--path`；未显式指定 session 时，应避免 one-shot 空 session 遮蔽最近有消息、工具调用、测试、diff、backup、summary 或审计活动的会话，并支持 `--current` 强制查看当前 session。
 - `/terminal`：打开同目录终端。
 
 ### 5.4 Agent 编程能力
@@ -148,7 +184,7 @@
 - Agent 配置：`.deepcli/agents/`。
 - Prompt 配置：`.deepcli/prompts/`。
 - 会话数据：`.deepcli/sessions/`，默认不提交。
-- 日志和 trace：`.deepcli/logs/`，默认不提交。
+- 日志和 trace：`.deepcli/logs/`，默认不提交；`/logs` 提供本地只读、脱敏 tail/list/json/output 入口，便于用户在支持包生成前快速查看最近日志。
 
 ## 6. 用户角色和权限
 
@@ -182,7 +218,7 @@
 
 ### 7.1 首次进入目录
 
-1. 用户在项目目录执行 `deep-cli`。
+1. 用户在项目目录执行 `deepcli`。
 2. CLI 检查 `.deepcli/config.*` 和全局配置。
 3. CLI 检查目录授权状态。
 4. 若未授权，向用户申请读取当前目录权限。
@@ -313,7 +349,7 @@
 
 - 默认中文输出，跟随用户语言调整。
 - 清晰展示计划、工具调用、审批请求、diff、测试结果。
-- message box 支持多行输入和常用 IDE 组合键。
+- message box 支持多行输入、光标移动、局部编辑和常用 IDE 组合键。
 - `/status` 可展示 token、上下文、任务状态。
 - Agent 运行时可处理 by-the-way 小问题，并回到主任务。
 - 用户中断时保存现场并提示恢复方式。
@@ -323,7 +359,7 @@
 - 使用模块化架构，明确 CLI、TUI、Agent runtime、provider、tool、permission、session、skill、git 的边界。
 - Provider 使用适配器模式，DeepSeek 为默认适配器，Kimi 和其他 provider 复用同一接口。
 - 工具调用必须先经过权限引擎，不允许 Agent 直接绕过权限执行。
-- 文件修改使用直接写入，但写入前后生成 diff，并记录到会话。
+- 文件修改使用直接写入，但写入前后生成 diff，并以追加式历史记录写入会话，不能因同一文件多次修改而覆盖旧 diff。
 - shell 执行需要命令分类和风险等级识别。
 - ignore 和隐私规则必须在上下文收集前生效。
 - 会话存储使用结构化 JSONL 或 SQLite；MVP 可先用本地文件，后续再升级。
@@ -356,12 +392,12 @@
 
 核心验收任务：
 
-- 通过调用本项目产出的 `deep-cli` 产品，在本地 Git 仓库中启动 Agent。
+- 通过调用本项目产出的 `deepcli` 产品，在本地 Git 仓库中启动 Agent。
 - Agent 根据 `work/myWork/compiler` 项目中的需求文档和 `online-doc` 要求，独立 coding 生成完整 Rust 编译器实现代码，从 lv1 到 lv9+。
 - Agent 在验收过程中可以连接 web 获取必要公开资料，但必须遵守隐私过滤和 sandbox/approval 策略。
 - Agent 根据需求文档中的环境配置，独立配置 Docker 环境、拉取 image，并运行本地自动化测试。
 - 验收执行期间允许调用本项目配置的 DeepSeek API，并允许使用 DeepSeek V4 Pro 作为 Agent 执行模型；实际 API model id 以 provider 配置为准。
-- 如果验收过程中发现 `deep-cli` 产品能力不足、流程中断、权限策略错误、工具调用失败或 Agent 无法继续，应回到本项目修复和完善 CLI，再重新执行验收测试。
+- 如果验收过程中发现 `deepcli` 产品能力不足、流程中断、权限策略错误、工具调用失败或 Agent 无法继续，应回到本项目修复和完善 CLI，再重新执行验收测试。
 - 测试只要求本地仓库验证，不需要提交远程。
 - 任务过程中必须体现计划、数据获取、实现、测试、review、修复和最终汇报闭环。
 

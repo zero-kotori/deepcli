@@ -1,4 +1,5 @@
 use crate::permissions::PermissionDecision;
+use crate::privacy::redact_sensitive_text;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -6,6 +7,7 @@ use serde_json::Value;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -122,6 +124,32 @@ pub struct SessionActivitySummary {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionDiffRecord {
+    pub name: String,
+    pub path: PathBuf,
+    pub content: String,
+    pub modified_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionBackupRecord {
+    pub name: String,
+    pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_path: Option<PathBuf>,
+    pub content: String,
+    pub modified_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SessionBackupIndexRecord {
+    pub name: String,
+    pub path: PathBuf,
+    pub target_path: PathBuf,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum SideQuestionStatus {
     Open,
@@ -203,6 +231,7 @@ impl SessionStore {
     }
 
     pub fn load(&self, id: &str) -> Result<Session> {
+        let id = self.resolve_id(id)?;
         let path = self.root.join(id);
         let metadata_path = path.join("metadata.json");
         let raw = fs::read_to_string(&metadata_path)
@@ -210,6 +239,38 @@ impl SessionStore {
         let metadata = serde_json::from_str(&raw)
             .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
         Ok(Session { metadata, path })
+    }
+
+    pub fn resolve_id(&self, selector: &str) -> Result<String> {
+        let selector = selector.trim();
+        if selector.is_empty() {
+            anyhow::bail!("session id cannot be empty");
+        }
+        if selector.contains('/') || selector.contains('\\') || selector.contains("..") {
+            anyhow::bail!("session id must be a full UUID or unique UUID prefix");
+        }
+
+        let exact = self.root.join(selector).join("metadata.json");
+        if exact.exists() {
+            return Ok(selector.to_string());
+        }
+
+        let matches = self
+            .list()?
+            .into_iter()
+            .filter_map(|metadata| {
+                let id = metadata.id.to_string();
+                id.starts_with(selector).then_some(id)
+            })
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [id] => Ok(id.clone()),
+            [] => anyhow::bail!("session `{selector}` was not found"),
+            _ => anyhow::bail!(
+                "session id prefix `{selector}` is ambiguous; matched {} session(s)",
+                matches.len()
+            ),
+        }
     }
 
     pub fn list(&self) -> Result<Vec<SessionMetadata>> {
@@ -253,6 +314,34 @@ impl Session {
         self.save_metadata()
     }
 
+    pub fn auto_title_from_user_task(&mut self, task: &str) -> Result<()> {
+        if self
+            .metadata
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty())
+        {
+            return Ok(());
+        }
+        let Some(title) = derive_session_title(task) else {
+            return Ok(());
+        };
+        self.metadata.title = Some(title);
+        self.metadata.updated_at = Utc::now();
+        self.save_metadata()
+    }
+
+    pub fn set_provider_model(
+        &mut self,
+        provider: impl Into<String>,
+        model: Option<String>,
+    ) -> Result<()> {
+        self.metadata.provider = provider.into();
+        self.metadata.model = model;
+        self.metadata.updated_at = Utc::now();
+        self.save_metadata()
+    }
+
     pub fn append_message(&self, role: &str, content: impl Into<String>) -> Result<()> {
         self.append_jsonl(
             "messages.jsonl",
@@ -261,17 +350,59 @@ impl Session {
                 content: content.into(),
                 created_at: Utc::now(),
             },
-        )
+        )?;
+        self.touch_metadata()
+    }
+
+    pub fn load_messages(&self) -> Result<Vec<SessionMessage>> {
+        self.read_jsonl_if_exists("messages.jsonl")
+    }
+
+    pub fn load_recent_messages(&self, limit: usize) -> Result<Vec<SessionMessage>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let messages = self.load_messages()?;
+        let skip = messages.len().saturating_sub(limit);
+        Ok(messages.into_iter().skip(skip).collect())
+    }
+
+    pub fn load_tool_calls(&self) -> Result<Vec<ToolCallRecord>> {
+        self.read_jsonl_if_exists("tools.jsonl")
+    }
+
+    pub fn load_recent_tool_calls(&self, limit: usize) -> Result<Vec<ToolCallRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_tool_calls()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
     }
 
     pub fn append_tool_call(&self, record: &ToolCallRecord) -> Result<()> {
         self.append_jsonl("tools.jsonl", record)?;
-        self.append_audit_event("tool_call", serde_json::to_value(record)?)
+        self.append_audit_event("tool_call", serde_json::to_value(record)?)?;
+        self.touch_metadata()
     }
 
     pub fn append_test_run(&self, record: &TestRunRecord) -> Result<()> {
         self.append_jsonl("tests.jsonl", record)?;
-        self.append_audit_event("test_run", serde_json::to_value(record)?)
+        self.append_audit_event("test_run", serde_json::to_value(record)?)?;
+        self.touch_metadata()
+    }
+
+    pub fn load_test_runs(&self) -> Result<Vec<TestRunRecord>> {
+        self.read_jsonl_if_exists("tests.jsonl")
+    }
+
+    pub fn load_recent_test_runs(&self, limit: usize) -> Result<Vec<TestRunRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_test_runs()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
     }
 
     pub fn append_audit_event(&self, event_type: &str, payload: serde_json::Value) -> Result<()> {
@@ -284,8 +415,22 @@ impl Session {
         self.append_workspace_jsonl("logs/audit.jsonl", &event)
     }
 
+    pub fn load_audit_events(&self) -> Result<Vec<AuditEvent>> {
+        let path = self
+            .metadata
+            .workspace
+            .join(".deepcli")
+            .join("logs")
+            .join("audit.jsonl");
+        Ok(read_audit_jsonl_path_if_exists(&path)?
+            .into_iter()
+            .filter(|event: &AuditEvent| event.session_id == self.metadata.id)
+            .collect())
+    }
+
     pub fn save_plan(&self, plan: &Plan) -> Result<()> {
-        self.write_json("plan.json", plan)
+        self.write_json("plan.json", plan)?;
+        self.touch_metadata()
     }
 
     pub fn load_plan(&self) -> Result<Option<Plan>> {
@@ -455,24 +600,154 @@ impl Session {
     pub fn save_diff(&self, name: &str, diff: &str) -> Result<PathBuf> {
         let diffs = self.path.join("diffs");
         fs::create_dir_all(&diffs)?;
-        let safe_name = name.replace('/', "_");
-        let path = diffs.join(format!("{safe_name}.diff"));
+        let safe_name = sanitize_session_file_name(name);
+        let stamp = Utc::now().format("%Y%m%dT%H%M%S%.3fZ");
+        let mut path = diffs.join(format!("{stamp}-{safe_name}.diff"));
+        let mut collision = 1usize;
+        while path.exists() {
+            path = diffs.join(format!("{stamp}-{collision}-{safe_name}.diff"));
+            collision += 1;
+        }
         fs::write(&path, diff)?;
+        self.touch_metadata()?;
         Ok(path)
+    }
+
+    pub fn load_diffs(&self) -> Result<Vec<SessionDiffRecord>> {
+        let diffs = self.path.join("diffs");
+        if !diffs.exists() {
+            return Ok(Vec::new());
+        }
+        let mut records = Vec::new();
+        for entry in fs::read_dir(&diffs)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("diff") {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let modified_at = metadata
+                .modified()
+                .map(DateTime::<Utc>::from)
+                .unwrap_or_else(|_| DateTime::<Utc>::from(SystemTime::UNIX_EPOCH));
+            let name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_string();
+            records.push(SessionDiffRecord {
+                name,
+                path,
+                content: fs::read_to_string(entry.path())?,
+                modified_at,
+            });
+        }
+        records.sort_by_key(|record| record.modified_at);
+        Ok(records)
+    }
+
+    pub fn load_recent_diffs(&self, limit: usize) -> Result<Vec<SessionDiffRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_diffs()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
     }
 
     pub fn save_backup(&self, name: &str, content: &str) -> Result<PathBuf> {
         let backups = self.path.join("backups");
         fs::create_dir_all(&backups)?;
-        let safe_name = name.replace('/', "_");
-        let path = backups.join(format!("{safe_name}.bak"));
+        let safe_name = sanitize_session_file_name(name);
+        let now = Utc::now();
+        let stamp = now.format("%Y%m%dT%H%M%S%.3fZ");
+        let mut path = backups.join(format!("{stamp}-{safe_name}.bak"));
+        let mut collision = 1usize;
+        while path.exists() {
+            path = backups.join(format!("{stamp}-{collision}-{safe_name}.bak"));
+            collision += 1;
+        }
         fs::write(&path, content)?;
+        let backup_name = path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_string();
+        self.append_jsonl(
+            "backups.jsonl",
+            &SessionBackupIndexRecord {
+                name: backup_name,
+                path: path.clone(),
+                target_path: PathBuf::from(name),
+                created_at: now,
+            },
+        )?;
+        self.touch_metadata()?;
         Ok(path)
+    }
+
+    pub fn load_backups(&self) -> Result<Vec<SessionBackupRecord>> {
+        let backups = self.path.join("backups");
+        if !backups.exists() {
+            return Ok(Vec::new());
+        }
+        let index = self.read_jsonl_if_exists::<SessionBackupIndexRecord>("backups.jsonl")?;
+        let mut records = Vec::new();
+        for entry in fs::read_dir(&backups)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) != Some("bak") {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let modified_at = metadata
+                .modified()
+                .map(DateTime::<Utc>::from)
+                .unwrap_or_else(|_| DateTime::<Utc>::from(SystemTime::UNIX_EPOCH));
+            let name = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default()
+                .to_string();
+            let indexed = index
+                .iter()
+                .rev()
+                .find(|record| backup_index_matches(record, &path));
+            records.push(SessionBackupRecord {
+                name: indexed.map(|record| record.name.clone()).unwrap_or(name),
+                path,
+                target_path: indexed.map(|record| record.target_path.clone()),
+                content: fs::read_to_string(entry.path())?,
+                modified_at,
+            });
+        }
+        records.sort_by_key(|record| record.modified_at);
+        Ok(records)
+    }
+
+    pub fn load_recent_backups(&self, limit: usize) -> Result<Vec<SessionBackupRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_backups()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
     }
 
     pub fn write_summary(&self, summary: &str) -> Result<()> {
         fs::write(self.path.join("summary.md"), summary)
-            .with_context(|| format!("failed to write summary for {}", self.metadata.id))
+            .with_context(|| format!("failed to write summary for {}", self.metadata.id))?;
+        self.touch_metadata()
+    }
+
+    pub fn load_summary(&self) -> Result<Option<String>> {
+        let path = self.path.join("summary.md");
+        if !path.exists() {
+            return Ok(None);
+        }
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))
+            .map(Some)
     }
 
     fn ensure_dirs(&self) -> Result<()> {
@@ -482,6 +757,20 @@ impl Session {
 
     fn save_metadata(&self) -> Result<()> {
         self.write_json("metadata.json", &self.metadata)
+    }
+
+    fn touch_metadata(&self) -> Result<()> {
+        let path = self.path.join("metadata.json");
+        if !path.exists() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let mut metadata: SessionMetadata = serde_json::from_str(&raw)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        metadata.updated_at = Utc::now();
+        fs::write(&path, serde_json::to_vec_pretty(&metadata)?)
+            .with_context(|| format!("failed to write {}", path.display()))
     }
 
     fn write_json<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
@@ -501,6 +790,11 @@ impl Session {
         Ok(Some(serde_json::from_str(&raw)?))
     }
 
+    fn read_jsonl_if_exists<T: DeserializeOwned>(&self, name: &str) -> Result<Vec<T>> {
+        let path = self.path.join(name);
+        read_jsonl_path_if_exists(&path)
+    }
+
     fn append_jsonl<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         self.ensure_dirs()?;
         let path = self.path.join(name);
@@ -509,8 +803,7 @@ impl Session {
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
-        serde_json::to_writer(&mut file, value)?;
-        file.write_all(b"\n")?;
+        write_jsonl_line(&mut file, value)?;
         Ok(())
     }
 
@@ -524,18 +817,55 @@ impl Session {
             .append(true)
             .open(&path)
             .with_context(|| format!("failed to open {}", path.display()))?;
-        serde_json::to_writer(&mut file, value)?;
-        file.write_all(b"\n")?;
+        write_jsonl_line(&mut file, value)?;
         Ok(())
     }
 
     fn save_side_questions(&self, items: &[SideQuestion]) -> Result<()> {
-        self.write_json("side_questions.json", &items)
+        self.write_json("side_questions.json", &items)?;
+        self.touch_metadata()
     }
 
     fn save_approval_requests(&self, items: &[ApprovalRequest]) -> Result<()> {
-        self.write_json("approvals.json", &items)
+        self.write_json("approvals.json", &items)?;
+        self.touch_metadata()
     }
+}
+
+fn read_jsonl_path_if_exists<T: DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    raw.lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .map(|(index, line)| {
+            serde_json::from_str(line)
+                .with_context(|| format!("failed to parse {} line {}", path.display(), index + 1))
+        })
+        .collect()
+}
+
+fn read_audit_jsonl_path_if_exists(path: &Path) -> Result<Vec<AuditEvent>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    Ok(raw
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .filter_map(|line| serde_json::from_str::<AuditEvent>(line).ok())
+        .collect())
+}
+
+fn write_jsonl_line<T: Serialize>(file: &mut fs::File, value: &T) -> Result<()> {
+    let mut line = serde_json::to_vec(value)?;
+    line.push(b'\n');
+    file.write_all(&line)?;
+    Ok(())
 }
 
 fn resolve_side_question_index(items: &[SideQuestion], id: &str) -> Result<usize> {
@@ -588,6 +918,53 @@ fn count_files(path: &Path) -> Result<usize> {
     Ok(count)
 }
 
+fn sanitize_session_file_name(name: &str) -> String {
+    let sanitized = name
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if sanitized.trim_matches('_').is_empty() {
+        "diff".to_string()
+    } else {
+        sanitized
+    }
+}
+
+fn derive_session_title(task: &str) -> Option<String> {
+    let redacted = redact_sensitive_text(task);
+    let normalized = redacted.split_whitespace().collect::<Vec<_>>().join(" ");
+    let title = normalized.trim();
+    if title.is_empty() || title.starts_with('/') {
+        return None;
+    }
+    Some(truncate_title(title, 72))
+}
+
+fn truncate_title(title: &str, limit: usize) -> String {
+    let char_count = title.chars().count();
+    if char_count <= limit {
+        return title.to_string();
+    }
+    let keep = limit.saturating_sub(3);
+    let mut output = title.chars().take(keep).collect::<String>();
+    output.push_str("...");
+    output
+}
+
+fn backup_index_matches(record: &SessionBackupIndexRecord, path: &Path) -> bool {
+    record.path == path
+        || record.path.file_name().is_some_and(|record_name| {
+            path.file_name()
+                .is_some_and(|path_name| path_name == record_name)
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -616,6 +993,16 @@ mod tests {
             })
             .unwrap();
         session
+            .append_test_run(&TestRunRecord {
+                command: "cargo test".to_string(),
+                exit_code: Some(0),
+                stdout: "ok".to_string(),
+                stderr: String::new(),
+                passed: true,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        session
             .save_plan(&Plan {
                 title: "test".to_string(),
                 steps: vec![PlanStep {
@@ -630,6 +1017,28 @@ mod tests {
         let loaded = store.load(&session.id().to_string()).unwrap();
         assert_eq!(loaded.metadata.provider, "deepseek");
         assert_eq!(loaded.load_plan().unwrap().unwrap().steps.len(), 1);
+        let messages = loaded.load_messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert_eq!(messages[0].content, "hello");
+        assert_eq!(loaded.load_recent_messages(1).unwrap(), messages);
+        loaded.write_summary("done").unwrap();
+        assert_eq!(loaded.load_summary().unwrap().as_deref(), Some("done"));
+        assert_eq!(loaded.load_tool_calls().unwrap().len(), 1);
+        assert_eq!(
+            loaded.load_recent_tool_calls(1).unwrap()[0].tool,
+            "read_file"
+        );
+        assert_eq!(loaded.load_test_runs().unwrap().len(), 1);
+        assert_eq!(
+            loaded.load_recent_test_runs(1).unwrap()[0].command,
+            "cargo test"
+        );
+        assert!(loaded
+            .load_audit_events()
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "tool_call"));
         assert!(loaded.path().join("messages.jsonl").exists());
         assert!(dir.path().join(".deepcli/logs/audit.jsonl").exists());
         assert_eq!(loaded.activity_summary().unwrap().message_count, 1);
@@ -642,6 +1051,53 @@ mod tests {
             loaded.load_plan().unwrap().unwrap().steps[0].status,
             PlanStepStatus::Completed
         );
+    }
+
+    #[test]
+    fn load_audit_events_skips_corrupt_workspace_lines() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let other = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let audit_path = dir.path().join(".deepcli/logs/audit.jsonl");
+        let first = AuditEvent {
+            session_id: session.id(),
+            event_type: "provider_turn_started".to_string(),
+            payload: serde_json::json!({"iteration": 1}),
+            created_at: Utc::now(),
+        };
+        let corrupt = "{{not json";
+        let unrelated = AuditEvent {
+            session_id: other.id(),
+            event_type: "tool_started".to_string(),
+            payload: serde_json::json!({"tool": "read_file"}),
+            created_at: Utc::now(),
+        };
+        let second = AuditEvent {
+            session_id: session.id(),
+            event_type: "provider_turn_completed".to_string(),
+            payload: serde_json::json!({"elapsed_ms": 12}),
+            created_at: Utc::now(),
+        };
+        let contents = format!(
+            "{}\n{}\n{}\n{}\n",
+            serde_json::to_string(&first).unwrap(),
+            corrupt,
+            serde_json::to_string(&unrelated).unwrap(),
+            serde_json::to_string(&second).unwrap()
+        );
+        fs::create_dir_all(audit_path.parent().unwrap()).unwrap();
+        fs::write(&audit_path, contents).unwrap();
+
+        let events = session.load_audit_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "provider_turn_started");
+        assert_eq!(events[1].event_type, "provider_turn_completed");
     }
 
     #[test]
@@ -666,6 +1122,119 @@ mod tests {
         });
         let metadata: SessionMetadata = serde_json::from_value(legacy).unwrap();
         assert_eq!(metadata.title, None);
+    }
+
+    #[test]
+    fn auto_titles_session_from_first_meaningful_task() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        session
+            .auto_title_from_user_task("  修复 compiler 项目\n并运行测试  ")
+            .unwrap();
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert_eq!(
+            loaded.metadata.title.as_deref(),
+            Some("修复 compiler 项目 并运行测试")
+        );
+
+        session.auto_title_from_user_task("改成别的标题").unwrap();
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert_eq!(
+            loaded.metadata.title.as_deref(),
+            Some("修复 compiler 项目 并运行测试")
+        );
+    }
+
+    #[test]
+    fn auto_title_skips_commands_redacts_secrets_and_truncates_long_tasks() {
+        assert_eq!(derive_session_title("/status"), None);
+        assert_eq!(
+            derive_session_title("api_key = abc123"),
+            Some("api_key = <redacted>".to_string())
+        );
+
+        let long_title = derive_session_title(
+            "please inspect the compiler project, fix all failing parser tests, then run the full validation suite",
+        )
+        .unwrap();
+        assert_eq!(long_title.chars().count(), 72);
+        assert!(long_title.ends_with("..."));
+    }
+
+    #[test]
+    fn loads_sessions_by_unique_prefix_and_reports_ambiguous_prefixes() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let now = Utc::now();
+        let first_id = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
+        let second_id = Uuid::parse_str("11111112-1111-4111-8111-111111111111").unwrap();
+        for id in [first_id, second_id] {
+            let metadata = SessionMetadata {
+                id,
+                title: None,
+                workspace: dir.path().to_path_buf(),
+                state: SessionState::New,
+                created_at: now,
+                updated_at: now,
+                provider: "deepseek".to_string(),
+                model: Some("deepseek-v4-pro".to_string()),
+            };
+            let path = store.root.join(id.to_string());
+            fs::create_dir_all(&path).unwrap();
+            fs::write(
+                path.join("metadata.json"),
+                serde_json::to_vec_pretty(&metadata).unwrap(),
+            )
+            .unwrap();
+        }
+
+        assert_eq!(store.resolve_id("11111111").unwrap(), first_id.to_string());
+        assert_eq!(store.load("11111111").unwrap().id(), first_id);
+        let ambiguous = store.resolve_id("1111111").unwrap_err().to_string();
+        assert!(ambiguous.contains("ambiguous"));
+        assert!(store
+            .resolve_id("missing")
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        assert!(store
+            .resolve_id("../outside")
+            .unwrap_err()
+            .to_string()
+            .contains("unique UUID prefix"));
+    }
+
+    #[test]
+    fn session_list_sorts_by_latest_recorded_activity() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let first = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let second = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        first.append_message("user", "继续修复 compiler").unwrap();
+
+        let sessions = store.list().unwrap();
+        assert_eq!(sessions[0].id, first.id());
+        assert_eq!(sessions[1].id, second.id());
+        assert!(sessions[0].updated_at > sessions[1].updated_at);
     }
 
     #[test]
@@ -724,6 +1293,57 @@ mod tests {
         assert_eq!(
             session.activity_summary().unwrap().approval_request_count,
             1
+        );
+    }
+
+    #[test]
+    fn stores_diff_history_without_overwriting_same_target() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let first = session.save_diff("src/lib.rs", "-old\n+first\n").unwrap();
+        let second = session
+            .save_diff("src/lib.rs", "-first\n+second\n")
+            .unwrap();
+
+        assert_ne!(first, second);
+        let diffs = session.load_diffs().unwrap();
+        assert_eq!(diffs.len(), 2);
+        assert!(diffs[0].name.contains("src_lib.rs"));
+        assert!(diffs[0].content.contains("+first"));
+        assert!(diffs[1].content.contains("+second"));
+        assert_eq!(session.activity_summary().unwrap().diff_count, 2);
+        assert_eq!(
+            session.load_recent_diffs(1).unwrap()[0].content,
+            diffs[1].content
+        );
+    }
+
+    #[test]
+    fn stores_backup_history_without_overwriting_same_target() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let first = session.save_backup("src/lib.rs", "first backup").unwrap();
+        let second = session.save_backup("src/lib.rs", "second backup").unwrap();
+
+        assert_ne!(first, second);
+        let backups = session.load_backups().unwrap();
+        assert_eq!(backups.len(), 2);
+        assert!(backups[0].name.contains("src_lib.rs"));
+        assert_eq!(backups[0].target_path, Some(PathBuf::from("src/lib.rs")));
+        assert_eq!(backups[0].content, "first backup");
+        assert_eq!(backups[1].content, "second backup");
+        assert_eq!(session.activity_summary().unwrap().backup_count, 2);
+        assert_eq!(
+            session.load_recent_backups(1).unwrap()[0].content,
+            backups[1].content
         );
     }
 }

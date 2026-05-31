@@ -1,17 +1,28 @@
-use crate::commands::{format_session_list, CommandContext, CommandRouter, SlashCommand};
+use crate::commands::{
+    format_session_list, handle_config, handle_credentials_with_default, handle_model_read_command,
+    handle_timeout, list_resumable_sessions, parse_model_set_args, set_credentials_api_key,
+    update_project_model_config, CommandContext, CommandRouter, SlashCommand,
+};
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage, ToolCall, Usage};
-use crate::session::{Plan, PlanStep, PlanStepStatus, Session, SessionState, SessionStore};
+use crate::session::{
+    ApprovalStatus, AuditEvent, Plan, PlanStep, PlanStepStatus, Session, SessionMessage,
+    SessionState, SessionStore, SideQuestionStatus, ToolCallRecord, ToolCallStatus,
+};
 use crate::tools::{ToolExecutor, ToolRegistry};
 use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
+
+const SESSION_CONTEXT_MESSAGE_LIMIT: usize = 16;
+const SESSION_CONTEXT_MESSAGE_CHARS: usize = 1_500;
+const SESSION_CONTEXT_TOTAL_CHARS: usize = 16_000;
 
 pub struct RuntimeOptions {
     pub workspace: PathBuf,
@@ -30,6 +41,271 @@ pub struct AgentRuntime {
     executor: ToolExecutor,
     stream_output: bool,
     progress_tx: Option<Sender<RuntimeProgress>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservation {
+    pub state: String,
+    pub plan_total: usize,
+    pub plan_completed: usize,
+    pub plan_in_progress: usize,
+    pub plan_failed: usize,
+    pub current_step: Option<String>,
+    pub latest_test: Option<SessionObservationTest>,
+    pub pending_approvals: usize,
+    pub open_questions: usize,
+    pub tool_calls: usize,
+    pub failed_tools: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservationTest {
+    pub command: String,
+    pub passed: bool,
+    pub exit_code: Option<i32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservationEnvironment {
+    pub tool: String,
+    pub target: String,
+    pub status: String,
+    pub ready: Option<bool>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionObservationUsage {
+    pub provider_turns_started: usize,
+    pub provider_turns_completed: usize,
+    pub provider_average_elapsed_ms: Option<u128>,
+    pub provider_max_elapsed_ms: Option<u128>,
+    pub provider_tool_calls: usize,
+    pub compacted_turns: usize,
+    pub prompt_tokens: Option<u64>,
+    pub completion_tokens: Option<u64>,
+    pub total_tokens: Option<u64>,
+    pub prompt_cache_hit_tokens: Option<u64>,
+    pub prompt_cache_miss_tokens: Option<u64>,
+    pub max_request_bytes: Option<usize>,
+    pub latest_request_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionMonitor {
+    pub observation: SessionObservation,
+    pub usage: SessionObservationUsage,
+    pub recent_tests: Vec<SessionObservationTest>,
+    pub recent_environment: Vec<SessionObservationEnvironment>,
+    pub pending_approvals: Vec<SessionObservationApproval>,
+    pub open_questions: Vec<SessionObservationQuestion>,
+    pub recent_events: Vec<SessionObservationEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservationApproval {
+    pub id: String,
+    pub tool: String,
+    pub risk: String,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservationQuestion {
+    pub id: String,
+    pub question: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionObservationEvent {
+    pub event_type: String,
+    pub created_at: String,
+}
+
+pub(crate) fn session_environment_observations_from_tool_calls(
+    records: &[ToolCallRecord],
+    limit: usize,
+) -> Vec<SessionObservationEnvironment> {
+    let environment = records
+        .iter()
+        .filter_map(environment_observation_from_tool_call)
+        .collect::<Vec<_>>();
+    let skip = environment.len().saturating_sub(limit);
+    environment.into_iter().skip(skip).collect()
+}
+
+fn environment_observation_from_tool_call(
+    record: &ToolCallRecord,
+) -> Option<SessionObservationEnvironment> {
+    if !matches!(
+        record.tool.as_str(),
+        "check_environment" | "setup_environment"
+    ) {
+        return None;
+    }
+    let target = value_string(&record.output, "target")
+        .or_else(|| value_string(&record.input, "target"))
+        .unwrap_or_else(|| "auto".to_string());
+    let ready = value_bool(&record.output, "ready").or_else(|| {
+        record
+            .output
+            .get("after")
+            .and_then(|after| value_bool(after, "ready"))
+    });
+    let detail = environment_observation_detail(record, ready);
+    Some(SessionObservationEnvironment {
+        tool: record.tool.clone(),
+        target,
+        status: environment_observation_status(&record.status, ready).to_string(),
+        ready,
+        detail,
+    })
+}
+
+fn environment_observation_status(status: &ToolCallStatus, ready: Option<bool>) -> &'static str {
+    match status {
+        ToolCallStatus::Succeeded => match ready {
+            Some(true) => "ready",
+            Some(false) => "needs_setup",
+            None => "succeeded",
+        },
+        ToolCallStatus::Failed => "failed",
+        ToolCallStatus::Denied => "denied",
+        ToolCallStatus::Running => "running",
+        ToolCallStatus::Requested => "requested",
+        ToolCallStatus::PolicyChecking => "policy_checking",
+        ToolCallStatus::AutoApproved | ToolCallStatus::UserApproved => "approved",
+    }
+}
+
+fn environment_observation_detail(record: &ToolCallRecord, ready: Option<bool>) -> String {
+    if let Some(error) = value_string(&record.output, "error") {
+        return format!("error: {error}");
+    }
+    if let Some(recommended) = value_string(&record.output, "recommended_action").or_else(|| {
+        record
+            .output
+            .get("after")
+            .and_then(|after| value_string(after, "recommended_action"))
+    }) {
+        return format!("recommended: {recommended}");
+    }
+    if record.tool == "setup_environment" {
+        let actions = record
+            .output
+            .get("actions")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        return format!("actions={actions}");
+    }
+    ready
+        .map(|ready| format!("ready={ready}"))
+        .unwrap_or_else(|| format!("{:?}", record.status))
+}
+
+fn value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn value_bool(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(Value::as_bool)
+}
+
+pub(crate) fn session_usage_observation_from_audit_events(
+    events: &[AuditEvent],
+) -> SessionObservationUsage {
+    let mut usage = SessionObservationUsage::default();
+    let mut provider_elapsed_ms = 0u128;
+    for event in events {
+        match event.event_type.as_str() {
+            "provider_turn_started" => {
+                usage.provider_turns_started += 1;
+                if event
+                    .payload
+                    .pointer("/request/compacted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    usage.compacted_turns += 1;
+                }
+                if let Some(bytes) = event
+                    .payload
+                    .pointer("/request/total_bytes")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                {
+                    usage.latest_request_bytes = Some(bytes);
+                    usage.max_request_bytes =
+                        Some(usage.max_request_bytes.unwrap_or_default().max(bytes));
+                }
+            }
+            "provider_turn_completed" => {
+                usage.provider_turns_completed += 1;
+                let elapsed = event
+                    .payload
+                    .get("elapsed_ms")
+                    .and_then(Value::as_u64)
+                    .map(u128::from)
+                    .unwrap_or_default();
+                provider_elapsed_ms += elapsed;
+                usage.provider_max_elapsed_ms = Some(
+                    usage
+                        .provider_max_elapsed_ms
+                        .unwrap_or_default()
+                        .max(elapsed),
+                );
+                usage.provider_tool_calls += event
+                    .payload
+                    .get("tool_calls")
+                    .and_then(Value::as_u64)
+                    .and_then(|value| usize::try_from(value).ok())
+                    .unwrap_or_default();
+                let response_usage = event.payload.get("usage").unwrap_or(&Value::Null);
+                add_optional_usage_value(
+                    &mut usage.prompt_tokens,
+                    response_usage.get("prompt_tokens").and_then(Value::as_u64),
+                );
+                add_optional_usage_value(
+                    &mut usage.completion_tokens,
+                    response_usage
+                        .get("completion_tokens")
+                        .and_then(Value::as_u64),
+                );
+                add_optional_usage_value(
+                    &mut usage.total_tokens,
+                    response_usage.get("total_tokens").and_then(Value::as_u64),
+                );
+                add_optional_usage_value(
+                    &mut usage.prompt_cache_hit_tokens,
+                    response_usage
+                        .get("prompt_cache_hit_tokens")
+                        .and_then(Value::as_u64),
+                );
+                add_optional_usage_value(
+                    &mut usage.prompt_cache_miss_tokens,
+                    response_usage
+                        .get("prompt_cache_miss_tokens")
+                        .and_then(Value::as_u64),
+                );
+            }
+            _ => {}
+        }
+    }
+    if usage.provider_turns_completed > 0 {
+        usage.provider_average_elapsed_ms =
+            Some(provider_elapsed_ms / usage.provider_turns_completed as u128);
+    }
+    usage
+}
+
+fn add_optional_usage_value(total: &mut Option<u64>, value: Option<u64>) {
+    if let Some(value) = value {
+        *total = Some(total.unwrap_or_default() + value);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,7 +337,7 @@ impl RuntimeProgress {
     pub fn plain_text(&self) -> String {
         match self {
             RuntimeProgress::ProviderStreamStarted => {
-                "deep-cli: provider stream started".to_string()
+                "deepcli: provider stream started".to_string()
             }
             RuntimeProgress::ProviderTurnStarted {
                 iteration,
@@ -71,22 +347,22 @@ impl RuntimeProgress {
                 request_kib,
                 compacted,
             } => format!(
-                "deep-cli: provider turn {iteration}/{max_iterations} (messages={message_count}, tools={tool_count}, request~{request_kib} KiB{})",
+                "deepcli: provider turn {iteration}/{max_iterations} (messages={message_count}, tools={tool_count}, request~{request_kib} KiB{})",
                 if *compacted { ", compacted" } else { "" }
             ),
             RuntimeProgress::ProviderTurnCompleted {
                 elapsed_ms,
                 tool_calls,
             } => format!(
-                "deep-cli: provider response in {:.1}s (tool_calls={tool_calls})",
+                "deepcli: provider response in {:.1}s (tool_calls={tool_calls})",
                 *elapsed_ms as f64 / 1000.0
             ),
             RuntimeProgress::ToolStarted { tool } => {
-                format!("deep-cli: running tool {tool}")
+                format!("deepcli: running tool {tool}")
             }
             RuntimeProgress::ToolCompleted { tool, ok, .. } => {
                 let status = if *ok { "completed" } else { "failed" };
-                format!("deep-cli: tool {tool} {status}")
+                format!("deepcli: tool {tool} {status}")
             }
         }
     }
@@ -178,6 +454,18 @@ impl AgentRuntime {
                 SlashCommand::Rename { args } => {
                     return self.handle_rename_command(args);
                 }
+                SlashCommand::Model { args } => {
+                    return self.handle_model_command(args);
+                }
+                SlashCommand::Config { args } => {
+                    return self.handle_config_command(args);
+                }
+                SlashCommand::Timeout { args } => {
+                    return self.handle_timeout_command(args);
+                }
+                SlashCommand::Credentials { args } => {
+                    return self.handle_credentials_command(args);
+                }
                 SlashCommand::Quit => {
                     return Ok("bye".to_string());
                 }
@@ -191,6 +479,7 @@ impl AgentRuntime {
                     registry: &self.registry,
                     executor: &self.executor,
                     session_id: Some(self.session_id()),
+                    provider_override: Some(self.provider_name()),
                 },
             )
             .await;
@@ -202,7 +491,150 @@ impl AgentRuntime {
     }
 
     pub fn list_sessions(&self) -> Result<Vec<crate::session::SessionMetadata>> {
-        SessionStore::new(&self.workspace).list()
+        list_resumable_sessions(&self.workspace)
+    }
+
+    pub fn recent_session_messages(&self, limit: usize) -> Result<Vec<SessionMessage>> {
+        self.session.load_recent_messages(limit)
+    }
+
+    pub fn session_messages(&self) -> Result<Vec<SessionMessage>> {
+        self.session.load_messages()
+    }
+
+    pub fn session_observation(&self) -> Result<SessionObservation> {
+        let plan = self.session.load_plan()?;
+        let (plan_total, plan_completed, plan_in_progress, plan_failed, current_step) = plan
+            .as_ref()
+            .map(summarize_plan_observation)
+            .unwrap_or((0, 0, 0, 0, None));
+
+        let latest_test = self
+            .session
+            .load_recent_test_runs(1)?
+            .into_iter()
+            .last()
+            .map(|test| SessionObservationTest {
+                command: test.command,
+                passed: test.passed,
+                exit_code: test.exit_code,
+            });
+
+        let pending_approvals = self
+            .session
+            .load_approval_requests()?
+            .iter()
+            .filter(|request| request.status == ApprovalStatus::Pending)
+            .count();
+        let open_questions = self
+            .session
+            .load_side_questions()?
+            .iter()
+            .filter(|question| question.status == SideQuestionStatus::Open)
+            .count();
+        let tools = self.session.load_tool_calls()?;
+        let failed_tools = tools
+            .iter()
+            .filter(|tool| matches!(tool.status, ToolCallStatus::Failed | ToolCallStatus::Denied))
+            .count();
+
+        Ok(SessionObservation {
+            state: self.state_label(),
+            plan_total,
+            plan_completed,
+            plan_in_progress,
+            plan_failed,
+            current_step,
+            latest_test,
+            pending_approvals,
+            open_questions,
+            tool_calls: tools.len(),
+            failed_tools,
+        })
+    }
+
+    pub fn session_monitor(&self) -> Result<SessionMonitor> {
+        let observation = self.session_observation()?;
+        let recent_tests = self
+            .session
+            .load_recent_test_runs(6)?
+            .into_iter()
+            .map(|test| SessionObservationTest {
+                command: test.command,
+                passed: test.passed,
+                exit_code: test.exit_code,
+            })
+            .collect();
+        let recent_environment =
+            session_environment_observations_from_tool_calls(&self.session.load_tool_calls()?, 6);
+        let pending_approvals = self
+            .session
+            .load_approval_requests()?
+            .into_iter()
+            .filter(|request| request.status == ApprovalStatus::Pending)
+            .map(|request| SessionObservationApproval {
+                id: request.id.to_string(),
+                tool: request.tool,
+                risk: format!("{:?}", request.decision.risk),
+                reason: request.decision.reason,
+            })
+            .collect();
+        let open_questions = self
+            .session
+            .load_side_questions()?
+            .into_iter()
+            .filter(|question| question.status == SideQuestionStatus::Open)
+            .map(|question| SessionObservationQuestion {
+                id: question.id.to_string(),
+                question: question.question,
+            })
+            .collect();
+        let events = self.session.load_audit_events()?;
+        let usage = session_usage_observation_from_audit_events(&events);
+        let skip = events.len().saturating_sub(8);
+        let recent_events = events
+            .into_iter()
+            .skip(skip)
+            .map(|event| SessionObservationEvent {
+                event_type: event.event_type,
+                created_at: event.created_at.format("%H:%M:%S").to_string(),
+            })
+            .collect();
+
+        Ok(SessionMonitor {
+            observation,
+            usage,
+            recent_tests,
+            recent_environment,
+            pending_approvals,
+            open_questions,
+            recent_events,
+        })
+    }
+
+    pub fn update_current_approval(&mut self, id: &str, approved: bool) -> Result<String> {
+        let status = if approved {
+            ApprovalStatus::Approved
+        } else {
+            ApprovalStatus::Denied
+        };
+        let item = self.session.update_approval_request(id, status)?;
+        self.executor.set_session(Some(self.session.clone()));
+        let action = if approved { "approved" } else { "denied" };
+        Ok(format!(
+            "{action} approval request {} for tool {}",
+            item.id, item.tool
+        ))
+    }
+
+    pub fn answer_current_side_question(&mut self, id: &str, answer: &str) -> Result<String> {
+        let answer = answer.trim();
+        if answer.is_empty() {
+            anyhow::bail!("side question answer cannot be empty");
+        }
+        let item = self.session.answer_side_question(id, answer)?;
+        self.executor.set_session(Some(self.session.clone()));
+        Ok(format!("answered btw question {}", item.id))
     }
 
     pub fn resume_session(&mut self, id: &str) -> Result<String> {
@@ -226,6 +658,30 @@ impl AgentRuntime {
         Ok(format!("已重命名当前会话为：{}", title.trim()))
     }
 
+    pub fn store_provider_api_key(
+        &mut self,
+        provider: &str,
+        api_key: String,
+        force: bool,
+    ) -> Result<String> {
+        let output = set_credentials_api_key(
+            &self.workspace,
+            &self.config,
+            provider,
+            api_key,
+            force,
+            "hidden prompt",
+        )?;
+        self.session.append_audit_event(
+            "credentials_updated",
+            json!({
+                "provider": provider,
+                "source": "hidden_prompt",
+            }),
+        )?;
+        Ok(output)
+    }
+
     fn handle_resume_command(&mut self, id: Option<String>) -> Result<String> {
         if let Some(id) = id {
             self.resume_session(&id)
@@ -239,9 +695,117 @@ impl AgentRuntime {
         self.rename_current_session(&title)
     }
 
+    fn handle_model_command(&mut self, args: Vec<String>) -> Result<String> {
+        match args.first().map(String::as_str) {
+            None | Some("show" | "list") => handle_model_read_command(
+                &self.workspace,
+                &self.config,
+                &args,
+                Some((self.provider_name(), self.model_name())),
+            ),
+            Some(value) if value.starts_with("--") => handle_model_read_command(
+                &self.workspace,
+                &self.config,
+                &args,
+                Some((self.provider_name(), self.model_name())),
+            ),
+            Some("set") => {
+                let (provider, model) = parse_model_set_args(&args)?;
+                if !self.config.providers.contains_key(provider) {
+                    return Err(anyhow!("provider `{provider}` is not configured"));
+                }
+                update_project_model_config(&self.workspace, &self.config, provider, model)?;
+                self.config.default_provider = provider.to_string();
+                if let Some(model) = model {
+                    if let Some(provider_config) = self.config.providers.get_mut(provider) {
+                        provider_config.acceptance_model = Some(model.to_string());
+                    }
+                }
+                let runtime = self
+                    .config
+                    .redacted_provider_runtime(&self.workspace, Some(provider))?;
+                let active_model = runtime.model.clone();
+                self.session
+                    .set_provider_model(provider.to_string(), active_model.clone())?;
+                self.executor.set_session(Some(self.session.clone()));
+                self.session.append_audit_event(
+                    "model_updated",
+                    json!({
+                        "provider": provider,
+                        "model": active_model.clone()
+                    }),
+                )?;
+                Ok(format!(
+                    "active session provider updated to `{provider}`\nactive session model: {}",
+                    active_model.unwrap_or_else(|| "<unset>".to_string())
+                ))
+            }
+            Some(other) => Err(anyhow!("unsupported /model action `{other}`")),
+        }
+    }
+
+    fn handle_config_command(&mut self, args: Vec<String>) -> Result<String> {
+        let changes_project_config = matches!(args.first().map(String::as_str), Some("set"));
+        let output = handle_config(&self.workspace, &self.config, args)?;
+        if changes_project_config {
+            self.config = AppConfig::load_effective(&self.workspace, None)?;
+        }
+        Ok(output)
+    }
+
+    fn handle_timeout_command(&mut self, args: Vec<String>) -> Result<String> {
+        let changes_project_config = timeout_args_change_project_config(&args);
+        let output = handle_timeout(&self.workspace, &self.config, args)?;
+        if changes_project_config {
+            self.config = AppConfig::load_effective(&self.workspace, None)?;
+            self.session.append_audit_event(
+                "timeout_updated",
+                json!({
+                    "providerTurnTimeoutSeconds": self.config.agent.provider_turn_timeout_seconds,
+                }),
+            )?;
+        }
+        Ok(output)
+    }
+
+    fn handle_credentials_command(&mut self, args: Vec<String>) -> Result<String> {
+        let action = args.first().cloned();
+        let provider = args
+            .get(1)
+            .filter(|value| !value.starts_with('-'))
+            .cloned()
+            .unwrap_or_else(|| self.provider_name().to_string());
+        let output = handle_credentials_with_default(
+            &self.workspace,
+            &self.config,
+            args,
+            Some(self.provider_name()),
+        )?;
+        match action.as_deref() {
+            Some("set" | "import-env") => {
+                self.session.append_audit_event(
+                    "credentials_updated",
+                    json!({
+                        "provider": provider,
+                        "source": action.unwrap_or_else(|| "unknown".to_string()),
+                    }),
+                )?;
+            }
+            Some("remove") => {
+                self.session.append_audit_event(
+                    "credentials_removed",
+                    json!({
+                        "provider": provider,
+                    }),
+                )?;
+            }
+            _ => {}
+        }
+        Ok(output)
+    }
+
     fn handle_low_information_input(&mut self, input: &str) -> Result<String> {
-        let message =
-            "我不确定你想执行什么。请说明要我分析、修改、测试、继续上次任务，或使用 /help 查看命令。";
+        let message = low_information_clarification_message(input);
         self.session.append_message("user", input)?;
         self.session.append_message("assistant", message)?;
         self.session.write_summary(message)?;
@@ -252,7 +816,7 @@ impl AgentRuntime {
     fn has_open_user_context(&self) -> Result<bool> {
         if matches!(
             self.session.metadata.state,
-            SessionState::AwaitingApproval | SessionState::Paused
+            SessionState::AwaitingApproval | SessionState::Paused | SessionState::WaitingUser
         ) {
             return Ok(true);
         }
@@ -283,6 +847,9 @@ impl AgentRuntime {
     }
 
     pub async fn run_agent_task(&mut self, task: &str) -> Result<String> {
+        self.session.auto_title_from_user_task(task)?;
+        self.executor.set_session(Some(self.session.clone()));
+        let session_context = self.build_session_context()?;
         self.session.set_state(SessionState::ContextLoading)?;
         self.session.append_message("user", task)?;
 
@@ -299,7 +866,11 @@ impl AgentRuntime {
         let mut messages = vec![
             ProviderMessage {
                 role: "system".to_string(),
-                content: Some(system_prompt(&workspace_context, &self.config)),
+                content: Some(system_prompt(
+                    &workspace_context,
+                    &self.config,
+                    session_context.as_deref(),
+                )),
                 reasoning_content: None,
                 name: None,
                 tool_call_id: None,
@@ -518,6 +1089,64 @@ impl AgentRuntime {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
     }
 
+    fn build_session_context(&self) -> Result<Option<String>> {
+        let mut sections = Vec::new();
+
+        if let Some(summary) = self.session.load_summary()? {
+            let summary = summary.trim();
+            if !summary.is_empty() {
+                sections.push(format!(
+                    "Last saved summary:\n{}",
+                    truncate_chars(summary, SESSION_CONTEXT_MESSAGE_CHARS)
+                ));
+            }
+        }
+
+        if let Some(plan) = self.session.load_plan()? {
+            if !plan.steps.is_empty() {
+                let steps = plan
+                    .steps
+                    .iter()
+                    .map(|step| format!("- {:?}: {} ({})", step.status, step.description, step.id))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                sections.push(format!("Current saved plan: {}\n{steps}", plan.title));
+            }
+        }
+
+        let messages = self
+            .session
+            .load_recent_messages(SESSION_CONTEXT_MESSAGE_LIMIT)?;
+        let recent = messages
+            .into_iter()
+            .filter(|message| !message.content.trim().is_empty())
+            .map(|message| {
+                format!(
+                    "- {} at {}:\n{}",
+                    message.role,
+                    message.created_at.to_rfc3339(),
+                    indent_multiline(
+                        &truncate_chars(&message.content, SESSION_CONTEXT_MESSAGE_CHARS),
+                        "  "
+                    )
+                )
+            })
+            .collect::<Vec<_>>();
+        if !recent.is_empty() {
+            sections.push(format!(
+                "Recent conversation messages:\n{}",
+                recent.join("\n")
+            ));
+        }
+
+        if sections.is_empty() {
+            return Ok(None);
+        }
+
+        let context = sections.join("\n\n");
+        Ok(Some(truncate_chars(&context, SESSION_CONTEXT_TOTAL_CHARS)))
+    }
+
     fn emit_progress(&self, event: RuntimeProgress) {
         if let Some(tx) = &self.progress_tx {
             let _ = tx.send(event);
@@ -634,6 +1263,50 @@ impl AgentRuntime {
     }
 }
 
+fn timeout_args_change_project_config(args: &[String]) -> bool {
+    match args.first().map(String::as_str) {
+        Some("set" | "reset") => true,
+        Some("show") | None => false,
+        Some(value) => !value.starts_with('-'),
+    }
+}
+
+fn summarize_plan_observation(plan: &Plan) -> (usize, usize, usize, usize, Option<String>) {
+    let total = plan.steps.len();
+    let completed = plan
+        .steps
+        .iter()
+        .filter(|step| step.status == PlanStepStatus::Completed)
+        .count();
+    let in_progress = plan
+        .steps
+        .iter()
+        .filter(|step| step.status == PlanStepStatus::InProgress)
+        .count();
+    let failed = plan
+        .steps
+        .iter()
+        .filter(|step| step.status == PlanStepStatus::Failed)
+        .count();
+    let current_step = plan
+        .steps
+        .iter()
+        .find(|step| step.status == PlanStepStatus::InProgress)
+        .or_else(|| {
+            plan.steps
+                .iter()
+                .find(|step| step.status == PlanStepStatus::Failed)
+        })
+        .or_else(|| {
+            plan.steps
+                .iter()
+                .find(|step| step.status == PlanStepStatus::Pending)
+        })
+        .map(|step| step.description.clone());
+
+    (total, completed, in_progress, failed, current_step)
+}
+
 fn with_token_estimate(mut content: String, estimated_prompt_tokens: usize) -> String {
     content.push_str(&format!(
         "\n\n[usage estimate] prompt_tokens~{}",
@@ -700,7 +1373,7 @@ fn provider_request_stats(
 }
 
 fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMessage> {
-    let limit = std::env::var("DEEP_CLI_MAX_PROVIDER_REQUEST_BYTES")
+    let limit = std::env::var("DEEPCLI_MAX_PROVIDER_REQUEST_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value >= 16_000)
@@ -743,7 +1416,7 @@ fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMe
     compacted.push(ProviderMessage {
         role: "user".to_string(),
         content: Some(format!(
-            "[deep-cli context compacted: omitted {omitted} earlier completed assistant/tool exchange group(s). The omitted exchanges were older diagnostic reads, shell probes, or test outputs. Re-read specific files or rerun focused commands if needed.]"
+            "[deepcli context compacted: omitted {omitted} earlier completed assistant/tool exchange group(s). The omitted exchanges were older diagnostic reads, shell probes, or test outputs. Re-read specific files or rerun focused commands if needed.]"
         )),
         reasoning_content: None,
         name: None,
@@ -772,7 +1445,7 @@ fn message_groups(messages: &[ProviderMessage]) -> Vec<Vec<ProviderMessage>> {
 }
 
 fn context_tool_limit() -> usize {
-    std::env::var("DEEP_CLI_MAX_CONTEXT_TOOL_CALLS")
+    std::env::var("DEEPCLI_MAX_CONTEXT_TOOL_CALLS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -780,7 +1453,7 @@ fn context_tool_limit() -> usize {
 }
 
 fn verification_tool_limit() -> usize {
-    std::env::var("DEEP_CLI_MAX_VERIFICATION_TOOL_CALLS")
+    std::env::var("DEEPCLI_MAX_VERIFICATION_TOOL_CALLS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -788,7 +1461,7 @@ fn verification_tool_limit() -> usize {
 }
 
 fn budget_skip_turn_limit() -> usize {
-    std::env::var("DEEP_CLI_MAX_BUDGET_SKIPPED_TURNS")
+    std::env::var("DEEPCLI_MAX_BUDGET_SKIPPED_TURNS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -990,7 +1663,7 @@ fn tool_output_indicates_failure(output: &str) -> bool {
 }
 
 fn truncate_tool_output_for_prompt(output: &str) -> String {
-    let limit = std::env::var("DEEP_CLI_MAX_TOOL_OUTPUT_CHARS")
+    let limit = std::env::var("DEEPCLI_MAX_TOOL_OUTPUT_CHARS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -1012,7 +1685,7 @@ fn truncate_tool_output_for_prompt(output: &str) -> String {
         .rev()
         .collect::<String>();
     format!(
-        "{head}\n\n[deep-cli truncated tool output: original_chars={char_count}, kept_head={head_limit}, kept_tail={tail_limit}. Use narrower read_file ranges, search, or shell filters for more detail.]\n\n{tail}"
+        "{head}\n\n[deepcli truncated tool output: original_chars={char_count}, kept_head={head_limit}, kept_tail={tail_limit}. Use narrower read_file ranges, search, or shell filters for more detail.]\n\n{tail}"
     )
 }
 
@@ -1023,7 +1696,7 @@ fn truncate_progress_detail(output: &str) -> String {
         return output.to_string();
     }
     let head = output.chars().take(limit).collect::<String>();
-    format!("{head}\n\n[deep-cli truncated UI detail: original_chars={char_count}]")
+    format!("{head}\n\n[deepcli truncated UI detail: original_chars={char_count}]")
 }
 
 fn is_approval_error(error: &anyhow::Error) -> bool {
@@ -1066,6 +1739,16 @@ fn is_low_information_input(input: &str) -> bool {
     )
 }
 
+fn low_information_clarification_message(input: &str) -> &'static str {
+    if matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "继续" | "go" | "next"
+    ) {
+        return "我还不能判断要继续哪一项。请补一句具体目标，例如“继续修复失败测试”、“继续实现上次计划”，或用 `/status`、`/session history --limit 5` 查看当前上下文。";
+    }
+    "我不确定你想执行什么。请说明要我分析、修改、测试、继续上次任务，或使用 `/help` 查看命令。你也可以用 `/status` 查看当前会话状态。"
+}
+
 fn default_plan(task: &str) -> Plan {
     Plan {
         title: format!("Plan for: {task}"),
@@ -1104,7 +1787,31 @@ fn default_plan(task: &str) -> Plan {
     }
 }
 
-fn system_prompt(context: &crate::workspace::WorkspaceContext, config: &AppConfig) -> String {
+fn truncate_chars(value: &str, limit: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= limit {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(limit).collect::<String>();
+    truncated.push_str(&format!(
+        "\n[deepcli truncated session context: original_chars={char_count}, kept_chars={limit}]"
+    ));
+    truncated
+}
+
+fn indent_multiline(value: &str, indent: &str) -> String {
+    value
+        .lines()
+        .map(|line| format!("{indent}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn system_prompt(
+    context: &crate::workspace::WorkspaceContext,
+    config: &AppConfig,
+    session_context: Option<&str>,
+) -> String {
     let docs = context
         .docs_files
         .iter()
@@ -1117,8 +1824,8 @@ fn system_prompt(context: &crate::workspace::WorkspaceContext, config: &AppConfi
         .map(|file| file.path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    json!({
-        "role": "deep-cli agent",
+    let mut prompt = json!({
+        "role": "deepcli agent",
         "language": config.agent.language,
         "workflow": "analyze -> plan -> modify -> test -> repair -> report",
         "rules": [
@@ -1126,6 +1833,7 @@ fn system_prompt(context: &crate::workspace::WorkspaceContext, config: &AppConfi
             "If the user input is ambiguous or too short to identify a concrete task, ask a concise clarification question before using tools.",
             "All filesystem, shell, git, network, skill, and sub-agent actions must use tools.",
             "For complex tasks, explain the plan before editing.",
+            "Use prompt_list/prompt_get/prompt_render and skill_list/skill_run when reusable project prompts or Skills may fit the task.",
             "Use minimal scoped changes and run relevant tests.",
             "For existing files, prefer apply_patch_or_write with a unified diff patch; use write_file only for new files or small complete rewrites.",
             "Do not replace an existing source file with placeholder, omitted, or partial content.",
@@ -1135,14 +1843,22 @@ fn system_prompt(context: &crate::workspace::WorkspaceContext, config: &AppConfi
         "agents_files": agents,
         "docs_files": docs,
         "git_diff_present": context.git_diff_present
-    })
-    .to_string()
+    });
+    if let Some(session_context) = session_context.filter(|value| !value.trim().is_empty()) {
+        prompt["resumed_session_context"] = json!({
+            "instruction": "Use this as prior conversation state for a resumed session. Do not treat it as the current user request.",
+            "content": session_context
+        });
+    }
+    prompt.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
+    use crate::config::{AppConfig, ProviderConfig};
+    use crate::permissions::{DecisionOutcome, PermissionDecision, RiskLevel};
+    use crate::session::{TestRunRecord, ToolCallRecord};
     use std::fs;
     use tempfile::tempdir;
 
@@ -1166,10 +1882,135 @@ mod tests {
     }
 
     #[test]
+    fn low_information_clarification_gives_actionable_context_commands() {
+        let generic = low_information_clarification_message("1");
+        assert!(generic.contains("/help"));
+        assert!(generic.contains("/status"));
+
+        let continuation = low_information_clarification_message("继续");
+        assert!(continuation.contains("继续修复失败测试"));
+        assert!(continuation.contains("/session history --limit 5"));
+    }
+
+    #[test]
+    fn waiting_user_state_counts_as_open_context_for_short_replies() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        assert!(!runtime.has_open_user_context().unwrap());
+        runtime
+            .session
+            .set_state(SessionState::WaitingUser)
+            .unwrap();
+        assert!(runtime.has_open_user_context().unwrap());
+    }
+
+    #[test]
     fn default_plan_contains_verification_step() {
         let plan = default_plan("task");
         assert!(plan.steps.iter().any(|step| step.id == "verification"));
         assert!(plan.steps.iter().any(|step| step.id == "repair"));
+    }
+
+    #[test]
+    fn session_observation_summarizes_plan_tests_and_blockers() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .save_plan(&Plan {
+                title: "test plan".to_string(),
+                updated_at: Utc::now(),
+                steps: vec![
+                    PlanStep {
+                        id: "one".to_string(),
+                        description: "read context".to_string(),
+                        status: PlanStepStatus::Completed,
+                    },
+                    PlanStep {
+                        id: "two".to_string(),
+                        description: "run tests".to_string(),
+                        status: PlanStepStatus::InProgress,
+                    },
+                    PlanStep {
+                        id: "three".to_string(),
+                        description: "repair".to_string(),
+                        status: PlanStepStatus::Failed,
+                    },
+                ],
+            })
+            .unwrap();
+        runtime
+            .session
+            .append_test_run(&TestRunRecord {
+                command: "cargo test".to_string(),
+                exit_code: Some(101),
+                stdout: String::new(),
+                stderr: "failed".to_string(),
+                passed: false,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        runtime
+            .session
+            .enqueue_side_question("which model should I use?")
+            .unwrap();
+        runtime
+            .session
+            .enqueue_approval_request(
+                "write_file",
+                PermissionDecision {
+                    outcome: DecisionOutcome::RequiresUserApproval,
+                    risk: RiskLevel::Medium,
+                    reason: "write requires approval".to_string(),
+                },
+            )
+            .unwrap();
+        runtime
+            .session
+            .append_tool_call(&ToolCallRecord {
+                tool: "run_tests".to_string(),
+                input: json!({}),
+                output: json!({ "stderr": "failed" }),
+                decision: None,
+                status: ToolCallStatus::Failed,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+
+        let observation = runtime.session_observation().unwrap();
+        assert_eq!(observation.plan_total, 3);
+        assert_eq!(observation.plan_completed, 1);
+        assert_eq!(observation.plan_in_progress, 1);
+        assert_eq!(observation.plan_failed, 1);
+        assert_eq!(observation.current_step.as_deref(), Some("run tests"));
+        assert_eq!(observation.latest_test.unwrap().command, "cargo test");
+        assert_eq!(observation.pending_approvals, 1);
+        assert_eq!(observation.open_questions, 1);
+        assert_eq!(observation.tool_calls, 1);
+        assert_eq!(observation.failed_tools, 1);
     }
 
     #[test]
@@ -1201,6 +2042,77 @@ mod tests {
         )
         .unwrap();
         assert!(!runtime.session_id().is_empty());
+    }
+
+    #[test]
+    fn runtime_builds_resumed_session_context_from_persisted_files() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli/credentials")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            serde_json::to_vec_pretty(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(".deepcli/credentials/deepseek-credentials.json"),
+            r#"{"apiKey":"test","model":"deepseek-chat"}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+        let runtime = AgentRuntime::new(
+            config.clone(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .append_message("user", "之前要求：修复 compiler 项目")
+            .unwrap();
+        runtime
+            .session
+            .append_message("assistant", "已经完成一次测试")
+            .unwrap();
+        runtime
+            .session
+            .write_summary("上次做到 resume 问题排查")
+            .unwrap();
+        runtime
+            .session
+            .save_plan(&default_plan("继续修复"))
+            .unwrap();
+
+        let context = runtime.build_session_context().unwrap().unwrap();
+        assert!(context.contains("Last saved summary"));
+        assert!(context.contains("上次做到 resume 问题排查"));
+        assert!(context.contains("之前要求：修复 compiler 项目"));
+        assert!(context.contains("Current saved plan"));
+
+        let workspace_context = crate::workspace::WorkspaceContext {
+            root: dir.path().to_path_buf(),
+            agents_files: Vec::new(),
+            docs_files: Vec::new(),
+            readme_files: Vec::new(),
+            git_diff_present: false,
+        };
+        let prompt = system_prompt(&workspace_context, &config, Some(&context));
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+        assert_eq!(
+            value["resumed_session_context"]["content"]
+                .as_str()
+                .unwrap(),
+            context
+        );
+        assert!(value["rules"].as_array().unwrap().iter().any(|rule| rule
+            .as_str()
+            .is_some_and(|rule| rule.contains("prompt_list/prompt_get"))));
     }
 
     #[test]
@@ -1310,6 +2222,192 @@ mod tests {
             .unwrap();
         assert!(resume.contains(&other.id().to_string()));
         assert_eq!(runtime.session_id(), other.id().to_string());
+    }
+
+    #[tokio::test]
+    async fn runtime_auto_titles_session_before_provider_work() {
+        let dir = tempdir().unwrap();
+        let mut config = AppConfig {
+            default_provider: "stub".to_string(),
+            ..AppConfig::default()
+        };
+        config.providers.insert(
+            "stub".to_string(),
+            ProviderConfig {
+                provider_type: "stub".to_string(),
+                credentials_file: ".deepcli/credentials/stub.json".into(),
+                acceptance_model: Some("stub-model".to_string()),
+                capabilities: Vec::new(),
+            },
+        );
+
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let error = runtime
+            .handle_input("请修复 compiler 项目并运行测试")
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("provider type `stub` is not implemented"));
+        assert_eq!(
+            runtime.session_title(),
+            Some("请修复 compiler 项目并运行测试")
+        );
+
+        let loaded = SessionStore::new(dir.path())
+            .load(&runtime.session_id())
+            .unwrap();
+        assert_eq!(
+            loaded.metadata.title.as_deref(),
+            Some("请修复 compiler 项目并运行测试")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_model_set_updates_active_session_and_project_config() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli/credentials")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            serde_json::to_vec_pretty(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(".deepcli/credentials/deepseek-credentials.json"),
+            r#"{"apiKey":"test","model":"deepseek-chat"}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let output = runtime
+            .handle_input("/model set kimi kimi-for-coding")
+            .await
+            .unwrap();
+        assert!(output.contains("active session provider updated to `kimi`"));
+        assert_eq!(runtime.provider_name(), "kimi");
+        assert_eq!(runtime.model_name(), Some("kimi-for-coding"));
+
+        let loaded = SessionStore::new(dir.path())
+            .load(&runtime.session_id())
+            .unwrap();
+        assert_eq!(loaded.metadata.provider, "kimi");
+        assert_eq!(loaded.metadata.model.as_deref(), Some("kimi-for-coding"));
+
+        let raw = fs::read_to_string(dir.path().join(".deepcli/config.json")).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["defaultProvider"], "kimi");
+        assert_eq!(
+            value["providers"]["kimi"]["acceptanceModel"],
+            "kimi-for-coding"
+        );
+
+        let show = runtime.handle_input("/model show").await.unwrap();
+        assert!(show.contains("active session provider: kimi"));
+        assert!(show.contains("active session model: kimi-for-coding"));
+    }
+
+    #[tokio::test]
+    async fn runtime_config_set_reloads_active_configuration() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli/credentials")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            serde_json::to_vec_pretty(&AppConfig::default()).unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            dir.path()
+                .join(".deepcli/credentials/deepseek-credentials.json"),
+            r#"{"apiKey":"test","model":"deepseek-chat"}"#,
+        )
+        .unwrap();
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let output = runtime
+            .handle_input("/config set agent.providerTurnTimeoutSeconds 45")
+            .await
+            .unwrap();
+        assert!(output.contains("agent.providerTurnTimeoutSeconds = 45"));
+        assert_eq!(runtime.config.agent.provider_turn_timeout_seconds, 45);
+
+        let show = runtime
+            .handle_input("/config get agent.providerTurnTimeoutSeconds")
+            .await
+            .unwrap();
+        assert_eq!(show, "45");
+    }
+
+    #[tokio::test]
+    async fn runtime_credentials_update_records_redacted_audit() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let output = runtime
+            .store_provider_api_key("deepseek", "runtime-secret".to_string(), false)
+            .unwrap();
+        assert!(output.contains("apiKey redacted"));
+        assert!(!output.contains("runtime-secret"));
+
+        let raw = fs::read_to_string(
+            dir.path()
+                .join(".deepcli/credentials/deepseek-credentials.json"),
+        )
+        .unwrap();
+        assert!(raw.contains("runtime-secret"));
+
+        let events = runtime.session.load_audit_events().unwrap();
+        let raw_events = serde_json::to_string(&events).unwrap();
+        assert!(raw_events.contains("credentials_updated"));
+        assert!(raw_events.contains("hidden_prompt"));
+        assert!(!raw_events.contains("runtime-secret"));
     }
 
     #[test]

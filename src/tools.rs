@@ -3,15 +3,17 @@ use crate::permissions::{
     DecisionOutcome, PermissionDecision, PermissionEngine, RiskLevel, ToolRequest, ToolSurface,
 };
 use crate::privacy::{looks_sensitive, redact_sensitive_value};
+use crate::prompts::{render_prompt_body, Prompt, PromptRenderContext, PromptStore};
 use crate::providers::{ToolFunctionSpec, ToolSpec};
 use crate::session::{Session, TestRunRecord, ToolCallRecord, ToolCallStatus};
-use crate::skills::SkillStore;
+use crate::skills::{SkillMetadata, SkillStore};
 use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use similar::TextDiff;
+use std::collections::BTreeMap;
 use std::env;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
@@ -239,6 +241,38 @@ impl ToolRegistry {
                     false,
                 ),
                 declaration(
+                    "prompt_list",
+                    "List built-in and project prompts available to reuse.",
+                    ToolSurface::Filesystem,
+                    false,
+                    false,
+                    true,
+                ),
+                declaration(
+                    "prompt_get",
+                    "Read a built-in or project prompt body by name.",
+                    ToolSurface::Filesystem,
+                    false,
+                    false,
+                    true,
+                ),
+                declaration(
+                    "prompt_render",
+                    "Render a prompt with workspace, branch, diff, file, and custom variables.",
+                    ToolSurface::Git,
+                    false,
+                    false,
+                    true,
+                ),
+                declaration(
+                    "skill_list",
+                    "List registered project Skills and their triggers.",
+                    ToolSurface::Skill,
+                    false,
+                    false,
+                    true,
+                ),
+                declaration(
                     "skill_generate",
                     "Generate a local Skill skeleton.",
                     ToolSurface::Skill,
@@ -314,6 +348,64 @@ impl ToolExecutor {
         self.session = session;
     }
 
+    pub fn execute_open_terminal_now(&self) -> Result<ToolExecution> {
+        let name = "open_terminal";
+        let original_args = json!({});
+        if let Some(session) = &self.session {
+            self.append_tool_lifecycle(
+                session,
+                name,
+                &original_args,
+                Value::Null,
+                None,
+                ToolCallStatus::Requested,
+            )?;
+            self.append_tool_lifecycle(
+                session,
+                name,
+                &original_args,
+                Value::Null,
+                None,
+                ToolCallStatus::PolicyChecking,
+            )?;
+            self.append_tool_lifecycle(
+                session,
+                name,
+                &original_args,
+                Value::Null,
+                None,
+                ToolCallStatus::Running,
+            )?;
+        }
+
+        let result = self.open_terminal_now();
+        if let Some(session) = &self.session {
+            let (status, output) = match &result {
+                Ok(execution) => (ToolCallStatus::Succeeded, execution.raw.clone()),
+                Err(error) => (ToolCallStatus::Failed, json!({"error": error.to_string()})),
+            };
+            let decision = result
+                .as_ref()
+                .ok()
+                .map(|execution| execution.decision.clone());
+            if let Some(decision) = &decision {
+                if let Some(approval_status) = approval_status_for(decision.outcome) {
+                    self.append_tool_lifecycle(
+                        session,
+                        name,
+                        &original_args,
+                        Value::Null,
+                        Some(decision.clone()),
+                        approval_status,
+                    )?;
+                }
+            }
+            self.append_tool_lifecycle(session, name, &original_args, output, decision, status)?;
+        }
+
+        result
+    }
+
     pub async fn execute(&self, name: &str, args: Value) -> Result<ToolExecution> {
         let original_args = args.clone();
         if let Some(session) = &self.session {
@@ -369,6 +461,10 @@ impl ToolExecutor {
             "setup_environment" => self.setup_environment(args).await,
             "web_search" => self.web_search(args).await,
             "open_terminal" => self.open_terminal().await,
+            "prompt_list" => self.prompt_list().await,
+            "prompt_get" => self.prompt_get(args).await,
+            "prompt_render" => self.prompt_render(args).await,
+            "skill_list" => self.skill_list().await,
             "skill_generate" => self.skill_generate(args).await,
             "skill_run" => self.skill_run(args).await,
             "spawn_subagent" => self.spawn_subagent(args).await,
@@ -845,7 +941,7 @@ impl ToolExecutor {
         let decision = self.permissions.evaluate(&ToolRequest {
             tool: "check_environment".to_string(),
             surface: ToolSurface::Shell,
-            command: Some(format!("deep-cli environment check {target}")),
+            command: Some(format!("deepcli environment check {target}")),
             path: Some(self.workspace.clone()),
             network_target: None,
             writes_files: false,
@@ -871,7 +967,7 @@ impl ToolExecutor {
         let decision = self.permissions.evaluate(&ToolRequest {
             tool: "setup_environment".to_string(),
             surface: ToolSurface::Docker,
-            command: Some(format!("deep-cli environment setup {target}")),
+            command: Some(format!("deepcli environment setup {target}")),
             path: Some(self.workspace.clone()),
             network_target: Some("ghcr.io, docker.io".to_string()),
             writes_files: true,
@@ -912,20 +1008,20 @@ impl ToolExecutor {
             &[("q", query), ("format", "json"), ("no_html", "1")],
         )?;
         let value: Value = reqwest::get(url).await?.json().await?;
-        let abstract_text = value
-            .get("AbstractText")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+        let content = format_web_search_result(query, &value);
         Ok(ToolExecution {
             tool: "web_search".to_string(),
-            content: abstract_text,
+            content,
             raw: value,
             decision,
         })
     }
 
     async fn open_terminal(&self) -> Result<ToolExecution> {
+        self.open_terminal_now()
+    }
+
+    fn open_terminal_now(&self) -> Result<ToolExecution> {
         let decision = self.permissions.evaluate(&ToolRequest {
             tool: "open_terminal".to_string(),
             surface: ToolSurface::Terminal,
@@ -939,7 +1035,7 @@ impl ToolExecutor {
         });
         self.ensure_allowed("open_terminal", &decision, false)?;
         #[cfg(target_os = "macos")]
-        let output = run_command(&self.workspace, "open -a Terminal .").await?;
+        let output = run_command_blocking(&self.workspace, "open -a Terminal .")?;
         #[cfg(not(target_os = "macos"))]
         let output = CommandOutput {
             command: "open_terminal".to_string(),
@@ -952,6 +1048,137 @@ impl ToolExecutor {
             content: output_text(&output),
             raw: json!(output),
             decision,
+        })
+    }
+
+    async fn prompt_list(&self) -> Result<ToolExecution> {
+        let decision = self.evaluate_filesystem(
+            "prompt_list",
+            &self.workspace.join(".deepcli/prompts"),
+            false,
+        )?;
+        self.ensure_allowed("prompt_list", &decision, false)?;
+        let store = PromptStore::new(&self.workspace);
+        let prompts = store.list()?;
+        Ok(ToolExecution {
+            tool: "prompt_list".to_string(),
+            content: format_prompt_tool_list(&prompts),
+            raw: json!(prompts),
+            decision,
+        })
+    }
+
+    async fn prompt_get(&self, args: Value) -> Result<ToolExecution> {
+        let name = required_str(&args, "name")?;
+        let decision = self.evaluate_filesystem(
+            "prompt_get",
+            &self.workspace.join(".deepcli/prompts"),
+            false,
+        )?;
+        self.ensure_allowed("prompt_get", &decision, false)?;
+        let store = PromptStore::new(&self.workspace);
+        let prompt = store.get(name)?;
+        Ok(ToolExecution {
+            tool: "prompt_get".to_string(),
+            content: prompt.body.clone(),
+            raw: json!(prompt),
+            decision,
+        })
+    }
+
+    async fn prompt_render(&self, args: Value) -> Result<ToolExecution> {
+        let name = required_str(&args, "name")?;
+        let command = "git branch --show-current && git diff";
+        let decision = self.permissions.evaluate(&ToolRequest {
+            tool: "prompt_render".to_string(),
+            surface: ToolSurface::Git,
+            command: Some(command.to_string()),
+            path: Some(self.workspace.clone()),
+            network_target: None,
+            writes_files: false,
+            creates_process: true,
+            requires_network: false,
+            explicit_approval: false,
+        });
+        self.ensure_allowed("prompt_render", &decision, false)?;
+        let store = PromptStore::new(&self.workspace);
+        let prompt = store.get(name)?;
+        let context = self.prompt_render_context(&args).await?;
+        let rendered = render_prompt_body(&prompt.body, &context);
+        Ok(ToolExecution {
+            tool: "prompt_render".to_string(),
+            content: rendered.clone(),
+            raw: json!({
+                "name": prompt.name,
+                "description": prompt.description,
+                "context": context,
+                "rendered": rendered
+            }),
+            decision,
+        })
+    }
+
+    async fn skill_list(&self) -> Result<ToolExecution> {
+        let decision =
+            self.evaluate_filesystem("skill_list", &self.workspace.join(".deepcli/skills"), false)?;
+        self.ensure_allowed("skill_list", &decision, false)?;
+        let store = SkillStore::new(&self.workspace);
+        let skills = store.discover()?;
+        Ok(ToolExecution {
+            tool: "skill_list".to_string(),
+            content: format_skill_tool_list(&skills),
+            raw: json!(skills),
+            decision,
+        })
+    }
+
+    async fn prompt_render_context(&self, args: &Value) -> Result<PromptRenderContext> {
+        let max_diff_chars = args
+            .get("max_diff_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(12_000) as usize;
+        let max_file_chars = args
+            .get("max_file_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(12_000) as usize;
+        let branch = command_stdout_or_empty(&self.workspace, "git branch --show-current")
+            .await?
+            .trim()
+            .to_string();
+        let diff_command =
+            "git diff -- . ':(exclude).deepcli/credentials/**' ':(exclude).env' ':(exclude).env.*'";
+        let diff = truncate_display(
+            command_stdout_or_empty(&self.workspace, diff_command)
+                .await?
+                .trim(),
+            max_diff_chars,
+        );
+
+        let (file, file_content) = if let Some(raw_file) = args.get("file").and_then(Value::as_str)
+        {
+            let file_path = resolve_workspace_path(&self.workspace, raw_file)?;
+            let file_decision = self.evaluate_filesystem("prompt_render", &file_path, false)?;
+            self.ensure_allowed("prompt_render", &file_decision, false)?;
+            let relative = file_path
+                .strip_prefix(&self.workspace)
+                .unwrap_or(&file_path)
+                .display()
+                .to_string();
+            let content = fs::read_to_string(&file_path)
+                .with_context(|| format!("failed to read {}", file_path.display()))?;
+            (relative, truncate_display(&content, max_file_chars))
+        } else {
+            (String::new(), String::new())
+        };
+
+        Ok(PromptRenderContext {
+            workspace: self.workspace.display().to_string(),
+            cwd: self.workspace.display().to_string(),
+            branch,
+            diff,
+            file,
+            file_content,
+            variables: prompt_render_variables(args)?,
         })
     }
 
@@ -1144,8 +1371,32 @@ pub async fn run_command(workspace: &Path, command: &str) -> Result<CommandOutpu
     })
 }
 
+pub fn run_command_blocking(workspace: &Path, command: &str) -> Result<CommandOutput> {
+    let output = std::process::Command::new("bash")
+        .arg("-lc")
+        .arg(command)
+        .current_dir(workspace)
+        .output()
+        .with_context(|| format!("failed to run `{command}`"))?;
+    Ok(CommandOutput {
+        command: command.to_string(),
+        exit_code: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    })
+}
+
+async fn command_stdout_or_empty(workspace: &Path, command: &str) -> Result<String> {
+    let output = run_command(workspace, command).await?;
+    if output.exit_code == Some(0) {
+        Ok(output.stdout)
+    } else {
+        Ok(String::new())
+    }
+}
+
 fn default_shell_timeout_seconds() -> u64 {
-    env::var("DEEP_CLI_RUN_SHELL_TIMEOUT_SECONDS")
+    env::var("DEEPCLI_RUN_SHELL_TIMEOUT_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
@@ -1604,10 +1855,10 @@ fn environment_recommendation(
         return Some("install Homebrew or configure Docker manually".to_string());
     }
     if !available("docker_cli") || !available("colima") || !available("docker_daemon") {
-        return Some("/env setup docker".to_string());
+        return Some("/setup docker --smoke".to_string());
     }
     if target == "compiler" && !available("compiler_dev_image") {
-        return Some("/env setup compiler".to_string());
+        return Some("/setup compiler --smoke".to_string());
     }
     Some("/env check".to_string())
 }
@@ -1679,6 +1930,67 @@ fn output_text(output: &CommandOutput) -> String {
         text.push_str(&output.stderr);
     }
     text
+}
+
+fn truncate_display(value: &str, limit: usize) -> String {
+    let char_count = value.chars().count();
+    if char_count <= limit {
+        return value.to_string();
+    }
+    let mut truncated = value.chars().take(limit).collect::<String>();
+    truncated.push_str(&format!("...[truncated {char_count} chars]"));
+    truncated
+}
+
+fn prompt_render_variables(args: &Value) -> Result<BTreeMap<String, String>> {
+    let mut variables = BTreeMap::new();
+    if let Some(object) = args.get("variables").and_then(Value::as_object) {
+        for (key, value) in object {
+            if !is_valid_prompt_variable_name(key) {
+                bail!("invalid prompt variable name `{key}`");
+            }
+            let rendered = match value {
+                Value::String(value) => value.clone(),
+                other => other.to_string(),
+            };
+            variables.insert(key.clone(), rendered);
+        }
+    }
+    Ok(variables)
+}
+
+fn is_valid_prompt_variable_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+}
+
+fn format_prompt_tool_list(prompts: &[Prompt]) -> String {
+    if prompts.is_empty() {
+        return "no prompts available".to_string();
+    }
+    prompts
+        .iter()
+        .map(|prompt| format!("{} - {}", prompt.name, prompt.description))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn format_skill_tool_list(skills: &[SkillMetadata]) -> String {
+    if skills.is_empty() {
+        return "no project skills registered; use skill_generate to create one".to_string();
+    }
+    skills
+        .iter()
+        .map(|skill| {
+            format!(
+                "{} - {} (trigger: {})",
+                skill.name, skill.description, skill.trigger
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn normalize_patch_input(patch: &str, path: Option<&str>) -> String {
@@ -1875,7 +2187,7 @@ fn slice_text_by_line(content: &str, start_line: usize, limit: Option<usize>) ->
     }
     if start_index > 0 || end_index < lines.len() {
         format!(
-            "[deep-cli read_file slice: lines {}-{} of {}]\n{}",
+            "[deepcli read_file slice: lines {}-{} of {}]\n{}",
             start_index + 1,
             end_index,
             lines.len(),
@@ -1919,8 +2231,12 @@ fn format_environment_report(report: &EnvironmentReport) -> String {
         lines.push(line);
     }
     if let Some(action) = &report.recommended_action {
-        lines.push(format!("recommended: {action}"));
+        lines.push(format!(
+            "recommended: {}",
+            environment_action_shortcut(action)
+        ));
     }
+    append_environment_next_actions(&mut lines, report);
     lines.join("\n")
 }
 
@@ -1944,9 +2260,79 @@ fn format_environment_setup(setup: &EnvironmentSetupResult) -> String {
     }
     lines.push(format!("ready after: {}", setup.ready));
     if let Some(action) = &setup.after.recommended_action {
-        lines.push(format!("recommended: {action}"));
+        lines.push(format!(
+            "recommended: {}",
+            environment_action_shortcut(action)
+        ));
     }
+    append_environment_next_actions(&mut lines, &setup.after);
     lines.join("\n")
+}
+
+fn append_environment_next_actions(lines: &mut Vec<String>, report: &EnvironmentReport) {
+    let actions = environment_report_next_actions(report);
+    if actions.is_empty() {
+        return;
+    }
+    lines.push("next:".to_string());
+    lines.extend(actions.into_iter().map(|action| format!("  - {action}")));
+}
+
+fn environment_report_next_actions(report: &EnvironmentReport) -> Vec<String> {
+    if report.ready {
+        let target = environment_followup_target(&report.target);
+        return vec![
+            format!("run `/env test {target} --json` to capture smoke-test evidence"),
+            "run `/test discover --json` to inspect project test commands".to_string(),
+        ];
+    }
+
+    let mut actions = Vec::new();
+    if let Some(action) = &report.recommended_action {
+        let action = environment_action_shortcut(action);
+        if action.starts_with('/') {
+            actions.push(format!("run `{action}` to continue environment setup"));
+        } else {
+            actions.push(action);
+        }
+    }
+    let target = environment_followup_target(&report.target);
+    actions.push(format!(
+        "preview setup first with `/env plan {target} --smoke --json`"
+    ));
+    dedup_environment_actions(actions)
+}
+
+fn environment_followup_target(target: &str) -> &str {
+    if target == "compiler" {
+        "compiler"
+    } else {
+        "docker"
+    }
+}
+
+fn dedup_environment_actions(actions: Vec<String>) -> Vec<String> {
+    let mut deduped = Vec::new();
+    for action in actions {
+        if !deduped.contains(&action) {
+            deduped.push(action);
+        }
+    }
+    deduped
+}
+
+fn environment_action_shortcut(command: &str) -> String {
+    let parts = command.split_whitespace().collect::<Vec<_>>();
+    let target = match parts.as_slice() {
+        ["/env", "setup", target, ..] => *target,
+        ["/setup", target, ..] => *target,
+        _ => return command.to_string(),
+    };
+    if matches!(target, "docker" | "compiler") {
+        format!("/setup {target} --smoke")
+    } else {
+        command.to_string()
+    }
 }
 
 fn first_line(value: &str) -> &str {
@@ -2040,6 +2426,17 @@ fn schema_for(name: &str) -> Value {
             &[],
         ),
         "web_search" => object_schema(vec![("query", "string")], &["query"]),
+        "prompt_get" => object_schema(vec![("name", "string")], &["name"]),
+        "prompt_render" => object_schema(
+            vec![
+                ("name", "string"),
+                ("file", "string"),
+                ("variables", "object"),
+                ("max_diff_chars", "integer"),
+                ("max_file_chars", "integer"),
+            ],
+            &["name"],
+        ),
         "skill_generate" => object_schema(
             vec![
                 ("name", "string"),
@@ -2130,6 +2527,104 @@ fn generate_commit_message(status: &str, changed_files: &str) -> String {
         "{scope}: {verb} {file_count} workspace file{}",
         if file_count == 1 { "" } else { "s" }
     )
+}
+
+fn format_web_search_result(query: &str, value: &Value) -> String {
+    let mut lines = Vec::new();
+    let heading = value
+        .get("Heading")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+    let answer = value
+        .get("Answer")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+    let abstract_text = value
+        .get("AbstractText")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+    let abstract_url = value
+        .get("AbstractURL")
+        .and_then(Value::as_str)
+        .filter(|text| !text.trim().is_empty());
+
+    if let Some(heading) = heading {
+        lines.push(format!("heading: {}", heading.trim()));
+    }
+    if let Some(answer) = answer {
+        lines.push(format!("answer: {}", answer.trim()));
+    }
+    if let Some(abstract_text) = abstract_text {
+        lines.push(format!("summary: {}", abstract_text.trim()));
+    }
+    if let Some(abstract_url) = abstract_url {
+        lines.push(format!("source: {}", abstract_url.trim()));
+    }
+
+    let related = collect_web_related_topics(value, 5);
+    if !related.is_empty() {
+        lines.push("related:".to_string());
+        for (text, url) in related {
+            match url {
+                Some(url) if !url.trim().is_empty() => {
+                    lines.push(format!("  - {} ({})", text.trim(), url.trim()))
+                }
+                _ => lines.push(format!("  - {}", text.trim())),
+            }
+        }
+    }
+
+    if lines.is_empty() {
+        format!("no web search summary found for `{query}`")
+    } else {
+        lines.join("\n")
+    }
+}
+
+fn collect_web_related_topics(value: &Value, limit: usize) -> Vec<(String, Option<String>)> {
+    let mut results = Vec::new();
+    if let Some(topics) = value.get("RelatedTopics") {
+        collect_web_related_topic_values(topics, limit, &mut results);
+    }
+    results
+}
+
+fn collect_web_related_topic_values(
+    value: &Value,
+    limit: usize,
+    results: &mut Vec<(String, Option<String>)>,
+) {
+    if results.len() >= limit {
+        return;
+    }
+    match value {
+        Value::Array(items) => {
+            for item in items {
+                collect_web_related_topic_values(item, limit, results);
+                if results.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Value::Object(map) => {
+            if let Some(text) = map
+                .get("Text")
+                .and_then(Value::as_str)
+                .filter(|text| !text.trim().is_empty())
+            {
+                let url = map
+                    .get("FirstURL")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                results.push((text.to_string(), url));
+                return;
+            }
+            if let Some(topics) = map.get("Topics") {
+                collect_web_related_topic_values(topics, limit, results);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
@@ -2235,7 +2730,10 @@ mod tests {
         };
         let text = format_environment_report(&report);
         assert!(text.contains("compiler_dev_image: missing"));
-        assert!(text.contains("recommended: /env setup compiler"));
+        assert!(text.contains("recommended: /setup compiler --smoke"));
+        assert!(text.contains("next:"));
+        assert!(text.contains("run `/setup compiler --smoke` to continue environment setup"));
+        assert!(text.contains("preview setup first with `/env plan compiler --smoke --json`"));
         assert!(compiler_image_pull_command().contains("docker.1ms.run/maxxing/compiler-dev"));
         assert!(compiler_image_pull_command().contains("docker.m.daocloud.io/maxxing/compiler-dev"));
     }
@@ -2583,6 +3081,108 @@ mod tests {
             .exists());
     }
 
+    #[tokio::test]
+    async fn prompt_tools_list_and_get_project_prompts() {
+        let dir = tempdir().unwrap();
+        let store = PromptStore::new(dir.path());
+        store.save("reviewer", "Review this diff").unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let list = executor.execute("prompt_list", json!({})).await.unwrap();
+        assert!(list.content.contains("code-review"));
+        assert!(list.content.contains("reviewer - Custom project prompt"));
+
+        let get = executor
+            .execute("prompt_get", json!({"name": "reviewer"}))
+            .await
+            .unwrap();
+        assert_eq!(get.content, "Review this diff");
+        assert_eq!(get.raw["name"], "reviewer");
+    }
+
+    #[tokio::test]
+    async fn prompt_render_tool_expands_git_diff_file_and_custom_variables() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn before() {}\n").unwrap();
+        run_command_blocking(dir.path(), "git init --quiet").unwrap();
+        run_command_blocking(dir.path(), "git checkout -b feature/prompt --quiet").unwrap();
+        run_command_blocking(dir.path(), "git add src/lib.rs").unwrap();
+        run_command_blocking(
+            dir.path(),
+            "git -c user.email=a@example.test -c user.name=deepcli commit -m initial --quiet",
+        )
+        .unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn after() {}\n").unwrap();
+        let store = PromptStore::new(dir.path());
+        store
+            .save(
+                "render-me",
+                "{{task}}\nbranch={{branch}}\nfile={{file}}\n{{file_content}}\n{{diff}}",
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let rendered = executor
+            .execute(
+                "prompt_render",
+                json!({
+                    "name": "render-me",
+                    "file": "src/lib.rs",
+                    "variables": {"task": "review"},
+                    "max_diff_chars": 4000
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert!(rendered.content.contains("review"));
+        assert!(rendered.content.contains("branch=feature/prompt"));
+        assert!(rendered.content.contains("file=src/lib.rs"));
+        assert!(rendered.content.contains("pub fn after()"));
+        assert!(rendered.content.contains("-pub fn before()"));
+        assert!(rendered.content.contains("+pub fn after()"));
+    }
+
+    #[tokio::test]
+    async fn skill_list_tool_reports_empty_and_registered_skills() {
+        let dir = tempdir().unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let empty = executor.execute("skill_list", json!({})).await.unwrap();
+        assert!(empty.content.contains("no project skills registered"));
+
+        executor
+            .execute(
+                "skill_generate",
+                json!({
+                    "name": "compiler",
+                    "description": "SysY compiler workflow",
+                    "approved": true
+                }),
+            )
+            .await
+            .unwrap();
+        let listed = executor.execute("skill_list", json!({})).await.unwrap();
+        assert!(listed.content.contains("compiler - SysY compiler workflow"));
+        assert!(listed.content.contains("trigger:"));
+    }
+
     #[test]
     fn generates_commit_message_from_changed_files() {
         let message = generate_commit_message("A  src/main.rs\n", "src/main.rs\nCargo.toml\n");
@@ -2590,5 +3190,37 @@ mod tests {
         let docs =
             generate_commit_message("M  docs/ai/REQUIREMENTS.md\n", "docs/ai/REQUIREMENTS.md\n");
         assert_eq!(docs, "docs: update 1 workspace file");
+    }
+
+    #[test]
+    fn formats_web_search_result_with_related_topic_fallback() {
+        let value = json!({
+            "Heading": "",
+            "AbstractText": "",
+            "RelatedTopics": [
+                {
+                    "Text": "Rust is a systems programming language.",
+                    "FirstURL": "https://duckduckgo.com/Rust"
+                },
+                {
+                    "Topics": [
+                        {
+                            "Text": "Ownership is Rust's memory model.",
+                            "FirstURL": "https://duckduckgo.com/Ownership"
+                        }
+                    ]
+                }
+            ]
+        });
+        let output = format_web_search_result("rust ownership", &value);
+        assert!(output.contains("related:"));
+        assert!(output.contains("Rust is a systems programming language."));
+        assert!(output.contains("Ownership is Rust's memory model."));
+    }
+
+    #[test]
+    fn formats_web_search_empty_result_with_query() {
+        let output = format_web_search_result("unknown", &json!({}));
+        assert_eq!(output, "no web search summary found for `unknown`");
     }
 }

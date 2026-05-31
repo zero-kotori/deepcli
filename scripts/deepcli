@@ -1,0 +1,497 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  if [[ "$LINK_TARGET" == /* ]]; then
+    SCRIPT_PATH="$LINK_TARGET"
+  else
+    SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET"
+  fi
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+DEEPCLI_HOME="${DEEPCLI_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+DEEPCLI_BIN="${DEEPCLI_BIN:-$DEEPCLI_HOME/target/debug/deepcli}"
+DEEPCLI_CONFIG="${DEEPCLI_CONFIG:-$DEEPCLI_HOME/.deepcli/config.json}"
+
+binary_needs_build() {
+  if [[ ! -x "$DEEPCLI_BIN" ]]; then
+    return 0
+  fi
+
+  local path
+  for path in "$DEEPCLI_HOME/Cargo.toml" "$DEEPCLI_HOME/Cargo.lock" "$DEEPCLI_HOME/src"; do
+    if [[ -e "$path" ]] && find "$path" -newer "$DEEPCLI_BIN" -print -quit | grep -q .; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+ensure_binary() {
+  if binary_needs_build; then
+    echo "deepcli: building deepcli binary..." >&2
+    (cd "$DEEPCLI_HOME" && cargo build --quiet)
+  fi
+}
+
+load_api_key() {
+  local env_name="$1"
+  local credentials_file="$2"
+  if [[ -n "${!env_name:-}" || ! -r "$credentials_file" ]]; then
+    return
+  fi
+
+  local api_key
+  api_key="$(
+    /usr/bin/python3 - "$credentials_file" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+try:
+    value = json.loads(path.read_text())
+except Exception:
+    raise SystemExit(0)
+
+api_key = value.get("apiKey") or ""
+if api_key:
+    print(api_key)
+PY
+  )"
+  if [[ -n "$api_key" ]]; then
+    export "$env_name=$api_key"
+  fi
+}
+
+load_default_credentials() {
+  load_api_key "DEEPSEEK_API_KEY" "$DEEPCLI_HOME/.deepcli/credentials/deepseek-credentials.json"
+  load_api_key "KIMI_API_KEY" "$DEEPCLI_HOME/.deepcli/credentials/kimi-credentials.json"
+}
+
+has_cwd_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -C|--cwd|--cwd=*|-C?* )
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+has_config_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --config|--config=* )
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+has_yes_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -y|--yes )
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+is_top_level_slash_command() {
+  case "$1" in
+    help|version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
+      return 0
+      ;;
+    * )
+      return 1
+      ;;
+  esac
+}
+
+usage() {
+  cat <<'EOF'
+Usage:
+  deepcli                         Start the terminal UI in the current directory
+  deepcli repl                    Start the legacy line-based REPL
+  deepcli resume [session_id]     Open the session picker; with id, resume that session
+  deepcli quickstart [--check|--json|--fail-on-missing]
+                                   Show start/configure/code/resume/verify recipes
+  deepcli selftest [--json] [--fail-on-issues]
+                                   Run a local product install/readiness self-test
+  deepcli completion [bash|zsh|fish|json|install|status]
+                                   Generate, install, or inspect shell completion
+  deepcli sessions [--all] [--limit n] [--json] [--output path]
+                                   List resumable sessions for the current directory
+  deepcli history [--all] [--limit n] [--json] [--output path]
+                                   Shortcut for conversation history list
+  deepcli cleanup [sessions] [--json] [--output path] [--force]
+                                   Preview or delete empty one-shot sessions
+  deepcli session <action> [...]  Run a /session action
+  deepcli doctor [--quick] [--json] [--output path]
+                                   Run /doctor without typing the slash
+  deepcli doctor shell [--json]    Check PATH, legacy commands, and completion install
+  deepcli version|about [--json] [--output path]
+                                   Show local version and support metadata
+  deepcli health [--json]          Run a quick local health check
+  deepcli credentials status [provider] [--json] [--output path]
+                                   Inspect provider credential readiness
+  deepcli login|auth|apikey|key [provider] [--stdin] [--force]
+                                   Securely set a provider API key
+  deepcli logout [provider]        Remove a local provider API key
+  deepcli config show|sources|validate|get [args] [--json] [--output path]
+                                   Inspect effective configuration
+  deepcli timeout [seconds|reset] [--json] [--output path]
+                                   Inspect or change provider turn timeout
+  deepcli permissions show [--json] [--output path]
+                                   Inspect workspace permission policy
+  deepcli model show|list [--json] [--output path]
+                                   Inspect configured provider/model state
+  deepcli model set <provider> [model]
+                                   Switch default provider/model without starting a chat
+  deepcli use|switch <provider> [model]
+                                   Shortcut for model switching
+  deepcli provider [provider] [model]
+                                   Show provider state or switch provider/model
+  deepcli models|providers [--json] [--output path]
+                                   Shortcut for /model list
+  deepcli prompt list|get|render [args] [--json] [--output path]
+                                   Inspect reusable prompts and rendered prompt text
+  deepcli skill list|run [args] [--json] [--output path]
+                                   Inspect project skills and skill instructions
+  deepcli agent list|show [args] [--json] [--output path]
+                                   Inspect sub-agent task descriptors
+  deepcli test [discover|run] [--json] [--output path]
+                                   Discover or run project tests
+  deepcli env check|plan|setup|install|test [args] [--json] [--output path]
+                                   Check, plan, set up, or verify local task environments
+  deepcli check [docker|compiler] [--json]
+                                   Shortcut for environment readiness check
+  deepcli docker|compiler [check|plan|setup|install|test] [--json]
+                                   Target-first local environment workflow
+  deepcli setup [docker|compiler] [--smoke]
+                                   Shortcut for environment setup
+  deepcli install [docker|compiler] [--smoke]
+                                   Alias for environment install/setup
+  deepcli diagnose [--limit n] [--bundle dir]
+                                   Run a fast workspace + session diagnosis
+  deepcli support [bundle-dir]    Create a redacted support bundle and issue draft
+  deepcli init [--quick]          Run /init without typing the slash
+  deepcli status|usage|next|accept|gate|verify|handoff|trace|logs|selftest|completion
+                                   Run common diagnostic slash commands
+  deepcli tui                     Start the terminal UI in the current directory
+  deepcli ask <prompt>            Run a one-shot task in the current directory
+  deepcli stream <prompt>         Run a streaming one-shot chat task
+  deepcli kimi [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|selftest|completion] [args...]
+                                   Use --provider kimi --model kimi-for-coding
+  deepcli deepseek [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|selftest|completion] [args...]
+                                   Use --provider deepseek --model deepseek-v4-pro
+  deepcli help                    Show this help
+
+All other arguments are forwarded to the binary. The wrapper adds defaults unless
+you supplied them:
+  -C "$PWD" --config "$DEEPCLI_CONFIG" --yes
+
+Examples:
+  deepcli
+  deepcli repl
+  deepcli tui
+  deepcli resume
+  deepcli quickstart
+  deepcli quickstart --json --output .deepcli/exports/quickstart.json
+  deepcli quickstart --json --fail-on-missing
+  deepcli selftest --json --output .deepcli/exports/selftest.json
+  deepcli selftest --json --fail-on-issues
+  deepcli completion status zsh
+  deepcli completion install zsh
+  deepcli completion install zsh --force
+  deepcli completion zsh > ~/.zsh/completions/_deepcli
+  deepcli completion json --output .deepcli/exports/commands.json
+  deepcli version --json --output .deepcli/exports/version.json
+  deepcli resume 6155c14e-85e5-4600-a081-29359cc232f2
+  deepcli doctor --quick
+  deepcli doctor shell --json
+  deepcli health --json
+  deepcli health shell --json
+  deepcli doctor docker --json
+  deepcli doctor --quick --json --output .deepcli/exports/doctor.json
+  deepcli next
+  deepcli next --json --output .deepcli/exports/next.json
+  deepcli sessions --json --output .deepcli/exports/sessions.json
+  deepcli session search compiler --json --output .deepcli/exports/session-search.json
+  deepcli cleanup sessions --json --output .deepcli/exports/cleanup.json
+  deepcli status --json --output .deepcli/exports/status.json
+  deepcli usage --json --output .deepcli/exports/usage.json
+  deepcli trace --json --output .deepcli/exports/trace.json
+  deepcli logs --limit 80
+  deepcli logs --json --output .deepcli/exports/logs.json
+  deepcli credentials status --json --output .deepcli/exports/credentials.json
+  printf '%s' "$DEEPSEEK_API_KEY" | deepcli login deepseek --stdin --force
+  deepcli logout deepseek
+  deepcli config sources --json --output .deepcli/exports/config-sources.json
+  deepcli config get agent.providerTurnTimeoutSeconds --json --output .deepcli/exports/config-timeout.json
+  deepcli timeout 900
+  deepcli timeout --json --output .deepcli/exports/timeout.json
+  deepcli permissions show --json --output .deepcli/exports/permissions.json
+  deepcli model list --json --output .deepcli/exports/models.json
+  deepcli use kimi
+  deepcli switch deepseek deepseek-v4-pro
+  deepcli provider --json
+  deepcli provider kimi
+  deepcli providers --json
+  deepcli history --limit 10
+  deepcli prompt list --json --output .deepcli/exports/prompts.json
+  deepcli skill list --json --output .deepcli/exports/skills.json
+  deepcli agent list --json --output .deepcli/exports/agents.json
+  deepcli test discover --json --output .deepcli/exports/tests.json
+  deepcli test run --json --output .deepcli/exports/test-run.json -- cargo test
+  deepcli check docker --json
+  deepcli docker --json
+  deepcli compiler setup --smoke
+  deepcli env check docker --json --output .deepcli/exports/env-check.json
+  deepcli env plan compiler --smoke --json --output .deepcli/exports/env-plan.json
+  deepcli setup docker --smoke
+  deepcli install compiler --smoke
+  deepcli env test compiler --json --output .deepcli/exports/env-test.json
+  deepcli diagnose --limit 5
+  deepcli diagnose docker --json
+  deepcli diagnose --json --output .deepcli/exports/diagnose.json
+  deepcli diagnose --bundle .deepcli/support/latest
+  deepcli support
+  deepcli support .deepcli/support/slow-run
+  deepcli session diagnose --json --output .deepcli/exports/session-diagnose.json
+  deepcli session history --json --output .deepcli/exports/session-history.json
+  deepcli session tools --failed --json --output .deepcli/exports/session-tools.json
+  deepcli approval list --json --output .deepcli/exports/approvals.json
+  deepcli btw list --json --output .deepcli/exports/btw.json
+  deepcli verify
+  deepcli accept --json --output .deepcli/exports/acceptance.json
+  deepcli gate --json --output .deepcli/exports/gate.json
+  deepcli verify --json --output .deepcli/exports/verify.json
+  deepcli verify --env-check docker --json --output .deepcli/exports/verify-env.json
+  deepcli handoff
+  deepcli handoff --pr
+  deepcli handoff --pr --output .deepcli/exports/pr-description.md
+  deepcli handoff --env-check docker --json --output .deepcli/exports/handoff-env.json
+  deepcli verify --run-tests
+  deepcli session history --limit 20
+  deepcli kimi
+  deepcli deepseek diagnose --limit 5
+  deepcli deepseek doctor --quick
+  deepcli deepseek ask '阅读项目结构并说明如何运行测试'
+  deepcli kimi stream '请只回答 OK'
+  deepcli --provider kimi --model kimi-for-coding
+EOF
+}
+
+run_deepcli() {
+  ensure_binary
+  load_default_credentials
+  local args=()
+  if ! has_cwd_arg "$@"; then
+    args+=(-C "$PWD")
+  fi
+  if ! has_config_arg "$@"; then
+    args+=(--config "$DEEPCLI_CONFIG")
+  fi
+  if ! has_yes_arg "$@"; then
+    args+=(--yes)
+  fi
+  if ((${#args[@]})); then
+    exec "$DEEPCLI_BIN" "${args[@]}" "$@"
+  else
+    exec "$DEEPCLI_BIN" "$@"
+  fi
+}
+
+run_provider_command() {
+  local provider="$1"
+  local model="$2"
+  shift 2
+
+  case "${1:-}" in
+    "" )
+      run_deepcli --provider "$provider" --model "$model" --tui
+      ;;
+    ask )
+      run_deepcli --provider "$provider" --model "$model" "$@"
+      ;;
+    stream )
+      run_deepcli --provider "$provider" --model "$model" "$@"
+      ;;
+    tui )
+      shift
+      run_deepcli --provider "$provider" --model "$model" --tui "$@"
+      ;;
+    repl )
+      shift
+      run_deepcli --provider "$provider" --model "$model" --repl "$@"
+      ;;
+    resume )
+      shift
+      local session_id="${1:-}"
+      if [[ -z "$session_id" ]]; then
+        run_deepcli --provider "$provider" --model "$model" --resume-picker "$@"
+      else
+        shift
+        run_deepcli --provider "$provider" --model "$model" --tui --resume "$session_id" "$@"
+      fi
+      ;;
+    diagnose )
+      shift
+      run_deepcli --provider "$provider" --model "$model" /diagnose "$@"
+      ;;
+    check )
+      shift
+      run_deepcli --provider "$provider" --model "$model" /check "$@"
+      ;;
+    test )
+      shift
+      case "${1:-}" in
+        docker|compiler )
+          run_deepcli --provider "$provider" --model "$model" /env test "$@"
+          ;;
+        * )
+          run_deepcli --provider "$provider" --model "$model" /test "$@"
+          ;;
+      esac
+      ;;
+    login|auth|apikey|key )
+      local slash_command="$1"
+      shift
+      if [[ "${1:-}" == "" || "${1:-}" == --* ]]; then
+        run_deepcli --provider "$provider" --model "$model" "/$slash_command" "$provider" "$@"
+      else
+        run_deepcli --provider "$provider" --model "$model" "/$slash_command" "$@"
+      fi
+      ;;
+    logout )
+      shift
+      if [[ "${1:-}" == "" || "${1:-}" == --* ]]; then
+        run_deepcli --provider "$provider" --model "$model" /logout "$provider" "$@"
+      else
+        run_deepcli --provider "$provider" --model "$model" /logout "$@"
+      fi
+      ;;
+    use|switch )
+      local slash_command="$1"
+      shift
+      if [[ "${1:-}" == "" || "${1:-}" == --* ]]; then
+        run_deepcli --provider "$provider" --model "$model" "/$slash_command" "$provider" "$@"
+      else
+        run_deepcli --provider "$provider" --model "$model" "/$slash_command" "$@"
+      fi
+      ;;
+    * )
+      if is_top_level_slash_command "$1"; then
+        local slash_command="$1"
+        shift
+        run_deepcli --provider "$provider" --model "$model" "/$slash_command" "$@"
+      else
+        run_deepcli --provider "$provider" --model "$model" "$@"
+      fi
+      ;;
+  esac
+}
+
+case "${1:-}" in
+  "" )
+    run_deepcli --tui
+    ;;
+  help )
+    shift
+    if [[ "${1:-}" == "" ]]; then
+      usage
+    else
+      run_deepcli /help "$@"
+    fi
+    ;;
+  --help|-h )
+    usage
+    ;;
+  resume )
+    shift
+    session_id="${1:-}"
+    if [[ -z "$session_id" ]]; then
+      run_deepcli --resume-picker "$@"
+    else
+      shift
+      run_deepcli --tui --resume "$session_id" "$@"
+    fi
+    ;;
+  sessions )
+    shift
+    run_deepcli /session list "$@"
+    ;;
+  session )
+    shift
+    if [[ "${1:-}" == "" ]]; then
+      run_deepcli /session list
+    else
+      run_deepcli /session "$@"
+    fi
+    ;;
+  diagnose )
+    shift
+    run_deepcli /diagnose "$@"
+    ;;
+  support )
+    shift
+    run_deepcli /support "$@"
+    ;;
+  check )
+    shift
+    run_deepcli /check "$@"
+    ;;
+  test )
+    shift
+    case "${1:-}" in
+      docker|compiler )
+        run_deepcli /env test "$@"
+        ;;
+      * )
+        run_deepcli /test "$@"
+        ;;
+    esac
+    ;;
+  tui )
+    shift
+    run_deepcli --tui "$@"
+    ;;
+  repl )
+    shift
+    run_deepcli --repl "$@"
+    ;;
+  ask )
+    run_deepcli "$@"
+    ;;
+  stream )
+    run_deepcli "$@"
+    ;;
+  kimi )
+    shift
+    run_provider_command kimi kimi-for-coding "$@"
+    ;;
+  deepseek )
+    shift
+    run_provider_command deepseek deepseek-v4-pro "$@"
+    ;;
+  version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
+    slash_command="$1"
+    shift
+    run_deepcli "/$slash_command" "$@"
+    ;;
+  * )
+    run_deepcli "$@"
+    ;;
+esac

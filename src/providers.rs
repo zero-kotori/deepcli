@@ -1340,7 +1340,7 @@ fn is_retryable_provider_body(raw: &str) -> bool {
 }
 
 fn provider_max_attempts() -> usize {
-    env::var("DEEP_CLI_PROVIDER_MAX_ATTEMPTS")
+    env::var("DEEPCLI_PROVIDER_MAX_ATTEMPTS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -1348,7 +1348,7 @@ fn provider_max_attempts() -> usize {
 }
 
 fn provider_max_output_tokens() -> usize {
-    env::var("DEEP_CLI_PROVIDER_MAX_OUTPUT_TOKENS")
+    env::var("DEEPCLI_PROVIDER_MAX_OUTPUT_TOKENS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
@@ -1356,7 +1356,7 @@ fn provider_max_output_tokens() -> usize {
 }
 
 fn provider_streaming_chat_enabled() -> bool {
-    env::var("DEEP_CLI_PROVIDER_STREAMING_CHAT")
+    env::var("DEEPCLI_PROVIDER_STREAMING_CHAT")
         .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE" | "off" | "OFF"))
         .unwrap_or(true)
 }

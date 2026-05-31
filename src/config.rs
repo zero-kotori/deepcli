@@ -270,20 +270,20 @@ impl AppConfig {
     }
 
     fn apply_env_overrides(&mut self) {
-        if let Ok(provider) = env::var("DEEP_CLI_PROVIDER") {
+        if let Ok(provider) = env::var("DEEPCLI_PROVIDER") {
             self.default_provider = provider;
         }
-        if let Ok(threshold) = env::var("DEEP_CLI_TOKEN_WARNING_THRESHOLD") {
+        if let Ok(threshold) = env::var("DEEPCLI_TOKEN_WARNING_THRESHOLD") {
             if let Ok(value) = threshold.parse::<usize>() {
                 self.usage.token_warning_threshold = value;
             }
         }
-        if let Ok(timeout) = env::var("DEEP_CLI_PROVIDER_TURN_TIMEOUT_SECONDS") {
+        if let Ok(timeout) = env::var("DEEPCLI_PROVIDER_TURN_TIMEOUT_SECONDS") {
             if let Ok(value) = timeout.parse::<u64>() {
                 self.agent.provider_turn_timeout_seconds = value;
             }
         }
-        if let Ok(iterations) = env::var("DEEP_CLI_MAX_TOOL_ITERATIONS") {
+        if let Ok(iterations) = env::var("DEEPCLI_MAX_TOOL_ITERATIONS") {
             if let Ok(value) = iterations.parse::<usize>() {
                 if value > 0 {
                     self.agent.max_tool_iterations = value;
@@ -444,11 +444,11 @@ fn default_true() -> bool {
 }
 
 fn default_project_name() -> String {
-    "deep-cli".to_string()
+    "deepcli".to_string()
 }
 
 fn default_command_name() -> String {
-    "deep-cli".to_string()
+    "deepcli".to_string()
 }
 
 fn default_language_runtime() -> String {
@@ -615,11 +615,11 @@ mod tests {
     fn max_tool_iterations_can_be_overridden_by_env() {
         let _guard = ENV_LOCK.lock().unwrap();
         let dir = tempdir().unwrap();
-        env::set_var("DEEP_CLI_MAX_TOOL_ITERATIONS", "128");
+        env::set_var("DEEPCLI_MAX_TOOL_ITERATIONS", "128");
 
         let config = AppConfig::load_effective(dir.path(), None).unwrap();
 
-        env::remove_var("DEEP_CLI_MAX_TOOL_ITERATIONS");
+        env::remove_var("DEEPCLI_MAX_TOOL_ITERATIONS");
         assert_eq!(config.agent.max_tool_iterations, 128);
     }
 }

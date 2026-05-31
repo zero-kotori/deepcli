@@ -1,16 +1,16 @@
 [package]
-name = "deep-cli"
+name = "deepcli"
 version = "0.1.0"
 edition = "2021"
 description = "Local-first AI coding agent CLI backed by DeepSeek-compatible providers"
 license = "MIT"
 
 [lib]
-name = "deep_cli"
+name = "deepcli"
 path = "src/lib.rs"
 
 [[bin]]
-name = "deep-cli"
+name = "deepcli"
 path = "src/main.rs"
 
 [dependencies]
@@ -33,6 +33,7 @@ thiserror = "1.0"
 tokio = { version = "1.40", features = ["fs", "io-util", "macros", "process", "rt-multi-thread", "signal", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+unicode-width = "0.2"
 uuid = { version = "1.10", features = ["serde", "v4"] }
 walkdir = "2.5"
 

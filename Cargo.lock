@@ -344,7 +344,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "deep-cli"
+name = "deepcli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -367,6 +367,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unicode-width 0.2.0",
  "uuid",
  "walkdir",
 ]
