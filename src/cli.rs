@@ -674,6 +674,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Quickstart { .. }
         | SlashCommand::Recipes { .. }
         | SlashCommand::Scorecard { .. }
+        | SlashCommand::Benchmark { .. }
         | SlashCommand::Selftest { .. }
         | SlashCommand::Preflight { .. }
         | SlashCommand::Completion { .. } => true,
@@ -1242,7 +1243,7 @@ mod tests {
         assert_eq!(
             parse_one_shot_command(&["benchmark".into(), "--fail-below".into(), "85".into()])
                 .unwrap(),
-            Some(SlashCommand::Scorecard {
+            Some(SlashCommand::Benchmark {
                 args: vec!["--fail-below".to_string(), "85".to_string()]
             })
         );

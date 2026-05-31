@@ -3,6 +3,8 @@
 .deepcli/credentials/
 .deepcli/sessions/
 .deepcli/logs/
+.deepcli/benchmarks/
+.deepcli/exports/
 .env
 .env.*
 *.pem
