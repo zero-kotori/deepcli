@@ -789,25 +789,29 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/round",
-            listing: "/round [--json] [--output path] [--fail-on-gaps] [--fail-below n]",
+            listing: "/round [--json] [--output path] [--run-benchmark] [--preset <name>] [--fail-on-command] [--fail-on-gaps] [--fail-below n]",
             summary: "Summarize the current product iteration state, evidence gaps, and next engineering actions.",
             usage: &[
                 "/round",
                 "/round --json",
+                "/round --json --run-benchmark --fail-on-command",
+                "/round --json --run-suite --preset cargo-test",
                 "/round --output <workspace-relative-path>",
                 "/round --fail-on-gaps",
                 "/round --fail-below <percent>",
                 "/iterate [--json]",
                 "deepcli round --json",
+                "deepcli round --json --run-benchmark --fail-on-command",
             ],
             examples: &[
                 "/round",
                 "/round --json --output .deepcli/exports/round.json",
+                "/round --json --run-benchmark --fail-on-command",
                 "/round --json --fail-on-gaps",
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. It aggregates `/scorecard` and `/benchmark status` into the stable `deepcli.round.v1` schema, highlights whether the current round is ready, and lists the next commands to run without creating a session, calling a provider, or executing shell. Use `--fail-on-gaps` or `--strict` when CI should fail unless scorecard and benchmark evidence are both ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard` and `/benchmark status` into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard and benchmark evidence are both ready."],
         },
         CommandHelp {
             name: "/selftest",
@@ -2586,6 +2590,7 @@ fn build_scorecard_report(
                 "deepcli round --json",
                 "deepcli preflight --json",
                 "deepcli benchmark presets --json",
+                "deepcli round --json --run-benchmark --fail-on-command",
                 "deepcli benchmark run-suite --json --fail-on-command",
                 "deepcli benchmark gate --json",
                 "deepcli benchmark trends --json",
@@ -2757,7 +2762,7 @@ fn build_scorecard_report(
                 scorecard_add_gap(
                     &mut categories[7],
                     gap,
-                    "run `/benchmark run-suite --json --fail-on-command`",
+                    "run `/round --json --run-benchmark --fail-on-command`",
                 );
             }
         }
@@ -2775,7 +2780,7 @@ fn build_scorecard_report(
                 scorecard_add_gap(
                     &mut categories[7],
                     gap,
-                    "run `/benchmark run-suite --json --fail-on-command`",
+                    "run `/round --json --run-benchmark --fail-on-command`",
                 );
             }
         }
@@ -2796,7 +2801,7 @@ fn build_scorecard_report(
             scorecard_add_gap(
                 &mut categories[7],
                 gap,
-                "run `/benchmark run-suite --json --fail-on-command`",
+                "run `/round --json --run-benchmark --fail-on-command`",
             );
         }
     }
@@ -2841,6 +2846,10 @@ fn build_scorecard_report(
         .iter()
         .flat_map(|category| category.next_actions.clone())
         .collect::<Vec<_>>();
+    next_actions.push(
+        "run `/round --json --run-benchmark --fail-on-command` after each product round"
+            .to_string(),
+    );
     next_actions.push(
         "run `/benchmark run-suite --json --fail-on-command` after each product round".to_string(),
     );
@@ -3057,6 +3066,8 @@ struct RoundOptions {
     output_path: Option<String>,
     fail_on_gaps: bool,
     fail_below: Option<u8>,
+    run_benchmark_suite: bool,
+    benchmark_suite: BenchmarkRunSuiteOptions,
 }
 
 #[derive(Debug, Clone)]
@@ -3075,9 +3086,19 @@ struct RoundReport {
     score_threshold: u8,
     scorecard: ScorecardReport,
     benchmark: BenchmarkStatusReport,
+    benchmark_run: Option<RoundBenchmarkRun>,
     gates: Vec<RoundGate>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct RoundBenchmarkRun {
+    requested_presets: Vec<String>,
+    runs: Vec<BenchmarkRunArtifact>,
+    stopped_early: bool,
+    fail_fast: bool,
+    fail_on_command: bool,
 }
 
 struct RoundTextInput<'a> {
@@ -3085,6 +3106,7 @@ struct RoundTextInput<'a> {
     score_threshold: u8,
     scorecard: &'a ScorecardReport,
     benchmark: &'a BenchmarkStatusReport,
+    benchmark_run: Option<&'a RoundBenchmarkRun>,
     gates: &'a [RoundGate],
     gaps: &'a [String],
     next_actions: &'a [String],
@@ -3098,7 +3120,17 @@ fn handle_round(
 ) -> Result<String> {
     let options = parse_round_options(&args)?;
     let score_threshold = options.fail_below.unwrap_or(DEFAULT_ROUND_SCORE_THRESHOLD);
-    let report = build_round_report(workspace, config, registry, score_threshold);
+    let benchmark_run = if options.run_benchmark_suite {
+        Some(run_round_benchmark_suite(
+            workspace,
+            config,
+            registry,
+            &options.benchmark_suite,
+        )?)
+    } else {
+        None
+    };
+    let report = build_round_report(workspace, config, registry, score_threshold, benchmark_run);
     let output = if options.json_output {
         format_round_json(workspace, &report)?
     } else {
@@ -3106,6 +3138,13 @@ fn handle_round(
     };
     if let Some(output_path) = &options.output_path {
         write_command_output(workspace, output_path, &output)?;
+    }
+    if report
+        .benchmark_run
+        .as_ref()
+        .is_some_and(|run| run.fail_on_command && benchmark_run_suite_status(&run.runs) != "passed")
+    {
+        return Err(CommandExit::new(output, 1).into());
     }
     if options.fail_on_gaps && report.status != "ready" {
         return Err(CommandExit::new(output, 1).into());
@@ -3141,6 +3180,48 @@ fn parse_round_options(args: &[String]) -> Result<RoundOptions> {
                 options.fail_on_gaps = true;
                 index += 1;
             }
+            "--run-benchmark" | "--run-benchmarks" | "--run-suite" => {
+                options.run_benchmark_suite = true;
+                index += 1;
+            }
+            "--preset" => {
+                let name = required_arg(args, index + 1, "benchmark preset")?;
+                push_benchmark_run_suite_preset(&mut options.benchmark_suite.presets, name)?;
+                options.run_benchmark_suite = true;
+                index += 2;
+            }
+            value if value.starts_with("--preset=") => {
+                push_benchmark_run_suite_preset(
+                    &mut options.benchmark_suite.presets,
+                    value.trim_start_matches("--preset="),
+                )?;
+                options.run_benchmark_suite = true;
+                index += 1;
+            }
+            "--presets" => {
+                let raw = required_arg(args, index + 1, "benchmark presets")?;
+                push_benchmark_run_suite_presets(&mut options.benchmark_suite.presets, raw)?;
+                options.run_benchmark_suite = true;
+                index += 2;
+            }
+            value if value.starts_with("--presets=") => {
+                push_benchmark_run_suite_presets(
+                    &mut options.benchmark_suite.presets,
+                    value.trim_start_matches("--presets="),
+                )?;
+                options.run_benchmark_suite = true;
+                index += 1;
+            }
+            "--fail-on-command" => {
+                options.benchmark_suite.fail_on_command = true;
+                options.run_benchmark_suite = true;
+                index += 1;
+            }
+            "--fail-fast" => {
+                options.benchmark_suite.fail_fast = true;
+                options.run_benchmark_suite = true;
+                index += 1;
+            }
             "--fail-below" | "--min-score" => {
                 let raw = required_arg(args, index + 1, "score percent")?;
                 options.fail_below = Some(parse_scorecard_threshold(raw)?);
@@ -3164,11 +3245,42 @@ fn parse_round_options(args: &[String]) -> Result<RoundOptions> {
     Ok(options)
 }
 
+fn run_round_benchmark_suite(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+    options: &BenchmarkRunSuiteOptions,
+) -> Result<RoundBenchmarkRun> {
+    let requested_presets = benchmark_run_suite_preset_names(options)?;
+    let mut runs = Vec::new();
+    let mut stopped_early = false;
+
+    for preset_name in &requested_presets {
+        let run_options = benchmark_run_options_for_suite_preset(preset_name, options)?;
+        let run = execute_benchmark_run_artifact(workspace, config, registry, &run_options)?;
+        let failed = run.execution.status != "passed";
+        runs.push(run);
+        if failed && options.fail_fast {
+            stopped_early = true;
+            break;
+        }
+    }
+
+    Ok(RoundBenchmarkRun {
+        requested_presets,
+        runs,
+        stopped_early,
+        fail_fast: options.fail_fast,
+        fail_on_command: options.fail_on_command,
+    })
+}
+
 fn build_round_report(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
     score_threshold: u8,
+    benchmark_run: Option<RoundBenchmarkRun>,
 ) -> RoundReport {
     let scorecard = build_scorecard_report(workspace, config, registry);
     let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
@@ -3227,7 +3339,7 @@ fn build_round_report(
             next_action: if benchmark_ready {
                 Some("deepcli benchmark summary --json".to_string())
             } else {
-                Some("deepcli benchmark run-suite --json --fail-on-command".to_string())
+                Some("deepcli round --json --run-benchmark --fail-on-command".to_string())
             },
         },
     ];
@@ -3244,6 +3356,7 @@ fn build_round_report(
     }
     if !benchmark_ready {
         next_actions.push("deepcli benchmark presets --json".to_string());
+        next_actions.push("deepcli round --json --run-benchmark --fail-on-command".to_string());
         next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
         next_actions
             .push("deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
@@ -3262,6 +3375,7 @@ fn build_round_report(
             score_threshold,
             scorecard: &scorecard,
             benchmark: &benchmark,
+            benchmark_run: benchmark_run.as_ref(),
             gates: &gates,
             gaps: &gaps,
             next_actions: &next_actions,
@@ -3274,6 +3388,7 @@ fn build_round_report(
         score_threshold,
         scorecard,
         benchmark,
+        benchmark_run,
         gates,
         gaps,
         next_actions,
@@ -3300,8 +3415,42 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
             input.benchmark.status == "ready",
             input.benchmark.artifact_count
         ),
-        "gates:".to_string(),
     ];
+    if let Some(run) = input.benchmark_run {
+        lines.push(format!(
+            "benchmark run: status={} presets={} passed={} failed={} timeout={} stoppedEarly={}",
+            benchmark_run_suite_status(&run.runs),
+            run.runs.len(),
+            run.runs
+                .iter()
+                .filter(|item| item.execution.status == "passed")
+                .count(),
+            run.runs
+                .iter()
+                .filter(|item| item.execution.status == "failed")
+                .count(),
+            run.runs
+                .iter()
+                .filter(|item| item.execution.status == "timeout")
+                .count(),
+            run.stopped_early
+        ));
+        if !run.runs.is_empty() {
+            lines.push("benchmark artifacts:".to_string());
+            for item in &run.runs {
+                lines.push(format!(
+                    "  - {}: {} artifact={}",
+                    item.artifact
+                        .get("preset")
+                        .and_then(Value::as_str)
+                        .unwrap_or("<none>"),
+                    item.execution.status,
+                    item.relative_path
+                ));
+            }
+        }
+    }
+    lines.push("gates:".to_string());
     for gate in input.gates {
         lines.push(format!(
             "  - {}: {} - {}",
@@ -3338,6 +3487,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "scoreThreshold": report.score_threshold,
         "scorecard": scorecard_summary_json(&report.scorecard),
         "benchmarkStatus": round_benchmark_status_json(&report.benchmark),
+        "benchmarkRun": report.benchmark_run.as_ref().map(round_benchmark_run_json),
         "gates": report.gates.iter().map(|gate| json!({
             "id": gate.id,
             "title": gate.title,
@@ -3349,6 +3499,22 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "nextActions": &report.next_actions,
         "report": &report.report,
     }))?)
+}
+
+fn round_benchmark_run_json(run: &RoundBenchmarkRun) -> Value {
+    json!({
+        "schema": BENCHMARK_SUITE_SCHEMA,
+        "status": benchmark_run_suite_status(&run.runs),
+        "requestedPresets": &run.requested_presets,
+        "presetCount": run.runs.len(),
+        "passedCount": run.runs.iter().filter(|item| item.execution.status == "passed").count(),
+        "failedCount": run.runs.iter().filter(|item| item.execution.status == "failed").count(),
+        "timeoutCount": run.runs.iter().filter(|item| item.execution.status == "timeout").count(),
+        "stoppedEarly": run.stopped_early,
+        "failFast": run.fail_fast,
+        "failOnCommand": run.fail_on_command,
+        "artifacts": run.runs.iter().map(benchmark_run_suite_artifact_json).collect::<Vec<_>>(),
+    })
 }
 
 fn round_benchmark_status_json(report: &BenchmarkStatusReport) -> Value {
@@ -25496,6 +25662,8 @@ mod tests {
         assert!(round_help.contains("running-safe: yes"));
         assert!(round_help.contains("deepcli.round.v1"));
         assert!(round_help.contains("--fail-on-gaps"));
+        assert!(round_help.contains("--run-benchmark"));
+        assert!(round_help.contains("--fail-on-command"));
         assert!(round_help.contains("deepcli round --json"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
@@ -26238,6 +26406,7 @@ mod tests {
             "deepcli.benchmark.status.v1"
         );
         assert_eq!(value["benchmarkStatus"]["status"], "missing");
+        assert!(value["benchmarkRun"].is_null());
         assert!(value["gates"]
             .as_array()
             .unwrap()
@@ -26256,6 +26425,44 @@ mod tests {
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/round.json")).unwrap();
         assert_eq!(written, output);
+    }
+
+    #[test]
+    fn round_can_run_benchmark_suite_before_reporting() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "--json".into(),
+                "--run-benchmark".into(),
+                "--preset".into(),
+                "smoke".into(),
+                "--output".into(),
+                ".deepcli/exports/round-run.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.round.v1");
+        assert_eq!(
+            value["benchmarkRun"]["schema"],
+            "deepcli.benchmark.suite.v1"
+        );
+        assert_eq!(value["benchmarkRun"]["status"], "passed");
+        assert_eq!(value["benchmarkRun"]["presetCount"], 1);
+        assert_eq!(value["benchmarkRun"]["requestedPresets"][0], "smoke");
+        assert_eq!(value["benchmarkRun"]["artifacts"][0]["preset"], "smoke");
+        assert_eq!(value["benchmarkStatus"]["artifactCount"], 1);
+        assert_eq!(value["benchmarkStatus"]["status"], "weak");
+        assert!(dir.path().join(".deepcli/benchmarks").exists());
+        assert!(dir.path().join(".deepcli/exports/round-run.json").exists());
+        assert!(!dir.path().join(".deepcli/sessions").exists());
     }
 
     #[test]
