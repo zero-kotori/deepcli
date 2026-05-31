@@ -54,6 +54,7 @@ pub enum SlashCommand {
     Version { args: Vec<String> },
     Quickstart { args: Vec<String> },
     Recipes { args: Vec<String> },
+    Scorecard { args: Vec<String> },
     Selftest { args: Vec<String> },
     Preflight { args: Vec<String> },
     Completion { args: Vec<String> },
@@ -125,6 +126,7 @@ impl CommandRouter {
             "/recipes" | "/recipe" | "/playbook" | "/workflow" | "/workflows" => {
                 SlashCommand::Recipes { args }
             }
+            "/scorecard" | "/benchmark" | "/bench" | "/sota" => SlashCommand::Scorecard { args },
             "/selftest" | "/self-test" => SlashCommand::Selftest { args },
             "/preflight" | "/release-check" => SlashCommand::Preflight { args },
             "/completion" | "/completions" => SlashCommand::Completion { args },
@@ -260,6 +262,9 @@ impl CommandRouter {
                 handle_quickstart(context.workspace, context.config, context.executor, args)
             }
             SlashCommand::Recipes { args } => handle_recipes(context.workspace, args),
+            SlashCommand::Scorecard { args } => {
+                handle_scorecard(context.workspace, context.config, context.registry, args)
+            }
             SlashCommand::Selftest { args } => {
                 handle_selftest(context.workspace, context.config, context.registry, args)
             }
@@ -472,6 +477,8 @@ impl CommandRouter {
             "/about",
             "/quickstart",
             "/recipes",
+            "/scorecard",
+            "/benchmark",
             "/selftest",
             "/preflight",
             "/completion",
@@ -703,6 +710,40 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli playbook support",
             ],
             notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, and shell. Use `--json` for the stable `deepcli.recipes.v1` schema."],
+        },
+        CommandHelp {
+            name: "/scorecard",
+            listing: "/scorecard [--json] [--output path] [--fail-below n]",
+            summary: "Measure deepcli product capability coverage against a SOTA-oriented rubric.",
+            usage: &[
+                "/scorecard",
+                "/scorecard --json",
+                "/scorecard --output <workspace-relative-path>",
+                "/scorecard --fail-below <percent>",
+                "/benchmark [--json] [--output path]",
+                "deepcli scorecard --json",
+                "deepcli benchmark --fail-below 85",
+            ],
+            examples: &[
+                "/scorecard",
+                "/scorecard --json --output .deepcli/exports/scorecard.json",
+                "/scorecard --fail-below 85",
+                "deepcli benchmark --json",
+                "deepcli deepseek scorecard --json",
+            ],
+            notes: &["`/scorecard` is a local product readiness and benchmark shortcut. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema, and use `/benchmark`, `/bench`, or `/sota` as aliases."],
+        },
+        CommandHelp {
+            name: "/benchmark",
+            listing: "/benchmark [--json] [--output path] [--fail-below n]",
+            summary: "Alias for /scorecard with the same local benchmark rubric.",
+            usage: &[
+                "/benchmark",
+                "/benchmark --json",
+                "/scorecard [--json] [--output path] [--fail-below n]",
+            ],
+            examples: &["/benchmark", "deepcli benchmark --json"],
+            notes: &["Alias for `/scorecard`; no provider call is made and no session should be created."],
         },
         CommandHelp {
             name: "/selftest",
@@ -1639,6 +1680,8 @@ fn normalize_help_topic(topic: &str) -> String {
         "/recipe" | "/playbook" | "/workflow" | "/workflows"
     ) {
         "/recipes".to_string()
+    } else if matches!(normalized.as_str(), "/bench" | "/sota") {
+        "/scorecard".to_string()
     } else {
         normalized
     }
@@ -2060,6 +2103,7 @@ fn recipes_catalog() -> Vec<Recipe> {
             summary: "Run local acceptance checks, privacy scanning, strict gate, and handoff output.",
             commands: &[
                 "deepcli preflight --dry-run",
+                "deepcli scorecard --json",
                 "deepcli preflight --json",
                 "deepcli privacy --json --fail-on-findings",
                 "deepcli gate --json",
@@ -2216,6 +2260,645 @@ fn format_recipes_json(
         })).collect::<Vec<_>>(),
         "nextActions": next_actions,
         "report": report,
+    }))?)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ScorecardOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    fail_below: Option<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct ScorecardCategory {
+    id: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    score: u16,
+    max_score: u16,
+    evidence: Vec<String>,
+    gaps: Vec<String>,
+    next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ScorecardReport {
+    report: String,
+    status: &'static str,
+    tier: &'static str,
+    score: u16,
+    max_score: u16,
+    percent: u8,
+    categories: Vec<ScorecardCategory>,
+    gaps: Vec<String>,
+    next_actions: Vec<String>,
+}
+
+fn handle_scorecard(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+    args: Vec<String>,
+) -> Result<String> {
+    let options = parse_scorecard_options(&args)?;
+    let report = build_scorecard_report(workspace, config, registry);
+    let output = if options.json_output {
+        format_scorecard_json(workspace, &report)?
+    } else {
+        report.report.clone()
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    if options
+        .fail_below
+        .is_some_and(|threshold| report.percent < threshold)
+    {
+        return Err(CommandExit::new(output, 1).into());
+    }
+    Ok(output)
+}
+
+fn parse_scorecard_options(args: &[String]) -> Result<ScorecardOptions> {
+    let mut options = ScorecardOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--fail-below" | "--min-score" => {
+                let raw = required_arg(args, index + 1, "score percent")?;
+                options.fail_below = Some(parse_scorecard_threshold(raw)?);
+                index += 2;
+            }
+            value if value.starts_with("--fail-below=") => {
+                options.fail_below = Some(parse_scorecard_threshold(
+                    value.trim_start_matches("--fail-below="),
+                )?);
+                index += 1;
+            }
+            value if value.starts_with("--min-score=") => {
+                options.fail_below = Some(parse_scorecard_threshold(
+                    value.trim_start_matches("--min-score="),
+                )?);
+                index += 1;
+            }
+            value => bail!("unsupported /scorecard option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_scorecard_threshold(raw: &str) -> Result<u8> {
+    let value = raw
+        .parse::<u8>()
+        .with_context(|| format!("invalid score threshold `{raw}`"))?;
+    if value > 100 {
+        bail!("score threshold must be between 0 and 100");
+    }
+    Ok(value)
+}
+
+fn build_scorecard_report(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+) -> ScorecardReport {
+    let command_names = CommandRouter::command_names();
+    let docs_present = workspace.join("docs/ai/REQUIREMENTS.md").exists()
+        && workspace.join("docs/ai/TECHNICAL_PLAN.md").exists()
+        && workspace.join("docs/FEATURES.md").exists();
+    let test_count = discover_tests_in(workspace)
+        .map(|tests| tests.len())
+        .unwrap_or_default();
+    let project_config_present = project_config_path(workspace).exists();
+    let git_identity = build_git_identity_report(workspace, &config.project.git_identity);
+    let provider_model = active_default_model(config);
+    let benchmark_artifacts_present = workspace.join(".deepcli/benchmarks").exists()
+        || workspace.join(".deepcli/exports/scorecard.json").exists();
+
+    let mut categories = vec![
+        scorecard_command_category(
+            "command_discovery",
+            "Command Discovery",
+            "Users can discover the right entrypoint without memorizing the entire command surface.",
+            &command_names,
+            &[
+                "/help",
+                "/quickstart",
+                "/recipes",
+                "/scorecard",
+                "/completion",
+                "/version",
+                "/about",
+            ],
+            &["deepcli quickstart --json", "deepcli recipes", "deepcli completion json"],
+        ),
+        scorecard_command_category(
+            "agent_workflow",
+            "Agent Workflow",
+            "The product exposes a complete code, inspect, review, and iterate loop.",
+            &command_names,
+            &[
+                "/status", "/usage", "/trace", "/plan", "/diff", "/review", "/test", "/prompt",
+                "/skill", "/agent", "/git", "/web",
+            ],
+            &["deepcli status --json", "deepcli review", "deepcli test discover --json"],
+        ),
+        scorecard_command_category(
+            "session_continuity",
+            "Session Continuity",
+            "Long tasks can be named, inspected, resumed, and cleaned up.",
+            &command_names,
+            &[
+                "/resume", "/session", "/history", "/cleanup", "/next", "/rename", "/stop",
+                "/quit",
+            ],
+            &["deepcli resume", "deepcli sessions --all --limit 20", "deepcli next --json"],
+        ),
+        scorecard_command_category(
+            "verification_delivery",
+            "Verification And Delivery",
+            "Changes can be tested, reviewed, gated, and handed off with structured evidence.",
+            &command_names,
+            &[
+                "/test",
+                "/env",
+                "/accept",
+                "/gate",
+                "/verify",
+                "/handoff",
+                "/preflight",
+                "/privacy",
+            ],
+            &["deepcli preflight --json", "deepcli gate --json", "deepcli handoff --pr"],
+        ),
+        scorecard_command_category(
+            "safety_privacy",
+            "Safety And Privacy",
+            "Local-first safety, credentials, permissions, privacy, and health checks are visible.",
+            &command_names,
+            &[
+                "/permissions",
+                "/credentials",
+                "/privacy",
+                "/doctor",
+                "/selftest",
+                "/logs",
+            ],
+            &[
+                "deepcli privacy --json --fail-on-findings",
+                "deepcli permissions show --json",
+                "deepcli credentials status --json",
+            ],
+        ),
+        scorecard_command_category(
+            "provider_model_ops",
+            "Provider And Model Ops",
+            "Provider/model switching, inspection, and timeout tuning are local and scriptable.",
+            &command_names,
+            &[
+                "/model",
+                "/provider",
+                "/use",
+                "/switch",
+                "/models",
+                "/providers",
+                "/timeout",
+            ],
+            &["deepcli model list --json", "deepcli use deepseek deepseek-v4-pro"],
+        ),
+        scorecard_command_category(
+            "support_operability",
+            "Support Operability",
+            "Users can collect redacted diagnostics and support artifacts without provider calls.",
+            &command_names,
+            &[
+                "/diagnose",
+                "/support",
+                "/health",
+                "/logs",
+                "/trace",
+                "/version",
+            ],
+            &["deepcli diagnose --json", "deepcli support", "deepcli version --json"],
+        ),
+        scorecard_command_category(
+            "benchmark_evidence",
+            "Benchmark Evidence",
+            "The product can assess itself and point to missing SOTA validation evidence.",
+            &command_names,
+            &["/scorecard", "/benchmark", "/preflight", "/gate", "/handoff"],
+            &[
+                "deepcli scorecard --json",
+                "deepcli preflight --json",
+                "run an end-to-end compiler benchmark once provider and Docker are ready",
+            ],
+        ),
+    ];
+
+    if docs_present {
+        scorecard_add_evidence(
+            &mut categories[0],
+            2,
+            "docs/ai requirements, technical plan, and feature guide are present",
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[0],
+            "missing product requirement or feature documentation",
+            "restore docs/ai/REQUIREMENTS.md, docs/ai/TECHNICAL_PLAN.md, and docs/FEATURES.md",
+        );
+    }
+
+    if registry.declarations().len() >= 20 {
+        scorecard_add_evidence(
+            &mut categories[1],
+            2,
+            &format!(
+                "tool registry exposes {} tools",
+                registry.declarations().len()
+            ),
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[1],
+            "tool registry exposes too few tools for broad coding tasks",
+            "inspect `/selftest --json` and expand the tool registry before benchmarking",
+        );
+    }
+
+    if workspace.join("src/ui.rs").exists() {
+        scorecard_add_evidence(&mut categories[2], 2, "TUI implementation is present");
+    } else {
+        scorecard_add_gap(
+            &mut categories[2],
+            "TUI source is missing, so session continuity cannot be inspected in-app",
+            "restore or implement the TUI session picker and task monitor",
+        );
+    }
+
+    if test_count > 0 {
+        scorecard_add_evidence(
+            &mut categories[3],
+            2,
+            &format!("{test_count} project test command(s) discovered"),
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[3],
+            "no project tests were discovered for acceptance evidence",
+            "add tests or run `/test discover --json` after configuring test commands",
+        );
+    }
+
+    if config.sandbox.enabled_by_default
+        && config.sandbox.allow_read_within_workspace
+        && !config.sandbox.allow_dangerous_commands
+        && !config.sandbox.allow_system_write
+    {
+        scorecard_add_evidence(
+            &mut categories[4],
+            2,
+            "sandbox defaults allow workspace read while blocking system writes and dangerous commands",
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[4],
+            "sandbox defaults are weaker than the local-first safety target",
+            "inspect `/permissions show --json` and restore safe sandbox defaults",
+        );
+    }
+    if project_config_present && git_identity.issues.is_empty() {
+        scorecard_add_evidence(
+            &mut categories[4],
+            2,
+            "project config and expected Git identity are healthy",
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[4],
+            "project config or expected Git identity is missing or mismatched",
+            "run `/doctor --quick --json` and apply the suggested git config fix",
+        );
+    }
+
+    if config.providers.len() >= 2 {
+        scorecard_add_evidence(
+            &mut categories[5],
+            2,
+            &format!("{} providers configured", config.providers.len()),
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[5],
+            "only one provider is configured",
+            "add a second provider configuration before provider-comparison benchmarks",
+        );
+    }
+    if provider_model != "<unset>" {
+        scorecard_add_evidence(
+            &mut categories[5],
+            1,
+            &format!("default model is configured as {provider_model}"),
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[5],
+            "default provider model is not configured",
+            "run `/model list --json` and `/model set <provider> <model>`",
+        );
+    }
+
+    if docs_present && project_config_present {
+        scorecard_add_evidence(
+            &mut categories[6],
+            2,
+            "support docs and project config are available for issue triage",
+        );
+    } else {
+        scorecard_add_gap(
+            &mut categories[6],
+            "support artifacts lack either docs or project config evidence",
+            "run `/support` after restoring docs and project config",
+        );
+    }
+
+    if docs_present {
+        scorecard_add_evidence(
+            &mut categories[7],
+            2,
+            "benchmark rubric is anchored to docs/ai product requirements",
+        );
+    }
+    if benchmark_artifacts_present {
+        scorecard_add_evidence(
+            &mut categories[7],
+            3,
+            "local scorecard or benchmark artifacts are present",
+        );
+    } else {
+        categories[7].score = categories[7].score.saturating_sub(3);
+        scorecard_add_gap(
+            &mut categories[7],
+            "no local benchmark artifact found under .deepcli/benchmarks or .deepcli/exports/scorecard.json",
+            "export `/scorecard --json --output .deepcli/exports/scorecard.json` and run the compiler end-to-end benchmark when ready",
+        );
+    }
+
+    for category in &mut categories {
+        if category.score > category.max_score {
+            category.score = category.max_score;
+        }
+    }
+
+    let score = categories
+        .iter()
+        .map(|category| category.score)
+        .sum::<u16>();
+    let max_score = categories
+        .iter()
+        .map(|category| category.max_score)
+        .sum::<u16>();
+    let percent = scorecard_percent(score, max_score);
+    let gaps = categories
+        .iter()
+        .flat_map(|category| {
+            category
+                .gaps
+                .iter()
+                .map(|gap| format!("{}: {gap}", category.id))
+        })
+        .collect::<Vec<_>>();
+    let tier = if gaps.is_empty() {
+        scorecard_tier(percent)
+    } else if percent >= 75 {
+        "competitive_with_gaps"
+    } else {
+        scorecard_tier(percent)
+    };
+    let status = if gaps.is_empty() && percent >= 75 {
+        "ok"
+    } else {
+        "needs_attention"
+    };
+    let mut next_actions = categories
+        .iter()
+        .flat_map(|category| category.next_actions.clone())
+        .collect::<Vec<_>>();
+    next_actions.push(
+        "run `/scorecard --json --output .deepcli/exports/scorecard.json` after each product round"
+            .to_string(),
+    );
+    next_actions.push("run `/preflight --json` before commit or push".to_string());
+    next_actions = dedup_preserve_order(next_actions);
+    let report = format_scorecard_text(
+        workspace,
+        ScorecardTextInput {
+            status,
+            tier,
+            score,
+            max_score,
+            percent,
+            categories: &categories,
+            gaps: &gaps,
+            next_actions: &next_actions,
+        },
+    );
+
+    ScorecardReport {
+        report,
+        status,
+        tier,
+        score,
+        max_score,
+        percent,
+        categories,
+        gaps,
+        next_actions,
+    }
+}
+
+fn scorecard_command_category(
+    id: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    command_names: &[&'static str],
+    required_commands: &[&'static str],
+    next_actions: &[&'static str],
+) -> ScorecardCategory {
+    let present = required_commands
+        .iter()
+        .filter(|command| command_names.contains(command))
+        .count();
+    let command_points = ((present as u16) * 8) / required_commands.len() as u16;
+    let missing = required_commands
+        .iter()
+        .filter(|command| !command_names.contains(command))
+        .map(|command| (*command).to_string())
+        .collect::<Vec<_>>();
+    let mut category = ScorecardCategory {
+        id,
+        title,
+        summary,
+        score: command_points,
+        max_score: 10,
+        evidence: vec![format!(
+            "registered commands: {present}/{}",
+            required_commands.len()
+        )],
+        gaps: Vec::new(),
+        next_actions: Vec::new(),
+    };
+    if !missing.is_empty() {
+        category
+            .gaps
+            .push(format!("missing command(s): {}", missing.join(", ")));
+    }
+    category
+        .next_actions
+        .extend(next_actions.iter().map(|action| (*action).to_string()));
+    category
+}
+
+fn scorecard_add_evidence(category: &mut ScorecardCategory, points: u16, evidence: &str) {
+    category.score += points;
+    category.evidence.push(evidence.to_string());
+}
+
+fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &str) {
+    category.gaps.push(gap.to_string());
+    category.next_actions.push(next_action.to_string());
+}
+
+fn scorecard_percent(score: u16, max_score: u16) -> u8 {
+    if max_score == 0 {
+        return 0;
+    }
+    (((score as u32) * 100 + (max_score as u32 / 2)) / max_score as u32) as u8
+}
+
+fn scorecard_tier(percent: u8) -> &'static str {
+    match percent {
+        90..=100 => "sota_candidate",
+        75..=89 => "competitive",
+        60..=74 => "foundation",
+        _ => "needs_attention",
+    }
+}
+
+fn scorecard_category_status(category: &ScorecardCategory) -> &'static str {
+    match scorecard_percent(category.score, category.max_score) {
+        90..=100 => "strong",
+        75..=89 => "ready",
+        60..=74 => "partial",
+        _ => "weak",
+    }
+}
+
+struct ScorecardTextInput<'a> {
+    status: &'a str,
+    tier: &'a str,
+    score: u16,
+    max_score: u16,
+    percent: u8,
+    categories: &'a [ScorecardCategory],
+    gaps: &'a [String],
+    next_actions: &'a [String],
+}
+
+fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> String {
+    let mut lines = vec![
+        "deepcli scorecard".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("status: {}", input.status),
+        format!("tier: {}", input.tier),
+        format!(
+            "score: {}/{} ({}%)",
+            input.score, input.max_score, input.percent
+        ),
+        "categories:".to_string(),
+    ];
+    for category in input.categories {
+        lines.push(format!(
+            "  - {}: {}/{} ({}%, {})",
+            category.id,
+            category.score,
+            category.max_score,
+            scorecard_percent(category.score, category.max_score),
+            scorecard_category_status(category)
+        ));
+        lines.push(format!("    title: {}", category.title));
+        lines.push(format!("    summary: {}", category.summary));
+        lines.push("    evidence:".to_string());
+        lines.extend(
+            category
+                .evidence
+                .iter()
+                .map(|evidence| format!("      - {evidence}")),
+        );
+        if !category.gaps.is_empty() {
+            lines.push("    gaps:".to_string());
+            lines.extend(category.gaps.iter().map(|gap| format!("      - {gap}")));
+        }
+    }
+    if !input.gaps.is_empty() {
+        lines.push("gaps:".to_string());
+        lines.extend(input.gaps.iter().map(|gap| format!("  - {gap}")));
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(
+        input
+            .next_actions
+            .iter()
+            .map(|action| format!("  - {action}")),
+    );
+    lines.join("\n")
+}
+
+fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.scorecard.v1",
+        "status": report.status,
+        "tier": report.tier,
+        "score": report.score,
+        "maxScore": report.max_score,
+        "percent": report.percent,
+        "workspace": workspace.display().to_string(),
+        "version": {
+            "package": "deepcli",
+            "version": env!("CARGO_PKG_VERSION"),
+        },
+        "categories": report.categories.iter().map(|category| json!({
+            "id": category.id,
+            "title": category.title,
+            "summary": category.summary,
+            "status": scorecard_category_status(category),
+            "score": category.score,
+            "maxScore": category.max_score,
+            "percent": scorecard_percent(category.score, category.max_score),
+            "evidence": category.evidence,
+            "gaps": category.gaps,
+            "nextActions": category.next_actions,
+        })).collect::<Vec<_>>(),
+        "gaps": report.gaps,
+        "nextActions": report.next_actions,
+        "report": report.report,
     }))?)
 }
 
@@ -2503,6 +3186,8 @@ fn quickstart_steps() -> Vec<String> {
         "run `deepcli` in the project directory to open the TUI".to_string(),
         "run `/recipes` when you want task-oriented workflows instead of the full command list"
             .to_string(),
+        "run `/scorecard --json` when you want product capability coverage and benchmark gaps"
+            .to_string(),
         "run `/doctor --quick` to check config, credentials, sessions, and tests".to_string(),
         "run `/credentials set <provider>` if the default provider is missing an API key"
             .to_string(),
@@ -2534,6 +3219,7 @@ fn quickstart_next_actions(
         ));
     }
     actions.push("choose a task recipe: run `/recipes` or `/recipes release`".to_string());
+    actions.push("inspect product capability coverage: run `/scorecard --json`".to_string());
     actions.push("inspect provider/model choices: run `/model list`".to_string());
     if tests_missing {
         actions.push("add or configure tests, then run `/test discover --json`".to_string());
@@ -2844,6 +3530,7 @@ fn selftest_required_commands() -> Vec<&'static str> {
         "/help",
         "/quickstart",
         "/recipes",
+        "/scorecard",
         "/selftest",
         "/preflight",
         "/completion",
@@ -4371,7 +5058,7 @@ fn completion_words(commands: &[CompletionCommand]) -> String {
 }
 
 fn provider_completion_words() -> &'static str {
-    "ask stream resume tui repl version about quickstart recipes recipe playbook workflow workflows selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
+    "ask stream resume tui repl version about quickstart recipes recipe playbook workflow workflows scorecard benchmark bench sota selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
 }
 
 fn fish_escape(value: &str) -> String {
@@ -4411,6 +5098,8 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/about"
             | "/quickstart"
             | "/recipes"
+            | "/scorecard"
+            | "/benchmark"
             | "/selftest"
             | "/preflight"
             | "/completion"
@@ -19669,6 +20358,18 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/scorecard --json").unwrap(),
+            Some(SlashCommand::Scorecard {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/benchmark --fail-below 85").unwrap(),
+            Some(SlashCommand::Scorecard {
+                args: vec!["--fail-below".to_string(), "85".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/selftest --json --fail-on-issues").unwrap(),
             Some(SlashCommand::Selftest {
                 args: vec!["--json".to_string(), "--fail-on-issues".to_string()]
@@ -20487,6 +21188,15 @@ mod tests {
         let playbook_help = CommandRouter::help_for(&["playbook".to_string()]).unwrap();
         assert!(playbook_help.contains("/recipes - "));
 
+        let scorecard_help = CommandRouter::help_for(&["scorecard".to_string()]).unwrap();
+        assert!(scorecard_help.contains("/scorecard - "));
+        assert!(scorecard_help.contains("running-safe: yes"));
+        assert!(scorecard_help.contains("deepcli.scorecard.v1"));
+        assert!(scorecard_help.contains("deepcli benchmark --fail-below 85"));
+
+        let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
+        assert!(bench_help.contains("/scorecard - "));
+
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
         assert!(selftest_help.contains("/selftest - "));
         assert!(selftest_help.contains("running-safe: yes"));
@@ -20930,6 +21640,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item.as_str().unwrap().contains("/scorecard --json")));
+        assert!(value["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item.as_str().unwrap().contains("/accept --json")));
         assert!(value["nextActions"]
             .as_array()
@@ -20949,6 +21664,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str().unwrap().contains("/recipes")));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("/scorecard --json")));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
@@ -21100,6 +21820,92 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../recipes.json").exists());
+    }
+
+    #[test]
+    fn scorecard_json_output_is_structured_and_written() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_scorecard(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/scorecard.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.scorecard.v1");
+        assert_eq!(value["status"], "needs_attention");
+        assert!(value["percent"].as_u64().unwrap() <= 100);
+        assert!(value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|category| category["id"] == "benchmark_evidence"));
+        assert!(value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|category| category["id"] == "verification_delivery"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("deepcli scorecard"));
+        assert!(!dir.path().join(".deepcli/sessions").exists());
+
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/scorecard.json")).unwrap();
+        assert_eq!(written, output);
+    }
+
+    #[test]
+    fn scorecard_fail_below_and_output_safety_are_enforced() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let failure = handle_scorecard(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--json".into(), "--fail-below".into(), "100".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(failure.contains("deepcli.scorecard.v1"));
+
+        let bad_threshold = handle_scorecard(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--fail-below".into(), "101".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(bad_threshold.contains("between 0 and 100"));
+
+        let traversal = handle_scorecard(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--output".into(), "../scorecard.json".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../scorecard.json").exists());
     }
 
     #[test]

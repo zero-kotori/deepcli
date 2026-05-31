@@ -86,6 +86,7 @@ deepcli trace --limit 30
 deepcli logs --limit 80
 deepcli privacy --json
 deepcli recipes release --json
+deepcli scorecard --json
 deepcli preflight --json
 deepcli accept --json
 deepcli gate --json
@@ -100,9 +101,13 @@ deepcli handoff --pr
 deepcli recipes
 deepcli recipes release --json
 deepcli playbook support
+deepcli scorecard --json
+deepcli benchmark --fail-below 85
 ```
 
 `recipes` / `playbook` 是本地只读入口，用于按 start、code、debug、release、support、environment、shell 等主题查看可复制命令，不创建 session、不调用 Provider。
+
+`scorecard` / `benchmark` 是本地只读产品能力评分入口，用于按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据查看 SOTA 差距；支持稳定 `deepcli.scorecard.v1` JSON、workspace 内 `--output` 和 `--fail-below` 门禁。
 
 准备本地环境：
 
@@ -138,6 +143,7 @@ cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor --quick --json
+./scripts/deepcli scorecard --json
 ./scripts/deepcli preflight --dry-run
 ./scripts/deepcli release-check --dry-run
 ./scripts/deepcli preflight --json

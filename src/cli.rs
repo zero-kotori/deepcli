@@ -354,6 +354,10 @@ fn top_level_entries() -> &'static [&'static str] {
         "playbook",
         "workflow",
         "workflows",
+        "scorecard",
+        "benchmark",
+        "bench",
+        "sota",
         "selftest",
         "preflight",
         "release-check",
@@ -553,6 +557,10 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "playbook"
             | "workflow"
             | "workflows"
+            | "scorecard"
+            | "benchmark"
+            | "bench"
+            | "sota"
             | "selftest"
             | "preflight"
             | "release-check"
@@ -665,6 +673,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Version { .. }
         | SlashCommand::Quickstart { .. }
         | SlashCommand::Recipes { .. }
+        | SlashCommand::Scorecard { .. }
         | SlashCommand::Selftest { .. }
         | SlashCommand::Preflight { .. }
         | SlashCommand::Completion { .. } => true,
@@ -1222,6 +1231,19 @@ mod tests {
             parse_one_shot_command(&["playbook".into(), "support".into()]).unwrap(),
             Some(SlashCommand::Recipes {
                 args: vec!["support".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["scorecard".into(), "--json".into()]).unwrap(),
+            Some(SlashCommand::Scorecard {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["benchmark".into(), "--fail-below".into(), "85".into()])
+                .unwrap(),
+            Some(SlashCommand::Scorecard {
+                args: vec!["--fail-below".to_string(), "85".to_string()]
             })
         );
         assert_eq!(
@@ -1860,6 +1882,8 @@ mod tests {
             vec!["/privacy", "--json"],
             vec!["/recipes", "--json"],
             vec!["/recipes", "release", "--json"],
+            vec!["/scorecard", "--json"],
+            vec!["/benchmark", "--json"],
             vec!["/selftest"],
             vec!["/selftest", "--json"],
             vec!["/preflight", "--dry-run"],

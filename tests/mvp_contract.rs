@@ -11,6 +11,8 @@ fn mvp_slash_commands_are_registered() {
         "/about",
         "/quickstart",
         "/recipes",
+        "/scorecard",
+        "/benchmark",
         "/selftest",
         "/preflight",
         "/completion",
