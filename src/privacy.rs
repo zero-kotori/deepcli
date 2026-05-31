@@ -1,19 +1,12 @@
 use serde_json::Value;
 
-const SECRET_MARKERS: &[&str] = &[
-    "authorization:",
-    "bearer ",
-    "sk-",
-    "-----BEGIN PRIVATE KEY-----",
-];
+const SENSITIVE_HEADER_MARKERS: &[&str] = &["authorization:"];
+const SECRET_VALUE_MARKERS: &[&str] = &["bearer ", "-----BEGIN PRIVATE KEY-----"];
 
 pub fn looks_sensitive(text: &str) -> bool {
     let trimmed = text.trim();
     let lower = text.to_ascii_lowercase();
-    if SECRET_MARKERS
-        .iter()
-        .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
-    {
+    if has_explicit_secret_marker(trimmed) {
         return true;
     }
 
@@ -26,6 +19,40 @@ pub fn looks_sensitive(text: &str) -> bool {
             .split_once(*separator)
             .map(|(left, _)| is_sensitive_key(&last_key_segment(left)))
             .unwrap_or(false)
+    })
+}
+
+pub(crate) fn has_explicit_secret_marker(text: &str) -> bool {
+    has_sensitive_header_marker(text) || has_secret_value_marker(text)
+}
+
+fn has_sensitive_header_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    SENSITIVE_HEADER_MARKERS
+        .iter()
+        .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
+}
+
+pub(crate) fn has_secret_value_marker(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    SECRET_VALUE_MARKERS
+        .iter()
+        .any(|marker| lower.contains(&marker.to_ascii_lowercase()))
+        || contains_sk_secret_marker(&lower)
+}
+
+fn contains_sk_secret_marker(lower: &str) -> bool {
+    lower.match_indices("sk-").any(|(index, _)| {
+        let boundary_before = index == 0
+            || !lower
+                .as_bytes()
+                .get(index - 1)
+                .is_some_and(u8::is_ascii_alphanumeric);
+        let token_after = lower
+            .as_bytes()
+            .get(index + "sk-".len())
+            .is_some_and(u8::is_ascii_alphanumeric);
+        boundary_before && token_after
     })
 }
 
@@ -121,6 +148,18 @@ mod tests {
         assert_eq!(
             redact_sensitive_text("use crate::token::TokenKind;"),
             "use crate::token::TokenKind;"
+        );
+    }
+
+    #[test]
+    fn does_not_redact_sk_inside_normal_words() {
+        assert_eq!(
+            redact_sensitive_text("Show task-oriented workflow command recipes"),
+            "Show task-oriented workflow command recipes"
+        );
+        assert_eq!(
+            redact_sensitive_text("api_key = sk-real-example"),
+            "api_key = <redacted>"
         );
     }
 

@@ -10,6 +10,7 @@ fn mvp_slash_commands_are_registered() {
         "/version",
         "/about",
         "/quickstart",
+        "/recipes",
         "/selftest",
         "/preflight",
         "/completion",

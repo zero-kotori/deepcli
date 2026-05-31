@@ -25,6 +25,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli stream <prompt>`：流式一次性任务。
 - `deepcli deepseek ...`：使用 DeepSeek provider 预设。
 - `deepcli kimi ...`：使用 Kimi provider 预设。
+- `deepcli recipes [topic]`：查看任务型工作流命令清单。
 
 启动 wrapper 会自动补充当前工作目录、配置路径和 yes 授权默认值，同时保留显式参数。
 
@@ -35,7 +36,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - message box 支持编辑、粘贴、多行输入和历史输入。
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
-- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/selftest`、`/preflight`、`/completion`、`/session`、`/approval`、`/stop` 和 `/quit`。
+- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/selftest`、`/preflight`、`/completion`、`/session`、`/approval`、`/stop` 和 `/quit`。
 - 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情。
 
 ## 会话管理
@@ -119,6 +120,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 
 deepcli 不只负责生成代码，也负责形成交付证据：
 
+- `deepcli recipes release --json`
 - `deepcli test discover --json`
 - `deepcli test run --json -- cargo test`
 - `deepcli accept --json`
@@ -130,6 +132,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
 
 `preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，`--quick` 跳过较慢的 clippy/gate。
+
+`recipes` / `playbook` 是任务型工作流目录，按 start、code、debug、release、support、environment、shell 等主题输出可复制命令和稳定 `deepcli.recipes.v1` JSON，适合 TUI、外部 UI 或团队脚本引导用户选择下一步；该命令本地只读，不创建 session、不调用 Provider。
 
 ## 诊断、日志与支持包
 
@@ -179,6 +183,7 @@ cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor shell --json
+./scripts/deepcli recipes release --json
 ./scripts/deepcli preflight --json
 ./scripts/deepcli release-check --dry-run
 ```

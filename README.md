@@ -85,6 +85,7 @@ deepcli usage --json
 deepcli trace --limit 30
 deepcli logs --limit 80
 deepcli privacy --json
+deepcli recipes release --json
 deepcli preflight --json
 deepcli accept --json
 deepcli gate --json
@@ -92,6 +93,16 @@ deepcli handoff --pr
 ```
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
+
+查看任务型工作流清单：
+
+```bash
+deepcli recipes
+deepcli recipes release --json
+deepcli playbook support
+```
+
+`recipes` / `playbook` 是本地只读入口，用于按 start、code、debug、release、support、environment、shell 等主题查看可复制命令，不创建 session、不调用 Provider。
 
 准备本地环境：
 

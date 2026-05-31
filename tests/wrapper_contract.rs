@@ -227,6 +227,15 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/selftest", "--json", "--fail-on-issues"]
     ));
 
+    let recipes = run_wrapper(&["recipes", "release", "--json"]);
+    assert!(ends_with_args(
+        &recipes.args,
+        &["/recipes", "release", "--json"]
+    ));
+
+    let playbook = run_wrapper(&["playbook", "support"]);
+    assert!(ends_with_args(&playbook.args, &["/playbook", "support"]));
+
     let preflight = run_wrapper(&["preflight", "--dry-run", "--json"]);
     assert!(ends_with_args(
         &preflight.args,
@@ -945,6 +954,14 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&selftest.args, "--provider", "deepseek"));
     assert!(has_adjacent(&selftest.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&selftest.args, &["/selftest", "--json"]));
+
+    let recipes = run_wrapper(&["deepseek", "recipes", "release", "--json"]);
+    assert!(has_adjacent(&recipes.args, "--provider", "deepseek"));
+    assert!(has_adjacent(&recipes.args, "--model", "deepseek-v4-pro"));
+    assert!(ends_with_args(
+        &recipes.args,
+        &["/recipes", "release", "--json"]
+    ));
 
     let preflight = run_wrapper(&["deepseek", "preflight", "--dry-run", "--json"]);
     assert!(has_adjacent(&preflight.args, "--provider", "deepseek"));

@@ -2,7 +2,10 @@ use crate::agents::{AgentStore, SubagentTask};
 use crate::config::{
     absolutize_workspace_path, AppConfig, GitIdentityConfig, PrivacyConfig, ProviderCredentials,
 };
-use crate::privacy::{looks_sensitive, redact_sensitive_text, redact_sensitive_value};
+use crate::privacy::{
+    has_secret_value_marker as privacy_has_secret_value_marker, looks_sensitive,
+    redact_sensitive_text, redact_sensitive_value,
+};
 use crate::prompts::PromptStore;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
 use crate::session::{
@@ -50,6 +53,7 @@ pub enum SlashCommand {
     Help { args: Vec<String> },
     Version { args: Vec<String> },
     Quickstart { args: Vec<String> },
+    Recipes { args: Vec<String> },
     Selftest { args: Vec<String> },
     Preflight { args: Vec<String> },
     Completion { args: Vec<String> },
@@ -118,6 +122,9 @@ impl CommandRouter {
             "/help" => SlashCommand::Help { args },
             "/version" | "/about" => SlashCommand::Version { args },
             "/quickstart" => SlashCommand::Quickstart { args },
+            "/recipes" | "/recipe" | "/playbook" | "/workflow" | "/workflows" => {
+                SlashCommand::Recipes { args }
+            }
             "/selftest" | "/self-test" => SlashCommand::Selftest { args },
             "/preflight" | "/release-check" => SlashCommand::Preflight { args },
             "/completion" | "/completions" => SlashCommand::Completion { args },
@@ -252,6 +259,7 @@ impl CommandRouter {
             SlashCommand::Quickstart { args } => {
                 handle_quickstart(context.workspace, context.config, context.executor, args)
             }
+            SlashCommand::Recipes { args } => handle_recipes(context.workspace, args),
             SlashCommand::Selftest { args } => {
                 handle_selftest(context.workspace, context.config, context.registry, args)
             }
@@ -463,6 +471,7 @@ impl CommandRouter {
             "/version",
             "/about",
             "/quickstart",
+            "/recipes",
             "/selftest",
             "/preflight",
             "/completion",
@@ -666,6 +675,34 @@ fn help_topics() -> &'static [CommandHelp] {
                 "Use `/status`, `/usage`, `/trace --limit 20`, `/logs --limit 80`, and `/session tools --failed --limit 5` to debug slow or failed runs.",
                 "Use `/accept --env-check compiler --json`, `/gate --env-check compiler --json`, and `/handoff --pr` before handing work back.",
             ],
+        },
+        CommandHelp {
+            name: "/recipes",
+            listing: "/recipes [topic|all] [--json] [--output path]",
+            summary: "Show task-oriented command recipes for common deepcli workflows.",
+            usage: &[
+                "/recipes",
+                "/recipes start",
+                "/recipes code",
+                "/recipes debug",
+                "/recipes release",
+                "/recipes support",
+                "/recipes environment",
+                "/recipes shell",
+                "/recipes --json",
+                "/recipes release --json --output <workspace-relative-path>",
+                "deepcli recipes release --json",
+                "deepcli playbook support",
+            ],
+            examples: &[
+                "/recipes",
+                "/recipes release",
+                "/recipes debug --json",
+                "/recipes --json --output .deepcli/exports/recipes.json",
+                "deepcli recipes release",
+                "deepcli playbook support",
+            ],
+            notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, and shell. Use `--json` for the stable `deepcli.recipes.v1` schema."],
         },
         CommandHelp {
             name: "/selftest",
@@ -1597,6 +1634,11 @@ fn normalize_help_topic(topic: &str) -> String {
         "/stop".to_string()
     } else if normalized == "/exit" {
         "/quit".to_string()
+    } else if matches!(
+        normalized.as_str(),
+        "/recipe" | "/playbook" | "/workflow" | "/workflows"
+    ) {
+        "/recipes".to_string()
     } else {
         normalized
     }
@@ -1849,6 +1891,330 @@ fn format_version_json(workspace: &Path, config: &AppConfig, report: &str) -> Re
         "providerTurnTimeoutSeconds": config.agent.provider_turn_timeout_seconds,
         "commandCount": CommandRouter::command_names().len(),
         "nextActions": version_next_actions(),
+        "report": report,
+    }))?)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct RecipesOptions {
+    topic: Option<&'static str>,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Recipe {
+    name: &'static str,
+    title: &'static str,
+    summary: &'static str,
+    commands: &'static [&'static str],
+    notes: &'static [&'static str],
+}
+
+fn handle_recipes(workspace: &Path, args: Vec<String>) -> Result<String> {
+    let options = parse_recipes_options(&args)?;
+    let recipes = selected_recipes(options.topic)?;
+    let next_actions = recipes_next_actions(options.topic);
+    let report = format_recipes_text(workspace, options.topic, &recipes, &next_actions);
+    let output = if options.json_output {
+        format_recipes_json(workspace, options.topic, &recipes, &next_actions, &report)?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_recipes_options(args: &[String]) -> Result<RecipesOptions> {
+    let mut options = RecipesOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--all" | "all" => {
+                options.topic = None;
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported /recipes option `{value}`"),
+            value => {
+                if options.topic.is_some() {
+                    bail!("usage: /recipes [topic|all] [--json] [--output path]");
+                }
+                options.topic = Some(normalize_recipe_topic(value)?);
+                index += 1;
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn normalize_recipe_topic(value: &str) -> Result<&'static str> {
+    match value {
+        "start" | "onboard" | "onboarding" | "quickstart" => Ok("start"),
+        "code" | "coding" | "task" | "agent" => Ok("code"),
+        "debug" | "diagnose" | "troubleshoot" | "troubleshooting" => Ok("debug"),
+        "release" | "ship" | "preflight" | "publish" => Ok("release"),
+        "support" | "issue" | "bundle" => Ok("support"),
+        "environment" | "env" | "setup" | "install" => Ok("environment"),
+        "shell" | "completion" | "completions" => Ok("shell"),
+        other => bail!(
+            "unknown /recipes topic `{other}`; supported topics: {}",
+            recipes_topic_names().join(", ")
+        ),
+    }
+}
+
+fn recipes_topic_names() -> Vec<&'static str> {
+    recipes_catalog()
+        .iter()
+        .map(|recipe| recipe.name)
+        .collect::<Vec<_>>()
+}
+
+fn selected_recipes(topic: Option<&'static str>) -> Result<Vec<Recipe>> {
+    let recipes = recipes_catalog();
+    if let Some(topic) = topic {
+        let selected = recipes
+            .into_iter()
+            .filter(|recipe| recipe.name == topic)
+            .collect::<Vec<_>>();
+        if selected.is_empty() {
+            bail!("unknown /recipes topic `{topic}`");
+        }
+        Ok(selected)
+    } else {
+        Ok(recipes)
+    }
+}
+
+fn recipes_catalog() -> Vec<Recipe> {
+    vec![
+        Recipe {
+            name: "start",
+            title: "Start Or Onboard",
+            summary: "Open deepcli, verify local setup, configure credentials, and resume prior work.",
+            commands: &[
+                "deepcli",
+                "deepcli quickstart --json",
+                "deepcli doctor --quick --json",
+                "deepcli credentials status --json",
+                "deepcli resume",
+            ],
+            notes: &[
+                "Use this when entering a new project or checking whether deepcli is ready before asking the agent to code.",
+                "If credentials are missing, run `deepcli credentials set <provider>` or `deepcli login <provider> --stdin --force`.",
+            ],
+        },
+        Recipe {
+            name: "code",
+            title: "Code With An Agent",
+            summary: "Start an interactive or one-shot coding task with a clear provider/model path.",
+            commands: &[
+                "deepcli deepseek",
+                "deepcli kimi",
+                "deepcli ask '阅读项目结构并说明如何运行测试'",
+                "deepcli status --json",
+                "deepcli next --json",
+            ],
+            notes: &[
+                "Use the TUI for multi-step edits and `ask` for bounded one-shot analysis.",
+                "Use `/status`, `/usage`, and `/trace` during long tasks instead of interrupting the agent.",
+            ],
+        },
+        Recipe {
+            name: "debug",
+            title: "Debug Slow Or Failed Runs",
+            summary: "Collect local evidence for provider latency, tool failures, logs, and failed tests.",
+            commands: &[
+                "deepcli usage --json",
+                "deepcli trace --limit 30",
+                "deepcli logs --limit 80",
+                "deepcli session tools --failed --limit 5",
+                "deepcli diagnose --json",
+            ],
+            notes: &[
+                "Use `deepcli diagnose --probe-provider --provider <name>` only when an online provider probe is needed.",
+                "Use `deepcli support` after diagnostics if you need a redacted bundle for an issue.",
+            ],
+        },
+        Recipe {
+            name: "release",
+            title: "Release Or Push",
+            summary: "Run local acceptance checks, privacy scanning, strict gate, and handoff output.",
+            commands: &[
+                "deepcli preflight --dry-run",
+                "deepcli preflight --json",
+                "deepcli privacy --json --fail-on-findings",
+                "deepcli gate --json",
+                "deepcli handoff --pr",
+            ],
+            notes: &[
+                "Use `--quick` on preflight only for fast local iteration; use full mode before pushing.",
+                "Preflight keeps going across checks so one run can show every blocker.",
+            ],
+        },
+        Recipe {
+            name: "support",
+            title: "Support Bundle",
+            summary: "Create redacted diagnostics for issues, bug reports, or teammate handoff.",
+            commands: &[
+                "deepcli support",
+                "deepcli support .deepcli/support/latest",
+                "deepcli diagnose --bundle .deepcli/support/latest",
+                "deepcli version --json",
+                "deepcli privacy --json",
+            ],
+            notes: &[
+                "Support bundles include redacted logs, version data, diagnose output, quickstart, status, usage, trace, and sessions.",
+                "Keep bundles inside the workspace so path safety checks and redaction stay consistent.",
+            ],
+        },
+        Recipe {
+            name: "environment",
+            title: "Prepare Local Environment",
+            summary: "Check, plan, install, and smoke-test Docker or compiler task environments.",
+            commands: &[
+                "deepcli env check docker --json",
+                "deepcli env plan compiler --smoke --json",
+                "deepcli setup docker --smoke",
+                "deepcli install compiler --smoke",
+                "deepcli env test compiler --json",
+            ],
+            notes: &[
+                "Always preview with `env plan` before install/setup if the task may touch Docker, Colima, or compiler tools.",
+                "Environment setup runs through the permission engine; read-only check/plan commands do not need a provider call.",
+            ],
+        },
+        Recipe {
+            name: "shell",
+            title: "Shell Integration",
+            summary: "Install or audit shell completion and command discovery integrations.",
+            commands: &[
+                "deepcli doctor shell --json",
+                "deepcli completion status zsh --json",
+                "deepcli completion install zsh",
+                "deepcli completion install zsh --force",
+                "deepcli completion json --output .deepcli/exports/commands.json",
+            ],
+            notes: &[
+                "`completion install` is dry-run by default and only writes under allowlisted HOME completion paths with `--force`.",
+                "Use the JSON command catalog for external launchers, docs generators, or TUI command palettes.",
+            ],
+        },
+    ]
+}
+
+fn recipes_next_actions(topic: Option<&'static str>) -> Vec<String> {
+    let actions = match topic {
+        Some("start") => vec![
+            "run `deepcli` to open the TUI",
+            "run `/recipes code` after readiness is confirmed",
+        ],
+        Some("code") => vec![
+            "run `/status --json` while the task is active",
+            "run `/recipes release` before handing work back",
+        ],
+        Some("debug") => vec![
+            "run `/diagnose --json` for a compact health report",
+            "run `/support` if you need a redacted bundle",
+        ],
+        Some("release") => vec![
+            "preview checks with `/preflight --dry-run`",
+            "run the full gate with `/preflight --json` before pushing",
+        ],
+        Some("support") => vec![
+            "create a bundle with `/support .deepcli/support/latest`",
+            "inspect the generated issue template before sharing",
+        ],
+        Some("environment") => vec![
+            "preview setup with `/env plan compiler --smoke --json`",
+            "verify environment readiness with `/env test compiler --json`",
+        ],
+        Some("shell") => vec![
+            "check installation with `/doctor shell --json`",
+            "install completion with `/completion install zsh --force` if needed",
+        ],
+        _ => vec![
+            "run `/recipes release` before commit or push",
+            "export workflow recipes with `/recipes --json --output .deepcli/exports/recipes.json`",
+        ],
+    };
+    dedup_preserve_order(actions.into_iter().map(str::to_string).collect())
+}
+
+fn format_recipes_text(
+    workspace: &Path,
+    topic: Option<&'static str>,
+    recipes: &[Recipe],
+    next_actions: &[String],
+) -> String {
+    let mut lines = vec![
+        "deepcli recipes".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("topic: {}", topic.unwrap_or("all")),
+    ];
+    if topic.is_none() {
+        lines.push(format!(
+            "available topics: {}",
+            recipes_topic_names().join(", ")
+        ));
+    }
+    lines.push("recipes:".to_string());
+    for recipe in recipes {
+        lines.push(format!("  {} - {}", recipe.name, recipe.title));
+        lines.push(format!("    summary: {}", recipe.summary));
+        lines.push("    commands:".to_string());
+        for (index, command) in recipe.commands.iter().enumerate() {
+            lines.push(format!("      {}. {command}", index + 1));
+        }
+        if !recipe.notes.is_empty() {
+            lines.push("    notes:".to_string());
+            lines.extend(recipe.notes.iter().map(|note| format!("      - {note}")));
+        }
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
+    lines.join("\n")
+}
+
+fn format_recipes_json(
+    workspace: &Path,
+    topic: Option<&'static str>,
+    recipes: &[Recipe],
+    next_actions: &[String],
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.recipes.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "topic": topic.unwrap_or("all"),
+        "availableTopics": recipes_topic_names(),
+        "recipes": recipes.iter().map(|recipe| json!({
+            "name": recipe.name,
+            "title": recipe.title,
+            "summary": recipe.summary,
+            "commands": recipe.commands,
+            "notes": recipe.notes,
+        })).collect::<Vec<_>>(),
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -2135,6 +2501,8 @@ fn quickstart_provider_status(
 fn quickstart_steps() -> Vec<String> {
     vec![
         "run `deepcli` in the project directory to open the TUI".to_string(),
+        "run `/recipes` when you want task-oriented workflows instead of the full command list"
+            .to_string(),
         "run `/doctor --quick` to check config, credentials, sessions, and tests".to_string(),
         "run `/credentials set <provider>` if the default provider is missing an API key"
             .to_string(),
@@ -2165,6 +2533,7 @@ fn quickstart_next_actions(
             "configure provider credentials: run `/credentials set {provider_name}`"
         ));
     }
+    actions.push("choose a task recipe: run `/recipes` or `/recipes release`".to_string());
     actions.push("inspect provider/model choices: run `/model list`".to_string());
     if tests_missing {
         actions.push("add or configure tests, then run `/test discover --json`".to_string());
@@ -2474,6 +2843,7 @@ fn selftest_required_commands() -> Vec<&'static str> {
     vec![
         "/help",
         "/quickstart",
+        "/recipes",
         "/selftest",
         "/preflight",
         "/completion",
@@ -4001,7 +4371,7 @@ fn completion_words(commands: &[CompletionCommand]) -> String {
 }
 
 fn provider_completion_words() -> &'static str {
-    "ask stream resume tui repl version about quickstart selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
+    "ask stream resume tui repl version about quickstart recipes recipe playbook workflow workflows selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
 }
 
 fn fish_escape(value: &str) -> String {
@@ -4040,6 +4410,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/version"
             | "/about"
             | "/quickstart"
+            | "/recipes"
             | "/selftest"
             | "/preflight"
             | "/completion"
@@ -17924,6 +18295,12 @@ fn is_sensitive_review_detector_source_line(text: &str) -> bool {
     let defines_api_key_trim_rule = lower.contains("trim_end_matches") && lower.contains("api_key");
     lower.contains("has_explicit_secret_review_marker")
         || lower.contains("secret_markers")
+        || lower.contains("secret_value_markers")
+        || lower.contains("sensitive_header_markers")
+        || lower.contains("has_secret_value_marker")
+        || lower.contains("has_sensitive_header_marker")
+        || lower.contains("contains_sk_secret_marker")
+        || lower.contains("privacy_has_secret_value_marker")
         || lower.contains("mentions_api_key")
         || lower.contains("defines_api_key_rule")
         || lower.contains("defines_api_key_trim_rule")
@@ -17934,10 +18311,7 @@ fn is_sensitive_review_detector_source_line(text: &str) -> bool {
 }
 
 fn has_explicit_secret_review_marker(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("sk-")
-        || lower.contains("bearer ")
-        || lower.contains("-----begin private key-----")
+    privacy_has_secret_value_marker(text)
 }
 
 fn is_safe_sensitive_review_source_line(text: &str) -> bool {
@@ -19283,6 +19657,18 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/recipes release --json").unwrap(),
+            Some(SlashCommand::Recipes {
+                args: vec!["release".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/playbook support").unwrap(),
+            Some(SlashCommand::Recipes {
+                args: vec!["support".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/selftest --json --fail-on-issues").unwrap(),
             Some(SlashCommand::Selftest {
                 args: vec!["--json".to_string(), "--fail-on-issues".to_string()]
@@ -20090,6 +20476,17 @@ mod tests {
         assert!(quickstart_help.contains("deepcli gate --json"));
         assert!(quickstart_help.contains("/accept --env-check compiler --json"));
 
+        let recipes_help = CommandRouter::help_for(&["recipes".to_string()]).unwrap();
+        assert!(recipes_help.contains("/recipes - "));
+        assert!(recipes_help.contains("running-safe: yes"));
+        assert!(recipes_help.contains("deepcli.recipes.v1"));
+        assert!(recipes_help.contains("Supported topics"));
+        assert!(recipes_help.contains("deepcli recipes release --json"));
+        assert!(recipes_help.contains("deepcli playbook support"));
+
+        let playbook_help = CommandRouter::help_for(&["playbook".to_string()]).unwrap();
+        assert!(playbook_help.contains("/recipes - "));
+
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
         assert!(selftest_help.contains("/selftest - "));
         assert!(selftest_help.contains("running-safe: yes"));
@@ -20528,6 +20925,11 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
+            .any(|item| item.as_str().unwrap().contains("/recipes")));
+        assert!(value["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
             .any(|item| item.as_str().unwrap().contains("/accept --json")));
         assert!(value["nextActions"]
             .as_array()
@@ -20542,6 +20944,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str().unwrap().contains("/accept --json")));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("/recipes")));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
@@ -20624,6 +21031,75 @@ mod tests {
 
         assert!(error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../quickstart.txt").exists());
+    }
+
+    #[test]
+    fn recipes_json_output_is_structured_and_written() {
+        let dir = tempdir().unwrap();
+
+        let output = handle_recipes(
+            dir.path(),
+            vec![
+                "release".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/recipes.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.recipes.v1");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["topic"], "release");
+        assert_eq!(value["recipes"].as_array().unwrap().len(), 1);
+        assert_eq!(value["recipes"][0]["name"], "release");
+        assert!(value["recipes"][0]["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|command| command.as_str().unwrap() == "deepcli preflight --json"));
+        assert!(value["availableTopics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|topic| topic.as_str().unwrap() == "debug"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("deepcli recipes"));
+        assert!(!dir.path().join(".deepcli/sessions").exists());
+
+        let written = fs::read_to_string(dir.path().join(".deepcli/exports/recipes.json")).unwrap();
+        assert_eq!(written, output);
+    }
+
+    #[test]
+    fn recipes_aliases_topics_and_output_safety_are_enforced() {
+        let dir = tempdir().unwrap();
+
+        let output = handle_recipes(dir.path(), vec!["ship".into(), "--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["topic"], "release");
+
+        let unknown = handle_recipes(dir.path(), vec!["unknown".into()])
+            .unwrap_err()
+            .to_string();
+        assert!(unknown.contains("unknown /recipes topic `unknown`"));
+
+        let traversal = handle_recipes(
+            dir.path(),
+            vec!["--output".into(), "../recipes.json".into()],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../recipes.json").exists());
     }
 
     #[test]
@@ -25945,7 +26421,16 @@ diff --git a/docs/b.md b/docs/b.md
     #[test]
     fn review_diff_ignores_sensitive_labels_in_source_code() {
         let report = review_diff(
-            "diff --git a/src/commands.rs b/src/commands.rs\n+format!(\"authorization: {}\", status)\n+format!(\"api_key={}\", status)\n+\"printf '%s' \\\"$DEEPSEEK_API_KEY\\\" | /credentials set deepseek --stdin --force\"\n+let mut file_api_key = false;\n+if file_api_key || env_present { \"configured\" } else { \"missing\" }\n+file_api_key = credentials.api_key.is_some();\n+api_key: Some(format!(\"<replace locally>\")),\n+api_key: None,\n+api_key: String,\n+credentials.api_key = Some(api_key);\n+io::stdin().read_line(&mut api_key)?;\n+lines.push(\"provider API keys: DEEPSEEK_API_KEY, KIMI_API_KEY\".to_string());\n+format!(\"{}_API_KEY\", provider)\n+provider_env_key(provider)\n+api_key,\n+if has_explicit_secret_review_marker(text) { return true; }\n+let defines_api_key_rule = lower.contains(\"api_key\");\n+lower.contains(\"sk-\") || lower.contains(\"bearer \")\n",
+            "diff --git a/src/commands.rs b/src/commands.rs\n+format!(\"authorization: {}\", status)\n+format!(\"api_key={}\", status)\n+\"printf '%s' \\\"$DEEPSEEK_API_KEY\\\" | /credentials set deepseek --stdin --force\"\n+let mut file_api_key = false;\n+if file_api_key || env_present { \"configured\" } else { \"missing\" }\n+file_api_key = credentials.api_key.is_some();\n+api_key: Some(format!(\"<replace locally>\")),\n+api_key: None,\n+api_key: String,\n+credentials.api_key = Some(api_key);\n+io::stdin().read_line(&mut api_key)?;\n+lines.push(\"provider API keys: DEEPSEEK_API_KEY, KIMI_API_KEY\".to_string());\n+format!(\"{}_API_KEY\", provider)\n+provider_env_key(provider)\n+api_key,\n+if has_explicit_secret_review_marker(text) { return true; }\n+let defines_api_key_rule = lower.contains(\"api_key\");\n+lower.contains(\"sk-\") || lower.contains(\"bearer \")\n+const SENSITIVE_HEADER_MARKERS: &[&str] = &[\"authorization:\"];\n+const SECRET_VALUE_MARKERS: &[&str] = &[\"bearer \", \"-----BEGIN PRIVATE KEY-----\"];\n+privacy_has_secret_value_marker(text)\n+fn has_secret_value_marker(text: &str) -> bool {\n+fn has_sensitive_header_marker(text: &str) -> bool {\n+fn contains_sk_secret_marker(lower: &str) -> bool {\n",
+        );
+        assert!(!report.contains("sensitive material"), "{report}");
+        assert!(report.contains("low:"));
+    }
+
+    #[test]
+    fn review_diff_ignores_task_oriented_recipe_help_text() {
+        let report = review_diff(
+            "diff --git a/src/commands.rs b/src/commands.rs\n+                                   Show task-oriented workflow command recipes\n+            summary: \"Show task-oriented command recipes for common deepcli workflows.\",\n+            notes: &[\"`/recipes` is a local command catalog for task-oriented workflows.\"],\n",
         );
         assert!(!report.contains("sensitive material"));
         assert!(report.contains("low:"));
