@@ -131,8 +131,8 @@ Usage:
                                    Show task-oriented workflow command recipes
   deepcli scorecard [--json] [--fail-below n]
                                    Measure product capability coverage and benchmark gaps
-  deepcli benchmark [presets|run|record|status|gate|summary|list|show|scorecard] [--json]
-                                   Discover, run, record, assess, gate, summarize, or inspect benchmark evidence
+  deepcli benchmark [presets|run-suite|run|record|status|gate|summary|trends|list|show|clean|scorecard] [--json]
+                                   Discover, run suites, record, assess, gate, summarize, or inspect benchmark evidence
   deepcli round [--json] [--fail-on-gaps] [--fail-below n]
                                    Summarize the current product iteration state and next actions
   deepcli selftest [--json] [--fail-on-issues]
@@ -228,6 +228,7 @@ Examples:
   deepcli benchmark presets --json
   deepcli benchmark status --json
   deepcli benchmark gate --json
+  deepcli benchmark run-suite --json --fail-on-command
   deepcli benchmark run --preset cargo-test --json --fail-on-command
   deepcli benchmark summary --json
   deepcli benchmark trends --json

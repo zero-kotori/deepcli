@@ -266,6 +266,12 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/benchmark", "gate", "--json"]
     ));
 
+    let benchmark_suite = run_wrapper(&["benchmark", "run-suite", "--json"]);
+    assert!(ends_with_args(
+        &benchmark_suite.args,
+        &["/benchmark", "run-suite", "--json"]
+    ));
+
     let benchmark_trends = run_wrapper(&["benchmark", "trends", "--json"]);
     assert!(ends_with_args(
         &benchmark_trends.args,
@@ -1041,6 +1047,22 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(ends_with_args(
         &benchmark_gate.args,
         &["/benchmark", "gate", "--json"]
+    ));
+
+    let benchmark_suite = run_wrapper(&["deepseek", "benchmark", "run-suite", "--json"]);
+    assert!(has_adjacent(
+        &benchmark_suite.args,
+        "--provider",
+        "deepseek"
+    ));
+    assert!(has_adjacent(
+        &benchmark_suite.args,
+        "--model",
+        "deepseek-v4-pro"
+    ));
+    assert!(ends_with_args(
+        &benchmark_suite.args,
+        &["/benchmark", "run-suite", "--json"]
     ));
 
     let benchmark_trends = run_wrapper(&["deepseek", "benchmark", "trends", "--json"]);
