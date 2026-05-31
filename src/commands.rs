@@ -748,6 +748,8 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark",
                 "/benchmark --json",
                 "/benchmark scorecard --fail-below <percent>",
+                "/benchmark presets [--json]",
+                "/benchmark run --preset <name> [--timeout seconds] [--fail-on-command] [--json]",
                 "/benchmark run --command <cmd> [--timeout seconds] [--fail-on-command] [--json]",
                 "/benchmark run -- <cmd>",
                 "/benchmark record [--json] [--suite name] [--case name] [--command <cmd>] [--notes text]",
@@ -756,6 +758,8 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark show [latest|artifact-name] [--json]",
             ],
             examples: &[
+                "/benchmark presets --json",
+                "/benchmark run --preset cargo-test --json --fail-on-command",
                 "/benchmark run --command 'cargo test' --json --fail-on-command",
                 "/benchmark run --timeout 30 -- printf ok",
                 "/benchmark summary --json",
@@ -764,7 +768,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark show latest --json",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run --preset <name>` executes the selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `list` and `show` inspect artifacts."],
         },
         CommandHelp {
             name: "/selftest",
@@ -2531,7 +2535,8 @@ fn build_scorecard_report(
             &[
                 "deepcli scorecard --json",
                 "deepcli preflight --json",
-                "deepcli benchmark run --command 'cargo test' --json --fail-on-command",
+                "deepcli benchmark presets --json",
+                "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             ],
         ),
     ];
@@ -2685,7 +2690,7 @@ fn build_scorecard_report(
         scorecard_add_gap(
             &mut categories[7],
             "no local benchmark artifact found under .deepcli/benchmarks or .deepcli/exports/scorecard.json",
-            "run `/benchmark run --command 'cargo test' --json --fail-on-command` or export `/scorecard --json --output .deepcli/exports/scorecard.json`",
+            "run `/benchmark run --preset cargo-test --json --fail-on-command` or export `/scorecard --json --output .deepcli/exports/scorecard.json`",
         );
     }
 
@@ -2730,7 +2735,7 @@ fn build_scorecard_report(
         .flat_map(|category| category.next_actions.clone())
         .collect::<Vec<_>>();
     next_actions.push(
-        "run `/benchmark run --command 'cargo test' --json --fail-on-command` after each product round"
+        "run `/benchmark run --preset cargo-test --json --fail-on-command` after each product round"
             .to_string(),
     );
     next_actions.push("run `/preflight --json` before commit or push".to_string());
@@ -2952,6 +2957,7 @@ struct BenchmarkRecordOptions {
 struct BenchmarkRunOptions {
     json_output: bool,
     output_path: Option<String>,
+    preset: Option<String>,
     suite: String,
     case_name: String,
     command: Option<String>,
@@ -2966,6 +2972,7 @@ impl Default for BenchmarkRunOptions {
         Self {
             json_output: false,
             output_path: None,
+            preset: None,
             suite: DEFAULT_BENCHMARK_SUITE.to_string(),
             case_name: DEFAULT_BENCHMARK_RUN_CASE.to_string(),
             command: None,
@@ -3005,6 +3012,12 @@ struct BenchmarkSummaryOptions {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BenchmarkPresetsOptions {
+    json_output: bool,
+    output_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct BenchmarkShowOptions {
     json_output: bool,
@@ -3030,6 +3043,71 @@ struct BenchmarkArtifact {
     modified_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct BenchmarkPreset {
+    name: &'static str,
+    aliases: &'static [&'static str],
+    title: &'static str,
+    summary: &'static str,
+    suite: &'static str,
+    case_name: &'static str,
+    command: &'static str,
+    timeout_seconds: u64,
+}
+
+const BENCHMARK_PRESETS: &[BenchmarkPreset] = &[
+    BenchmarkPreset {
+        name: "cargo-test",
+        aliases: &["cargo", "test", "tests"],
+        title: "Cargo Test",
+        summary: "Run the Rust test suite as product benchmark evidence.",
+        suite: "product",
+        case_name: "cargo-test",
+        command: "cargo test",
+        timeout_seconds: 600,
+    },
+    BenchmarkPreset {
+        name: "preflight-quick",
+        aliases: &["quick", "preflight"],
+        title: "Quick Preflight",
+        summary: "Run a quicker local release-readiness check without the slow gate.",
+        suite: "product",
+        case_name: "preflight-quick",
+        command: "deepcli preflight --quick --json",
+        timeout_seconds: 300,
+    },
+    BenchmarkPreset {
+        name: "selftest",
+        aliases: &["install", "readiness"],
+        title: "Selftest",
+        summary: "Run deepcli's local install and command-surface readiness test.",
+        suite: "product",
+        case_name: "selftest",
+        command: "deepcli selftest --json",
+        timeout_seconds: 120,
+    },
+    BenchmarkPreset {
+        name: "scorecard",
+        aliases: &["sota", "rubric"],
+        title: "Scorecard",
+        summary: "Run the local product capability scorecard as benchmark evidence.",
+        suite: "product",
+        case_name: "scorecard",
+        command: "deepcli scorecard --json",
+        timeout_seconds: 120,
+    },
+    BenchmarkPreset {
+        name: "smoke",
+        aliases: &["hello"],
+        title: "Smoke",
+        summary: "Run a tiny command to validate benchmark artifact plumbing.",
+        suite: "product",
+        case_name: "smoke",
+        command: "printf deepcli-benchmark-smoke",
+        timeout_seconds: 30,
+    },
+];
+
 fn handle_benchmark(
     workspace: &Path,
     config: &AppConfig,
@@ -3046,6 +3124,7 @@ fn handle_benchmark(
         "scorecard" | "rubric" => handle_scorecard(workspace, config, registry, rest.to_vec()),
         "run" | "exec" => handle_benchmark_run(workspace, config, registry, rest),
         "record" | "save" => handle_benchmark_record(workspace, config, registry, rest),
+        "presets" | "preset" | "catalog" => handle_benchmark_presets(workspace, rest),
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
@@ -3055,7 +3134,7 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected run, record, summary, list, show, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run, record, summary, list, show, or scorecard"
         ),
     }
 }
@@ -3084,7 +3163,9 @@ fn handle_benchmark_run(
         .as_deref()
         .filter(|command| !command.trim().is_empty())
         .ok_or_else(|| {
-            anyhow::anyhow!("/benchmark run requires `--command <cmd>` or `-- <cmd>`")
+            anyhow::anyhow!(
+                "/benchmark run requires `--preset <name>`, `--command <cmd>`, or `-- <cmd>`"
+            )
         })?;
     let created_at = Utc::now();
     let (artifact_path, relative_path) =
@@ -3137,6 +3218,10 @@ fn handle_benchmark_run(
 
 fn parse_benchmark_run_options(args: &[String]) -> Result<BenchmarkRunOptions> {
     let mut options = BenchmarkRunOptions::default();
+    let mut suite_explicit = false;
+    let mut case_explicit = false;
+    let mut notes_explicit = false;
+    let mut timeout_explicit = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -3161,29 +3246,43 @@ fn parse_benchmark_run_options(args: &[String]) -> Result<BenchmarkRunOptions> {
                 )?;
                 index += 1;
             }
+            "--preset" => {
+                let name = required_arg(args, index + 1, "benchmark preset")?;
+                set_benchmark_preset(&mut options.preset, name)?;
+                index += 2;
+            }
+            value if value.starts_with("--preset=") => {
+                set_benchmark_preset(&mut options.preset, value.trim_start_matches("--preset="))?;
+                index += 1;
+            }
             "--suite" => {
                 options.suite =
                     parse_benchmark_label(required_arg(args, index + 1, "suite")?, "suite")?;
+                suite_explicit = true;
                 index += 2;
             }
             value if value.starts_with("--suite=") => {
                 options.suite =
                     parse_benchmark_label(value.trim_start_matches("--suite="), "suite")?;
+                suite_explicit = true;
                 index += 1;
             }
             "--case" | "--name" => {
                 options.case_name =
                     parse_benchmark_label(required_arg(args, index + 1, "case")?, "case")?;
+                case_explicit = true;
                 index += 2;
             }
             value if value.starts_with("--case=") => {
                 options.case_name =
                     parse_benchmark_label(value.trim_start_matches("--case="), "case")?;
+                case_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--name=") => {
                 options.case_name =
                     parse_benchmark_label(value.trim_start_matches("--name="), "case")?;
+                case_explicit = true;
                 index += 1;
             }
             "--command" | "--cmd" => {
@@ -3205,29 +3304,35 @@ fn parse_benchmark_run_options(args: &[String]) -> Result<BenchmarkRunOptions> {
             "--notes" | "--note" => {
                 let notes = required_arg(args, index + 1, "notes")?;
                 set_benchmark_notes(&mut options.notes, notes)?;
+                notes_explicit = true;
                 index += 2;
             }
             value if value.starts_with("--notes=") => {
                 set_benchmark_notes(&mut options.notes, value.trim_start_matches("--notes="))?;
+                notes_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--note=") => {
                 set_benchmark_notes(&mut options.notes, value.trim_start_matches("--note="))?;
+                notes_explicit = true;
                 index += 1;
             }
             "--timeout" | "--timeout-seconds" => {
                 options.timeout_seconds =
                     parse_benchmark_timeout(required_arg(args, index + 1, "timeout seconds")?)?;
+                timeout_explicit = true;
                 index += 2;
             }
             value if value.starts_with("--timeout=") => {
                 options.timeout_seconds =
                     parse_benchmark_timeout(value.trim_start_matches("--timeout="))?;
+                timeout_explicit = true;
                 index += 1;
             }
             value if value.starts_with("--timeout-seconds=") => {
                 options.timeout_seconds =
                     parse_benchmark_timeout(value.trim_start_matches("--timeout-seconds="))?;
+                timeout_explicit = true;
                 index += 1;
             }
             "--scorecard" => {
@@ -3245,7 +3350,56 @@ fn parse_benchmark_run_options(args: &[String]) -> Result<BenchmarkRunOptions> {
             value => bail!("unsupported /benchmark run option `{value}`"),
         }
     }
+    apply_benchmark_run_preset(
+        &mut options,
+        suite_explicit,
+        case_explicit,
+        notes_explicit,
+        timeout_explicit,
+    )?;
     Ok(options)
+}
+
+fn set_benchmark_preset(target: &mut Option<String>, raw: &str) -> Result<()> {
+    if target.is_some() {
+        bail!("multiple benchmark presets were provided");
+    }
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("benchmark preset must not be empty");
+    }
+    *target = Some(trimmed.to_ascii_lowercase());
+    Ok(())
+}
+
+fn apply_benchmark_run_preset(
+    options: &mut BenchmarkRunOptions,
+    suite_explicit: bool,
+    case_explicit: bool,
+    notes_explicit: bool,
+    timeout_explicit: bool,
+) -> Result<()> {
+    let Some(name) = options.preset.clone() else {
+        return Ok(());
+    };
+    let preset = benchmark_preset_by_name(&name)?;
+    if options.command.is_some() {
+        bail!("`--preset` cannot be combined with `--command` or `-- <cmd>`");
+    }
+    options.command = Some(redact_sensitive_text(preset.command));
+    if !suite_explicit {
+        options.suite = preset.suite.to_string();
+    }
+    if !case_explicit {
+        options.case_name = preset.case_name.to_string();
+    }
+    if !notes_explicit {
+        options.notes = Some(redact_sensitive_text(preset.summary));
+    }
+    if !timeout_explicit {
+        options.timeout_seconds = preset.timeout_seconds;
+    }
+    Ok(())
 }
 
 fn set_benchmark_command(command: &mut Option<String>, raw: &str) -> Result<()> {
@@ -3271,6 +3425,23 @@ fn parse_benchmark_timeout(raw: &str) -> Result<u64> {
         bail!("timeout seconds must be 86400 or less");
     }
     Ok(parsed)
+}
+
+fn benchmark_preset_by_name(name: &str) -> Result<&'static BenchmarkPreset> {
+    let normalized = name.trim().to_ascii_lowercase();
+    BENCHMARK_PRESETS
+        .iter()
+        .find(|preset| {
+            preset.name == normalized || preset.aliases.iter().any(|alias| *alias == normalized)
+        })
+        .ok_or_else(|| {
+            let names = BENCHMARK_PRESETS
+                .iter()
+                .map(|preset| preset.name)
+                .collect::<Vec<_>>()
+                .join(", ");
+            anyhow::anyhow!("unknown benchmark preset `{name}`; expected one of: {names}")
+        })
 }
 
 fn handle_benchmark_record(
@@ -3530,6 +3701,7 @@ fn build_benchmark_run_json(
         },
         "suite": options.suite,
         "case": options.case_name,
+        "preset": options.preset,
         "notes": options.notes,
         "declaredCommands": [execution.command.clone()],
         "execution": {
@@ -3858,6 +4030,46 @@ fn handle_benchmark_list(workspace: &Path, args: &[String]) -> Result<String> {
     Ok(output)
 }
 
+fn handle_benchmark_presets(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_presets_options(args)?;
+    let output = if options.json_output {
+        format_benchmark_presets_json(workspace)?
+    } else {
+        format_benchmark_presets_text(workspace)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_presets_options(args: &[String]) -> Result<BenchmarkPresetsOptions> {
+    let mut options = BenchmarkPresetsOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark presets option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
 fn handle_benchmark_summary(workspace: &Path, args: &[String]) -> Result<String> {
     let options = parse_benchmark_summary_options(args)?;
     let mut artifacts = load_benchmark_artifacts(workspace)?;
@@ -4072,7 +4284,7 @@ fn resolve_benchmark_artifact(workspace: &Path, target: &str) -> Result<Benchmar
     if target == "latest" {
         return artifacts.into_iter().next().ok_or_else(|| {
             anyhow::anyhow!(
-                "no benchmark artifacts found under .deepcli/benchmarks; run `/benchmark run --command 'cargo test' --json --fail-on-command` or `/benchmark record` first"
+                "no benchmark artifacts found under .deepcli/benchmarks; run `/benchmark run --preset cargo-test --json --fail-on-command` or `/benchmark record` first"
             )
         });
     }
@@ -4109,7 +4321,8 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
         "artifactCount": artifacts.len(),
         "artifacts": artifacts.iter().map(benchmark_artifact_summary_json).collect::<Vec<_>>(),
         "nextActions": [
-            "deepcli benchmark run --command 'cargo test' --json --fail-on-command",
+            "deepcli benchmark presets --json",
+            "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             "deepcli benchmark record --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark show latest --json",
@@ -4125,9 +4338,65 @@ fn benchmark_artifact_summary_json(artifact: &BenchmarkArtifact) -> Value {
         "modifiedAt": artifact.modified_at.map(|time| time.to_rfc3339()),
         "suite": artifact.value.get("suite").cloned().unwrap_or(Value::Null),
         "case": artifact.value.get("case").cloned().unwrap_or(Value::Null),
+        "preset": artifact.value.get("preset").cloned().unwrap_or(Value::Null),
         "execution": benchmark_artifact_execution_summary_json(&artifact.value),
         "scorecard": artifact.value.get("scorecard").cloned().unwrap_or(Value::Null),
     })
+}
+
+fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.benchmark.presets.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "presetCount": BENCHMARK_PRESETS.len(),
+        "presets": BENCHMARK_PRESETS
+            .iter()
+            .map(benchmark_preset_json)
+            .collect::<Vec<_>>(),
+        "nextActions": [
+            "deepcli benchmark run --preset cargo-test --json --fail-on-command",
+            "deepcli benchmark run --preset preflight-quick --json --fail-on-command",
+            "deepcli benchmark summary --json",
+            "deepcli scorecard --json",
+        ],
+    }))?)
+}
+
+fn benchmark_preset_json(preset: &BenchmarkPreset) -> Value {
+    json!({
+        "name": preset.name,
+        "aliases": preset.aliases,
+        "title": preset.title,
+        "summary": preset.summary,
+        "suite": preset.suite,
+        "case": preset.case_name,
+        "command": preset.command,
+        "timeoutSeconds": preset.timeout_seconds,
+    })
+}
+
+fn format_benchmark_presets_text(workspace: &Path) -> String {
+    let mut lines = vec![
+        "deepcli benchmark presets".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("count: {}", BENCHMARK_PRESETS.len()),
+        "presets:".to_string(),
+    ];
+    for preset in BENCHMARK_PRESETS {
+        lines.push(format!("  - {} ({})", preset.name, preset.title));
+        lines.push(format!(
+            "    suite={} case={} timeout={}s",
+            preset.suite, preset.case_name, preset.timeout_seconds
+        ));
+        lines.push(format!("    summary: {}", preset.summary));
+        lines.push(format!("    command: {}", preset.command));
+    }
+    lines.push("next actions:".to_string());
+    lines
+        .push("  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
+    lines.push("  - deepcli benchmark summary --json".to_string());
+    lines.join("\n")
 }
 
 fn benchmark_artifact_execution_summary_json(value: &Value) -> Value {
@@ -4288,7 +4557,8 @@ fn format_benchmark_summary_json(
         "totals": benchmark_summary_totals_json(summaries),
         "cases": summaries.iter().map(benchmark_case_summary_json).collect::<Vec<_>>(),
         "nextActions": [
-            "deepcli benchmark run --command 'cargo test' --json --fail-on-command",
+            "deepcli benchmark presets --json",
+            "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             "deepcli benchmark list --json",
             "deepcli benchmark show latest --json",
             "deepcli scorecard --json",
@@ -4365,8 +4635,9 @@ fn format_benchmark_summary_text(
     if summaries.is_empty() {
         lines.push("history: none".to_string());
         lines.push("next actions:".to_string());
+        lines.push("  - deepcli benchmark presets --json".to_string());
         lines.push(
-            "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
+            "  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
         );
         lines.push("  - deepcli benchmark list --json".to_string());
         return lines.join("\n");
@@ -4432,8 +4703,9 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
     if artifacts.is_empty() {
         lines.push("artifacts: none".to_string());
         lines.push("next actions:".to_string());
+        lines.push("  - deepcli benchmark presets --json".to_string());
         lines.push(
-            "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
+            "  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
         );
         lines.push("  - deepcli benchmark record --json".to_string());
         lines.push("  - deepcli benchmark summary --json".to_string());
@@ -4585,9 +4857,9 @@ fn format_benchmark_artifact_text(
         ));
     }
     lines.push("next actions:".to_string());
-    lines.push(
-        "  - deepcli benchmark run --command 'cargo test' --json --fail-on-command".to_string(),
-    );
+    lines.push("  - deepcli benchmark presets --json".to_string());
+    lines
+        .push("  - deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
     lines.push("  - deepcli benchmark list --json".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
@@ -22085,6 +22357,23 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/benchmark run --preset cargo-test --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec![
+                    "run".to_string(),
+                    "--preset".to_string(),
+                    "cargo-test".to_string(),
+                    "--json".to_string()
+                ]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/benchmark presets --json").unwrap(),
+            Some(SlashCommand::Benchmark {
+                args: vec!["presets".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/benchmark summary --json").unwrap(),
             Some(SlashCommand::Benchmark {
                 args: vec!["summary".to_string(), "--json".to_string()]
@@ -22919,6 +23208,8 @@ mod tests {
         assert!(bench_help.contains("/benchmark - "));
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
         assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
+        assert!(bench_help.contains("/benchmark presets"));
+        assert!(bench_help.contains("--preset <name>"));
         assert!(bench_help.contains("/benchmark record"));
         assert!(bench_help.contains("/benchmark summary"));
 
@@ -23707,7 +23998,93 @@ mod tests {
         let missing = handle_benchmark(dir.path(), &config, &registry, vec!["run".into()])
             .unwrap_err()
             .to_string();
-        assert!(missing.contains("requires `--command <cmd>`"));
+        assert!(missing.contains("requires `--preset <name>`"));
+    }
+
+    #[test]
+    fn benchmark_presets_are_listed_and_can_run_smoke_evidence() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let presets = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["presets".into(), "--json".into()],
+        )
+        .unwrap();
+        let presets_value: Value = serde_json::from_str(&presets).unwrap();
+        assert_eq!(presets_value["schema"], "deepcli.benchmark.presets.v1");
+        assert!(presets_value["presets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|preset| preset["name"] == "cargo-test"));
+        assert!(presets_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("run --preset cargo-test")));
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "run".into(),
+                "--json".into(),
+                "--preset".into(),
+                "smoke".into(),
+                "--fail-on-command".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], BENCHMARK_ARTIFACT_SCHEMA);
+        assert_eq!(value["preset"], "smoke");
+        assert_eq!(value["suite"], "product");
+        assert_eq!(value["case"], "smoke");
+        assert_eq!(value["execution"]["status"], "passed");
+        assert_eq!(
+            value["execution"]["commands"][0]["stdoutSample"],
+            "deepcli-benchmark-smoke"
+        );
+        assert_eq!(
+            value["declaredCommands"][0],
+            "printf deepcli-benchmark-smoke"
+        );
+
+        let conflict = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "run".into(),
+                "--preset".into(),
+                "smoke".into(),
+                "--command".into(),
+                "printf nope".into(),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(conflict.contains("cannot be combined"));
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "presets".into(),
+                "--output".into(),
+                "../presets.json".into(),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../presets.json").exists());
     }
 
     #[test]
