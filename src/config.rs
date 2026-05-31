@@ -60,6 +60,8 @@ pub struct PrivacyConfig {
     pub allowed_emails: Vec<String>,
     #[serde(rename = "allowedEmailDomains", default)]
     pub allowed_email_domains: Vec<String>,
+    #[serde(rename = "allowedUserPaths", default)]
+    pub allowed_user_paths: Vec<String>,
     #[serde(rename = "allowedCommitEmails", default)]
     pub allowed_commit_emails: Vec<String>,
     #[serde(rename = "allowedCommitDomains", default)]
@@ -584,9 +586,10 @@ mod tests {
                 }
               },
               "privacy": {
-                "allowedEmails": ["zero-kotori@users.noreply.github.com"],
+                "allowedEmails": ["zero-kotori@example.com"],
                 "allowedEmailDomains": ["public.test"],
-                "allowedCommitEmails": ["zero-kotori@users.noreply.github.com"],
+                "allowedUserPaths": ["redacted/project-root"],
+                "allowedCommitEmails": ["zero-kotori@example.com"],
                 "allowedCommitDomains": ["public.example"]
               },
               "defaultProvider": "deepseek",
@@ -618,12 +621,16 @@ mod tests {
         );
         assert_eq!(
             config.privacy.allowed_emails,
-            vec!["zero-kotori@users.noreply.github.com"]
+            vec!["zero-kotori@example.com"]
         );
         assert_eq!(config.privacy.allowed_email_domains, vec!["public.test"]);
         assert_eq!(
+            config.privacy.allowed_user_paths,
+            vec!["redacted/project-root"]
+        );
+        assert_eq!(
             config.privacy.allowed_commit_emails,
-            vec!["zero-kotori@users.noreply.github.com"]
+            vec!["zero-kotori@example.com"]
         );
         assert_eq!(
             config.privacy.allowed_commit_domains,

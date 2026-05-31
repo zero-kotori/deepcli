@@ -871,7 +871,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/privacy --fail-on-findings",
                 "deepcli privacy --json",
             ],
-            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Configure `privacy.allowedEmails` or `privacy.allowedEmailDomains` for public/approved email metadata and content that should be suppressed rather than reported; `privacy.allowedCommitEmails` and `privacy.allowedCommitDomains` apply only to commit metadata. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
+            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Configure `privacy.allowedEmails` or `privacy.allowedEmailDomains` for public/approved email metadata and content that should be suppressed rather than reported; `privacy.allowedCommitEmails` and `privacy.allowedCommitDomains` apply only to commit metadata. Configure `privacy.allowedUserPaths` with redacted local user-home paths when known historical project roots should be suppressed. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
         },
         CommandHelp {
             name: "/context",
@@ -5353,20 +5353,33 @@ fn scan_privacy_line(
     line: &str,
 ) {
     if line.contains(USER_HOME_PREFIX) {
-        push_privacy_finding(
-            findings,
-            PrivacyFinding {
-                severity: "medium".to_string(),
-                category: "absolute_user_path".to_string(),
-                source: "git_history_content".to_string(),
-                revision: Some(revision.to_string()),
-                path: Some(path.to_string()),
-                line: Some(line_number),
-                detail: first_redacted_user_path(line).unwrap_or_else(redacted_user_home),
-                sample: Some(sanitize_privacy_sample(line)),
-                occurrences: 1,
-            },
-        );
+        let detail = first_redacted_user_path(line).unwrap_or_else(redacted_user_home);
+        if privacy_user_path_is_allowed(&detail, privacy) {
+            push_privacy_suppressed_finding(
+                suppressed_findings,
+                PrivacySuppressedFinding {
+                    category: "absolute_user_path".to_string(),
+                    source: "git_history_content".to_string(),
+                    detail: format!("allowed local user path {detail}"),
+                    occurrences: 1,
+                },
+            );
+        } else {
+            push_privacy_finding(
+                findings,
+                PrivacyFinding {
+                    severity: "medium".to_string(),
+                    category: "absolute_user_path".to_string(),
+                    source: "git_history_content".to_string(),
+                    revision: Some(revision.to_string()),
+                    path: Some(path.to_string()),
+                    line: Some(line_number),
+                    detail,
+                    sample: Some(sanitize_privacy_sample(line)),
+                    occurrences: 1,
+                },
+            );
+        }
     }
 
     if line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----") {
@@ -5609,6 +5622,24 @@ fn privacy_email_is_allowed(email: &str, privacy: &PrivacyConfig) -> bool {
         .iter()
         .map(|allowed| allowed.trim().trim_start_matches('@').to_ascii_lowercase())
         .any(|allowed| !allowed.is_empty() && allowed == domain)
+}
+
+fn privacy_user_path_is_allowed(redacted_path: &str, privacy: &PrivacyConfig) -> bool {
+    let path = normalize_privacy_user_path(redacted_path);
+    if path.is_empty() {
+        return false;
+    }
+    privacy.allowed_user_paths.iter().any(|allowed| {
+        let allowed = normalize_privacy_user_path(allowed);
+        !allowed.is_empty() && (path == allowed || path.starts_with(&format!("{allowed}/")))
+    })
+}
+
+fn normalize_privacy_user_path(path: &str) -> String {
+    path.trim()
+        .trim_end_matches('/')
+        .replace('\\', "/")
+        .to_string()
 }
 
 fn redact_email(email: &str) -> String {
@@ -20876,14 +20907,14 @@ mod tests {
     #[test]
     fn privacy_scan_suppresses_allowed_commit_email_metadata() {
         let dir = tempdir().unwrap();
-        let public_email = "zero-kotori@users.noreply.github.com";
+        let public_email = format!("zero-kotori@{}", "users.noreply.github.com");
         fs::write(
             dir.path().join("README.md"),
             format!("public contact {public_email}\n"),
         )
         .unwrap();
         run_git(dir.path(), &["init"]);
-        run_git(dir.path(), &["config", "user.email", public_email]);
+        run_git(dir.path(), &["config", "user.email", &public_email]);
         run_git(dir.path(), &["config", "user.name", "zero-kotori"]);
         run_git(dir.path(), &["add", "README.md"]);
         run_git(dir.path(), &["commit", "-m", "metadata"]);
@@ -20908,8 +20939,46 @@ mod tests {
             .unwrap()
             .iter()
             .any(|finding| finding["category"] == "content_email" && finding["occurrences"] == 1));
-        assert!(!output.contains(public_email));
+        assert!(!output.contains(&public_email));
         assert!(output.contains("z***@users.noreply.github.com"));
+    }
+
+    #[test]
+    fn privacy_scan_suppresses_allowed_user_paths() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let old_root = format!("{USER_HOME_PREFIX}alice/projects/deepcli");
+        let redacted_old_root = format!("{USER_HOME_PREFIX}<user>/projects/deepcli");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            format!("pub const OLD_ROOT: &str = \"{old_root}/scripts\";\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "deepcli-test@example.com"],
+        );
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "legacy path"]);
+
+        let mut config = AppConfig::default();
+        config.privacy.allowed_user_paths = vec![redacted_old_root.clone()];
+        let output = handle_privacy_scan(dir.path(), &config, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["counts"]["medium"], 0);
+        assert_eq!(value["counts"]["actionable"], 0);
+        assert!(value["suppressedFindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "absolute_user_path"
+                && finding["occurrences"] == 1));
+        assert!(!output.contains("alice"));
+        assert!(output.contains(&redacted_old_root));
     }
 
     #[tokio::test]

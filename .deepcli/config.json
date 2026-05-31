@@ -12,7 +12,11 @@
   },
   "privacy": {
     "allowedEmails": [
-      "kotorizero8@gmail.com"
+      "kotorizero8@gmail.com",
+      "zero-kotori@users.noreply.github.com"
+    ],
+    "allowedUserPaths": [
+      "/path/to/deepcli"
     ]
   },
   "defaultProvider": "deepseek",
