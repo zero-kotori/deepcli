@@ -110,7 +110,7 @@ has_yes_arg() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
+    help|version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -187,14 +187,14 @@ Usage:
                                    Run a fast workspace + session diagnosis
   deepcli support [bundle-dir]    Create a redacted support bundle and issue draft
   deepcli init [--quick]          Run /init without typing the slash
-  deepcli status|usage|next|accept|gate|verify|handoff|trace|logs|privacy|selftest|completion
+  deepcli status|usage|next|accept|gate|verify|handoff|trace|logs|selftest|completion
                                    Run common diagnostic slash commands
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|selftest|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|selftest|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|selftest|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|selftest|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
@@ -235,7 +235,6 @@ Examples:
   deepcli trace --json --output .deepcli/exports/trace.json
   deepcli logs --limit 80
   deepcli logs --json --output .deepcli/exports/logs.json
-  deepcli privacy --json --output .deepcli/exports/privacy.json
   deepcli credentials status --json --output .deepcli/exports/credentials.json
   printf '%s' "$DEEPSEEK_API_KEY" | deepcli login deepseek --stdin --force
   deepcli logout deepseek
@@ -487,7 +486,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
+  version|about|quickstart|selftest|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|plan|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     run_deepcli "/$slash_command" "$@"
