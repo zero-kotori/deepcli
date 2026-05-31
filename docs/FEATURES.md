@@ -126,7 +126,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli verify --json`
 - `deepcli handoff --pr`
 
-验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。
+验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
 
 ## 诊断、日志与支持包
 

@@ -1153,7 +1153,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/accept --path src --test-command 'cargo test'",
                 "deepcli accept --json",
             ],
-            notes: &["`/accept` maps to `/verify --run-tests` unless an explicit `--test-command` or `-- <command>` is provided. It reuses the stable `deepcli.verify.v1` JSON schema and all `/verify` blockers; use `/gate` when the command should exit non-zero on blockers."],
+            notes: &["`/accept` maps to `/verify --run-tests` unless an explicit `--test-command` or `-- <command>` is provided. With no current or explicit session it uses workspace-only fresh test evidence instead of falling back to stale session records. It reuses the stable `deepcli.verify.v1` JSON schema and all `/verify` blockers; use `/gate` when the command should exit non-zero on blockers."],
         },
         CommandHelp {
             name: "/gate",
@@ -1174,7 +1174,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/gate --path src --test-command 'cargo test'",
                 "deepcli gate --json",
             ],
-            notes: &["`/gate` maps to `/verify --run-tests --fail-on-blockers` unless an explicit test command is provided. It is intended for CI, release checks, and final handoff scripts that need a non-zero exit when acceptance blockers remain."],
+            notes: &["`/gate` maps to `/verify --run-tests --fail-on-blockers` unless an explicit test command is provided. With no current or explicit session it uses workspace-only fresh test evidence instead of falling back to stale session records. It is intended for CI, release checks, and final handoff scripts that need a non-zero exit when acceptance blockers remain."],
         },
         CommandHelp {
             name: "/verify",
@@ -1194,7 +1194,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/verify --current",
             ],
             examples: &["/verify", "/verify --path src/commands.rs --test-command 'cargo test'", "/verify --run-tests", "/verify --test-command 'cargo test'", "/verify --env-check docker --json --output .deepcli/exports/verify.json --fail-on-blockers", "/verify --current"],
-            notes: &["`/verify` does not claim acceptance automatically. It highlights missing or weak tests, failed tools, pending approvals, open by-the-way questions, optional environment readiness, and the next commands needed before handoff. Repeat `--path` to scope diff review to one or more workspace-relative path prefixes. Without a session, a fresh strong requested test can support workspace-only verification while session-level evidence remains unavailable. Use `--env-check docker` or `--env-check compiler` to include read-only Docker/compiler environment evidence as a blocker when not ready. Use `--json` for machine-readable status, blockers, environment evidence, and next actions. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a script or CI job should exit non-zero if blockers remain."],
+            notes: &["`/verify` does not claim acceptance automatically. It highlights missing or weak tests, failed tools, pending approvals, open by-the-way questions, optional environment readiness, and the next commands needed before handoff. Repeat `--path` to scope diff review to one or more workspace-relative path prefixes. Without a current or explicit session, a requested test run uses workspace-only fresh evidence instead of falling back to stale session records. Use `--env-check docker` or `--env-check compiler` to include read-only Docker/compiler environment evidence as a blocker when not ready. Use `--json` for machine-readable status, blockers, environment evidence, and next actions. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a script or CI job should exit non-zero if blockers remain."],
         },
         CommandHelp {
             name: "/handoff",
@@ -5704,13 +5704,12 @@ fn remote_url_contains_credentials(line: &str) -> bool {
 fn first_redacted_user_path(line: &str) -> Option<String> {
     let start = line.find(USER_HOME_PREFIX)?;
     let rest = &line[start..];
+    let already_redacted = rest.starts_with(&redacted_user_home());
     let end = rest
         .find(|ch: char| {
             ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '"' | '\'' | '`' | '<' | '>' | ')' | '(' | ',' | ';' | '}'
-                )
+                || matches!(ch, '"' | '\'' | '`' | ')' | '(' | ',' | ';' | '}')
+                || (!already_redacted && matches!(ch, '<' | '>'))
         })
         .unwrap_or(rest.len());
     Some(redact_user_paths(&rest[..end]))
@@ -14648,11 +14647,16 @@ async fn handle_verify(
 ) -> Result<String> {
     let options = parse_verify_args(&args, current)?;
     let store = SessionStore::new(workspace);
-    let (session, session_note) = resolve_session_for_verify(
-        &store,
-        options.session_id.as_deref(),
-        options.explicit_session,
-    )?;
+    let use_workspace_only_requested_test = options.session_id.is_none() && options.run_tests;
+    let (session, session_note) = if use_workspace_only_requested_test {
+        (None, None)
+    } else {
+        resolve_session_for_verify(
+            &store,
+            options.session_id.as_deref(),
+            options.explicit_session,
+        )?
+    };
     let test_count_before = session
         .as_ref()
         .map(|session| session.load_test_runs().map(|tests| tests.len()))
@@ -19940,6 +19944,7 @@ mod tests {
     #[test]
     fn quickstart_check_json_output_is_contextual_and_written() {
         let dir = tempdir().unwrap();
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
         fs::write(
             dir.path().join("Cargo.toml"),
             "[package]\nname = \"quickstart-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
@@ -19949,7 +19954,7 @@ mod tests {
 
         let output = handle_quickstart(
             dir.path(),
-            &AppConfig::default(),
+            &config,
             &executor,
             vec![
                 "--json".into(),
@@ -19978,7 +19983,7 @@ mod tests {
             .iter()
             .any(|item| item.as_str().unwrap().contains("provider API key")));
         assert_eq!(value["projectConfig"]["present"], false);
-        assert_eq!(value["provider"]["name"], "deepseek");
+        assert_eq!(value["provider"]["name"], MISSING_TEST_PROVIDER);
         assert_eq!(value["provider"]["apiKey"], "missing");
         assert_eq!(value["tests"]["count"], 1);
         assert!(value["steps"]
@@ -19995,7 +20000,10 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/credentials set deepseek")));
+            .any(|item| item
+                .as_str()
+                .unwrap()
+                .contains("/credentials set missing-provider-2f7c1e")));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
@@ -20175,10 +20183,11 @@ mod tests {
     #[test]
     fn selftest_fail_on_issues_returns_report_and_rejects_unsafe_output() {
         let dir = tempdir().unwrap();
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
 
         let error = handle_selftest(
             dir.path(),
-            &AppConfig::default(),
+            &config,
             &ToolRegistry::mvp(),
             vec![
                 "--json".into(),
@@ -20209,7 +20218,7 @@ mod tests {
 
         let output_error = handle_selftest(
             dir.path(),
-            &AppConfig::default(),
+            &config,
             &ToolRegistry::mvp(),
             vec!["--output".into(), "../selftest.json".into()],
         )
@@ -20946,9 +20955,15 @@ mod tests {
     #[test]
     fn privacy_scan_suppresses_allowed_user_paths() {
         let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli")).unwrap();
         fs::create_dir_all(dir.path().join("src")).unwrap();
         let old_root = format!("{USER_HOME_PREFIX}alice/projects/deepcli");
         let redacted_old_root = format!("{USER_HOME_PREFIX}<user>/projects/deepcli");
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            format!("{{\"privacy\":{{\"allowedUserPaths\":[\"{redacted_old_root}\"]}}}}\n"),
+        )
+        .unwrap();
         fs::write(
             dir.path().join("src/lib.rs"),
             format!("pub const OLD_ROOT: &str = \"{old_root}/scripts\";\n"),
@@ -20971,12 +20986,14 @@ mod tests {
         assert_eq!(value["status"], "ok");
         assert_eq!(value["counts"]["medium"], 0);
         assert_eq!(value["counts"]["actionable"], 0);
-        assert!(value["suppressedFindings"]
+        let suppressed_user_path_occurrences: u64 = value["suppressedFindings"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|finding| finding["category"] == "absolute_user_path"
-                && finding["occurrences"] == 1));
+            .filter(|finding| finding["category"] == "absolute_user_path")
+            .map(|finding| finding["occurrences"].as_u64().unwrap())
+            .sum();
+        assert_eq!(suppressed_user_path_occurrences, 2);
         assert!(!output.contains("alice"));
         assert!(output.contains(&redacted_old_root));
     }
@@ -24272,20 +24289,23 @@ diff --git a/docs/b.md b/docs/b.md
         }
     }
 
+    const MISSING_TEST_PROVIDER: &str = "missing-provider-2f7c1e";
+
     #[test]
     fn doctor_next_actions_point_to_missing_default_provider_credentials() {
         let dir = tempdir().unwrap();
-        let actions = doctor_next_actions(dir.path(), &AppConfig::default(), None, &[]);
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
+        let actions = doctor_next_actions(dir.path(), &config, None, &[]);
         assert!(actions.iter().any(|action| action.contains("/quickstart")));
         assert!(actions
             .iter()
-            .any(|action| action.contains("DEEPSEEK_API_KEY")));
+            .any(|action| action.contains("MISSING_PROVIDER_2F7C1E_API_KEY")));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/credentials set deepseek")));
+            .any(|action| action.contains("/credentials set missing-provider-2f7c1e")));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/credentials import-env deepseek")));
+            .any(|action| action.contains("/credentials import-env missing-provider-2f7c1e")));
         assert!(actions
             .iter()
             .any(|action| action.contains("/setup docker --smoke")));
@@ -24318,14 +24338,14 @@ diff --git a/docs/b.md b/docs/b.md
     #[tokio::test]
     async fn doctor_json_output_is_structured_redacted_and_written() {
         let dir = tempdir().unwrap();
-        let config = AppConfig::default();
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
         let executor = test_executor(dir.path());
         let store = SessionStore::new(dir.path());
         let mut session = store
             .create(
                 dir.path(),
-                "deepseek".to_string(),
-                Some("deepseek-v4-pro".to_string()),
+                MISSING_TEST_PROVIDER.to_string(),
+                Some("test-model".to_string()),
             )
             .unwrap();
         session
@@ -24358,13 +24378,13 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["projectConfig"]["present"], false);
         assert_eq!(value["authorization"]["present"], false);
         assert_eq!(value["gitIdentity"]["status"], "no_git");
-        assert_eq!(value["config"]["defaultProvider"], "deepseek");
+        assert_eq!(value["config"]["defaultProvider"], MISSING_TEST_PROVIDER);
         assert_eq!(value["config"]["providerTurnTimeoutSeconds"], 600);
         assert!(value["providers"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| { item["name"] == "deepseek" && item["apiKey"] == "missing" }));
+            .any(|item| { item["name"] == MISSING_TEST_PROVIDER && item["apiKey"] == "missing" }));
         assert_eq!(value["environment"]["status"], "skipped");
         assert_eq!(value["sessions"]["total"], 1);
         assert!(value["sessions"]["latest"]["title"]
@@ -25156,15 +25176,16 @@ diff --git a/docs/b.md b/docs/b.md
     #[test]
     fn doctor_provider_readiness_reports_offline_state() {
         let dir = tempdir().unwrap();
-        let reports = provider_readiness_reports(dir.path(), &AppConfig::default());
-        let deepseek = reports
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
+        let reports = provider_readiness_reports(dir.path(), &config);
+        let provider = reports
             .iter()
-            .find(|report| report.name == "deepseek")
+            .find(|report| report.name == MISSING_TEST_PROVIDER)
             .unwrap();
-        assert_eq!(deepseek.credentials, "missing");
-        assert_eq!(deepseek.model, "deepseek-v4-pro");
-        assert!(deepseek.implemented);
-        assert!(deepseek
+        assert_eq!(provider.credentials, "missing");
+        assert_eq!(provider.model, "test-model");
+        assert!(provider.implemented);
+        assert!(provider
             .display()
             .contains("endpoint=https://api.deepseek.com/chat/completions"));
     }
@@ -25233,13 +25254,16 @@ diff --git a/docs/b.md b/docs/b.md
     #[tokio::test]
     async fn doctor_provider_probe_skips_missing_credentials() {
         let dir = tempdir().unwrap();
-        let report = probe_provider(dir.path(), &AppConfig::default(), Some("deepseek"))
+        let config = test_provider_config(MISSING_TEST_PROVIDER);
+        let report = probe_provider(dir.path(), &config, Some(MISSING_TEST_PROVIDER))
             .await
             .unwrap();
-        assert_eq!(report.provider, "deepseek");
+        assert_eq!(report.provider, MISSING_TEST_PROVIDER);
         assert_eq!(report.status, "skipped");
-        assert!(report.message.contains("DEEPSEEK_API_KEY"));
-        assert!(report.display().contains("deepseek: skipped"));
+        assert!(report.message.contains("MISSING_PROVIDER_2F7C1E_API_KEY"));
+        assert!(report
+            .display()
+            .contains("missing-provider-2f7c1e: skipped"));
     }
 
     #[test]
@@ -26495,6 +26519,56 @@ diff --git a/docs/skip.md b/docs/skip.md
         assert!(report.contains("diff source: git diff scoped to src"));
         assert!(report.contains("blockers: none detected"));
         assert!(!report.contains("- no session context found"));
+    }
+
+    #[tokio::test]
+    async fn gate_without_current_session_ignores_stale_session_evidence_when_tests_pass() {
+        let dir = tempdir().unwrap();
+        write_minimal_cargo_project(dir.path());
+        init_git_repo_with_baseline(dir.path());
+        let store = SessionStore::new(dir.path());
+        let stale = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        stale.append_message("user", "old failed task").unwrap();
+        stale
+            .append_test_run(&TestRunRecord {
+                command: "cargo test".to_string(),
+                exit_code: Some(101),
+                stdout: String::new(),
+                stderr: "old failure".to_string(),
+                passed: false,
+                created_at: chrono::Utc::now() - chrono::Duration::hours(1),
+            })
+            .unwrap();
+        let executor = test_executor(dir.path());
+
+        let report = handle_verify(
+            dir.path(),
+            None,
+            &executor,
+            vec![
+                "--json".into(),
+                "--run-tests".into(),
+                "--fail-on-blockers".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let value: Value = serde_json::from_str(&report).unwrap();
+
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["hasBlockers"], false);
+        assert_eq!(value["blockers"].as_array().unwrap().len(), 0);
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("session evidence: none found; using workspace-only evidence"));
+        assert!(!value["report"]
+            .as_str()
+            .unwrap()
+            .contains("latest session with recorded activity"));
+        assert!(!value["report"].as_str().unwrap().contains("old failure"));
     }
 
     #[tokio::test]

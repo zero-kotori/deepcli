@@ -90,6 +90,8 @@ deepcli gate --json
 deepcli handoff --pr
 ```
 
+无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
+
 准备本地环境：
 
 ```bash
