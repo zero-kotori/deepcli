@@ -10,6 +10,11 @@
       "userEmail": "kotorizero8@gmail.com"
     }
   },
+  "privacy": {
+    "allowedEmails": [
+      "kotorizero8@gmail.com"
+    ]
+  },
   "defaultProvider": "deepseek",
   "providers": {
     "deepseek": {

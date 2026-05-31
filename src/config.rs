@@ -25,6 +25,8 @@ pub struct AppConfig {
     pub usage: UsageConfig,
     #[serde(default)]
     pub network: NetworkConfig,
+    #[serde(default)]
+    pub privacy: PrivacyConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -50,6 +52,18 @@ pub struct GitIdentityConfig {
     pub user_name: Option<String>,
     #[serde(rename = "userEmail", default)]
     pub user_email: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct PrivacyConfig {
+    #[serde(rename = "allowedEmails", default)]
+    pub allowed_emails: Vec<String>,
+    #[serde(rename = "allowedEmailDomains", default)]
+    pub allowed_email_domains: Vec<String>,
+    #[serde(rename = "allowedCommitEmails", default)]
+    pub allowed_commit_emails: Vec<String>,
+    #[serde(rename = "allowedCommitDomains", default)]
+    pub allowed_commit_domains: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -315,6 +329,7 @@ impl Default for AppConfig {
             agent: AgentConfig::default(),
             usage: UsageConfig::default(),
             network: NetworkConfig::default(),
+            privacy: PrivacyConfig::default(),
         }
     }
 }
@@ -568,6 +583,12 @@ mod tests {
                   "userEmail": "kotorizero8@gmail.com"
                 }
               },
+              "privacy": {
+                "allowedEmails": ["zero-kotori@users.noreply.github.com"],
+                "allowedEmailDomains": ["public.test"],
+                "allowedCommitEmails": ["zero-kotori@users.noreply.github.com"],
+                "allowedCommitDomains": ["public.example"]
+              },
               "defaultProvider": "deepseek",
               "providers": {
                 "deepseek": {
@@ -594,6 +615,19 @@ mod tests {
         assert_eq!(
             config.project.git_identity.user_email.as_deref(),
             Some("kotorizero8@gmail.com")
+        );
+        assert_eq!(
+            config.privacy.allowed_emails,
+            vec!["zero-kotori@users.noreply.github.com"]
+        );
+        assert_eq!(config.privacy.allowed_email_domains, vec!["public.test"]);
+        assert_eq!(
+            config.privacy.allowed_commit_emails,
+            vec!["zero-kotori@users.noreply.github.com"]
+        );
+        assert_eq!(
+            config.privacy.allowed_commit_domains,
+            vec!["public.example"]
         );
         let runtime = config.redacted_provider_runtime(dir.path(), None).unwrap();
         assert_eq!(runtime.model.as_deref(), Some("runtime-model"));

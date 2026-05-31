@@ -1,5 +1,7 @@
 use crate::agents::{AgentStore, SubagentTask};
-use crate::config::{absolutize_workspace_path, AppConfig, GitIdentityConfig, ProviderCredentials};
+use crate::config::{
+    absolutize_workspace_path, AppConfig, GitIdentityConfig, PrivacyConfig, ProviderCredentials,
+};
 use crate::privacy::{looks_sensitive, redact_sensitive_text, redact_sensitive_value};
 use crate::prompts::PromptStore;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
@@ -290,7 +292,9 @@ impl CommandRouter {
                 handle_trace(context.workspace, context.session_id, args)
             }
             SlashCommand::Logs { args } => handle_logs(context.workspace, args),
-            SlashCommand::Privacy { args } => handle_privacy_scan(context.workspace, args),
+            SlashCommand::Privacy { args } => {
+                handle_privacy_scan(context.workspace, context.config, args)
+            }
             SlashCommand::Context => handle_context(context.workspace),
             SlashCommand::Permissions { args } => {
                 handle_permissions(context.workspace, context.config, args)
@@ -867,7 +871,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/privacy --fail-on-findings",
                 "deepcli privacy --json",
             ],
-            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
+            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Configure `privacy.allowedEmails` or `privacy.allowedEmailDomains` for public/approved email metadata and content that should be suppressed rather than reported; `privacy.allowedCommitEmails` and `privacy.allowedCommitDomains` apply only to commit metadata. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
         },
         CommandHelp {
             name: "/context",
@@ -4894,9 +4898,9 @@ fn log_file_summary_json(file: &LogFileSummary) -> Value {
     })
 }
 
-fn handle_privacy_scan(workspace: &Path, args: Vec<String>) -> Result<String> {
+fn handle_privacy_scan(workspace: &Path, config: &AppConfig, args: Vec<String>) -> Result<String> {
     let options = parse_privacy_scan_options(&args)?;
-    let report = build_privacy_scan_report(workspace, &options)?;
+    let report = build_privacy_scan_report(workspace, &options, &config.privacy)?;
     let output = if options.json_output {
         format_privacy_scan_json(workspace, &report)?
     } else {
@@ -4991,6 +4995,7 @@ struct PrivacyScanReport {
     revisions_scanned: usize,
     tracked_sensitive_paths: Vec<String>,
     findings: Vec<PrivacyFinding>,
+    suppressed_findings: Vec<PrivacySuppressedFinding>,
     next_actions: Vec<String>,
     report: String,
 }
@@ -5028,6 +5033,13 @@ impl PrivacyScanReport {
             .sum()
     }
 
+    fn suppressed_occurrence_count(&self) -> usize {
+        self.suppressed_findings
+            .iter()
+            .map(|finding| finding.occurrences)
+            .sum()
+    }
+
     fn status(&self) -> &'static str {
         if !self.git_present {
             "no_git"
@@ -5054,23 +5066,45 @@ struct PrivacyFinding {
     occurrences: usize,
 }
 
+#[derive(Debug, Clone)]
+struct PrivacySuppressedFinding {
+    category: String,
+    source: String,
+    detail: String,
+    occurrences: usize,
+}
+
 fn build_privacy_scan_report(
     workspace: &Path,
     options: &PrivacyScanOptions,
+    privacy: &PrivacyConfig,
 ) -> Result<PrivacyScanReport> {
     let git_present = git_stdout(workspace, &["rev-parse", "--is-inside-work-tree"])?
         .as_deref()
         .is_some_and(|value| value.trim() == "true");
     let mut findings = Vec::new();
+    let mut suppressed_findings = Vec::new();
     let mut tracked_sensitive_paths = Vec::new();
     let mut revisions_scanned = 0;
 
     if git_present {
         scan_remote_urls(workspace, &mut findings)?;
-        scan_commit_metadata(workspace, options.max_revisions, &mut findings)?;
+        scan_commit_metadata(
+            workspace,
+            options.max_revisions,
+            privacy,
+            &mut findings,
+            &mut suppressed_findings,
+        )?;
         tracked_sensitive_paths = scan_tracked_sensitive_paths(workspace, &mut findings)?;
         scan_historical_sensitive_paths(workspace, options.max_revisions, &mut findings)?;
-        revisions_scanned = scan_git_content_history(workspace, options, &mut findings)?;
+        revisions_scanned = scan_git_content_history(
+            workspace,
+            options,
+            privacy,
+            &mut findings,
+            &mut suppressed_findings,
+        )?;
     }
 
     let mut report = PrivacyScanReport {
@@ -5080,6 +5114,7 @@ fn build_privacy_scan_report(
         revisions_scanned,
         tracked_sensitive_paths,
         findings,
+        suppressed_findings,
         next_actions: Vec::new(),
         report: String::new(),
     };
@@ -5116,7 +5151,9 @@ fn scan_remote_urls(workspace: &Path, findings: &mut Vec<PrivacyFinding>) -> Res
 fn scan_commit_metadata(
     workspace: &Path,
     max_revisions: usize,
+    privacy: &PrivacyConfig,
     findings: &mut Vec<PrivacyFinding>,
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
 ) -> Result<()> {
     let limit = format!("--max-count={max_revisions}");
     let Some(output) = git_stdout(
@@ -5139,6 +5176,18 @@ fn scan_commit_metadata(
         let revision = short_revision(parts[0]);
         for email in [parts[2], parts[4]] {
             if privacy_email_is_placeholder(email) {
+                continue;
+            }
+            if privacy_commit_email_is_allowed(email, privacy) {
+                push_privacy_suppressed_finding(
+                    suppressed_findings,
+                    PrivacySuppressedFinding {
+                        category: "commit_email".to_string(),
+                        source: "git_metadata".to_string(),
+                        detail: format!("allowed commit email {}", redact_email(email)),
+                        occurrences: 1,
+                    },
+                );
                 continue;
             }
             push_privacy_finding(
@@ -5234,7 +5283,9 @@ fn scan_historical_sensitive_paths(
 fn scan_git_content_history(
     workspace: &Path,
     options: &PrivacyScanOptions,
+    privacy: &PrivacyConfig,
     findings: &mut Vec<PrivacyFinding>,
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
 ) -> Result<usize> {
     let revisions = if options.include_history {
         let limit = format!("--max-count={}", options.max_revisions);
@@ -5252,7 +5303,7 @@ fn scan_git_content_history(
             .collect::<Vec<_>>()
     };
     for revision in &revisions {
-        scan_git_revision_content(workspace, revision, findings)?;
+        scan_git_revision_content(workspace, revision, privacy, findings, suppressed_findings)?;
     }
     Ok(revisions.len())
 }
@@ -5260,7 +5311,9 @@ fn scan_git_content_history(
 fn scan_git_revision_content(
     workspace: &Path,
     revision: &str,
+    privacy: &PrivacyConfig,
     findings: &mut Vec<PrivacyFinding>,
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
 ) -> Result<()> {
     let Some(files) = git_stdout(workspace, &["ls-tree", "-r", "--name-only", revision])? else {
         return Ok(());
@@ -5276,7 +5329,15 @@ fn scan_git_revision_content(
         }
         let text = String::from_utf8_lossy(&bytes);
         for (line_index, line) in text.lines().enumerate() {
-            scan_privacy_line(findings, &short_revision, path, line_index + 1, line);
+            scan_privacy_line(
+                findings,
+                suppressed_findings,
+                privacy,
+                &short_revision,
+                path,
+                line_index + 1,
+                line,
+            );
         }
     }
     Ok(())
@@ -5284,6 +5345,8 @@ fn scan_git_revision_content(
 
 fn scan_privacy_line(
     findings: &mut Vec<PrivacyFinding>,
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
+    privacy: &PrivacyConfig,
     revision: &str,
     path: &str,
     line_number: usize,
@@ -5353,6 +5416,18 @@ fn scan_privacy_line(
 
     for email in privacy_email_candidates(line) {
         if privacy_email_is_placeholder(&email) {
+            continue;
+        }
+        if privacy_email_is_allowed(&email, privacy) {
+            push_privacy_suppressed_finding(
+                suppressed_findings,
+                PrivacySuppressedFinding {
+                    category: "content_email".to_string(),
+                    source: "git_history_content".to_string(),
+                    detail: format!("allowed content email {}", redact_email(&email)),
+                    occurrences: 1,
+                },
+            );
             continue;
         }
         push_privacy_finding(
@@ -5487,6 +5562,55 @@ fn privacy_email_is_placeholder(email: &str) -> bool {
         || lower.contains("@example.")
 }
 
+fn privacy_commit_email_is_allowed(email: &str, privacy: &PrivacyConfig) -> bool {
+    if privacy_email_is_allowed(email, privacy) {
+        return true;
+    }
+    let email = email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return false;
+    }
+    if privacy
+        .allowed_commit_emails
+        .iter()
+        .map(|allowed| allowed.trim().to_ascii_lowercase())
+        .any(|allowed| allowed == email)
+    {
+        return true;
+    }
+    let Some((_local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    privacy
+        .allowed_commit_domains
+        .iter()
+        .map(|allowed| allowed.trim().trim_start_matches('@').to_ascii_lowercase())
+        .any(|allowed| !allowed.is_empty() && allowed == domain)
+}
+
+fn privacy_email_is_allowed(email: &str, privacy: &PrivacyConfig) -> bool {
+    let email = email.trim().to_ascii_lowercase();
+    if email.is_empty() {
+        return false;
+    }
+    if privacy
+        .allowed_emails
+        .iter()
+        .map(|allowed| allowed.trim().to_ascii_lowercase())
+        .any(|allowed| allowed == email)
+    {
+        return true;
+    }
+    let Some((_local, domain)) = email.split_once('@') else {
+        return false;
+    };
+    privacy
+        .allowed_email_domains
+        .iter()
+        .map(|allowed| allowed.trim().trim_start_matches('@').to_ascii_lowercase())
+        .any(|allowed| !allowed.is_empty() && allowed == domain)
+}
+
 fn redact_email(email: &str) -> String {
     let Some((local, domain)) = email.split_once('@') else {
         return "<email:redacted>".to_string();
@@ -5595,6 +5719,32 @@ fn push_privacy_finding(findings: &mut Vec<PrivacyFinding>, mut finding: Privacy
     }
 }
 
+fn push_privacy_suppressed_finding(
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
+    mut finding: PrivacySuppressedFinding,
+) {
+    finding.occurrences = finding.occurrences.max(1);
+    if let Some(existing) = suppressed_findings
+        .iter_mut()
+        .find(|existing| privacy_suppressed_findings_equivalent(existing, &finding))
+    {
+        existing.occurrences += finding.occurrences;
+        return;
+    }
+    if suppressed_findings.len() < 100 {
+        suppressed_findings.push(finding);
+    }
+}
+
+fn privacy_suppressed_findings_equivalent(
+    existing: &PrivacySuppressedFinding,
+    finding: &PrivacySuppressedFinding,
+) -> bool {
+    existing.category == finding.category
+        && existing.source == finding.source
+        && existing.detail == finding.detail
+}
+
 fn privacy_findings_equivalent(existing: &PrivacyFinding, finding: &PrivacyFinding) -> bool {
     if existing.severity != finding.severity
         || existing.category != finding.category
@@ -5701,6 +5851,13 @@ fn format_privacy_scan_text(workspace: &Path, report: &PrivacyScanReport) -> Str
             report.occurrence_count()
         ),
     ];
+    if !report.suppressed_findings.is_empty() {
+        lines.push(format!(
+            "suppressed: findings={} occurrences={}",
+            report.suppressed_findings.len(),
+            report.suppressed_occurrence_count()
+        ));
+    }
 
     if !report.tracked_sensitive_paths.is_empty() {
         lines.push("tracked sensitive paths:".to_string());
@@ -5726,6 +5883,18 @@ fn format_privacy_scan_text(workspace: &Path, report: &PrivacyScanReport) -> Str
             lines.push(format!("  ... {} more", report.findings.len() - 40));
         }
     }
+    if !report.suppressed_findings.is_empty() {
+        lines.push("suppressed findings:".to_string());
+        for finding in report.suppressed_findings.iter().take(20) {
+            lines.push(format_privacy_suppressed_finding_line(finding));
+        }
+        if report.suppressed_findings.len() > 20 {
+            lines.push(format!(
+                "  ... {} more",
+                report.suppressed_findings.len() - 20
+            ));
+        }
+    }
 
     lines.push("next actions:".to_string());
     lines.extend(
@@ -5735,6 +5904,18 @@ fn format_privacy_scan_text(workspace: &Path, report: &PrivacyScanReport) -> Str
             .map(|action| format!("  - {action}")),
     );
     lines.join("\n")
+}
+
+fn format_privacy_suppressed_finding_line(finding: &PrivacySuppressedFinding) -> String {
+    let occurrences = if finding.occurrences > 1 {
+        format!(" occurrences={}", finding.occurrences)
+    } else {
+        String::new()
+    };
+    format!(
+        "  - {} {}: {}{}",
+        finding.category, finding.source, finding.detail, occurrences
+    )
 }
 
 fn format_privacy_finding_line(finding: &PrivacyFinding) -> String {
@@ -5780,9 +5961,16 @@ fn format_privacy_scan_json(workspace: &Path, report: &PrivacyScanReport) -> Res
             "total": report.findings.len(),
             "occurrences": report.occurrence_count(),
             "actionable": report.actionable_finding_count(),
+            "suppressed": report.suppressed_findings.len(),
+            "suppressedOccurrences": report.suppressed_occurrence_count(),
         },
         "trackedSensitivePaths": report.tracked_sensitive_paths,
         "findings": report.findings.iter().map(privacy_finding_json).collect::<Vec<_>>(),
+        "suppressedFindings": report
+            .suppressed_findings
+            .iter()
+            .map(privacy_suppressed_finding_json)
+            .collect::<Vec<_>>(),
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
@@ -5798,6 +5986,15 @@ fn privacy_finding_json(finding: &PrivacyFinding) -> Value {
         "line": finding.line,
         "detail": finding.detail,
         "sample": finding.sample,
+        "occurrences": finding.occurrences,
+    })
+}
+
+fn privacy_suppressed_finding_json(finding: &PrivacySuppressedFinding) -> Value {
+    json!({
+        "category": finding.category,
+        "source": finding.source,
+        "detail": finding.detail,
         "occurrences": finding.occurrences,
     })
 }
@@ -20584,6 +20781,7 @@ mod tests {
 
         let output = handle_privacy_scan(
             dir.path(),
+            &AppConfig::default(),
             vec![
                 "--json".into(),
                 "--output".into(),
@@ -20631,7 +20829,8 @@ mod tests {
         run_git(dir.path(), &["add", "README.md"]);
         run_git(dir.path(), &["commit", "-m", "second"]);
 
-        let output = handle_privacy_scan(dir.path(), vec!["--json".into()]).unwrap();
+        let output =
+            handle_privacy_scan(dir.path(), &AppConfig::default(), vec!["--json".into()]).unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
         let findings = value["findings"].as_array().unwrap();
         let user_path_findings = findings
@@ -20659,15 +20858,58 @@ mod tests {
         run_git(dir.path(), &["add", "README.md"]);
         run_git(dir.path(), &["commit", "-m", "metadata"]);
 
-        let error = handle_privacy_scan(dir.path(), vec!["--fail-on-findings".into()])
-            .unwrap_err()
-            .downcast::<CommandExit>()
-            .unwrap();
+        let error = handle_privacy_scan(
+            dir.path(),
+            &AppConfig::default(),
+            vec!["--fail-on-findings".into()],
+        )
+        .unwrap_err()
+        .downcast::<CommandExit>()
+        .unwrap();
 
         assert_eq!(error.code, 1);
         assert!(error.output.contains("deepcli privacy scan"));
         assert!(error.output.contains("status: needs_review"));
         assert!(error.output.contains("commit_email"));
+    }
+
+    #[test]
+    fn privacy_scan_suppresses_allowed_commit_email_metadata() {
+        let dir = tempdir().unwrap();
+        let public_email = "zero-kotori@users.noreply.github.com";
+        fs::write(
+            dir.path().join("README.md"),
+            format!("public contact {public_email}\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", public_email]);
+        run_git(dir.path(), &["config", "user.name", "zero-kotori"]);
+        run_git(dir.path(), &["add", "README.md"]);
+        run_git(dir.path(), &["commit", "-m", "metadata"]);
+
+        let mut config = AppConfig::default();
+        config.privacy.allowed_emails = vec![public_email.to_string()];
+        let output = handle_privacy_scan(dir.path(), &config, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["counts"]["medium"], 0);
+        assert_eq!(value["counts"]["actionable"], 0);
+        assert_eq!(value["counts"]["suppressed"], 2);
+        assert_eq!(value["counts"]["suppressedOccurrences"], 3);
+        assert!(value["suppressedFindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "commit_email" && finding["occurrences"] == 2));
+        assert!(value["suppressedFindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "content_email" && finding["occurrences"] == 1));
+        assert!(!output.contains(public_email));
+        assert!(output.contains("z***@users.noreply.github.com"));
     }
 
     #[tokio::test]
