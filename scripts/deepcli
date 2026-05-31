@@ -230,6 +230,7 @@ Examples:
   deepcli benchmark gate --json
   deepcli benchmark run --preset cargo-test --json --fail-on-command
   deepcli benchmark summary --json
+  deepcli benchmark trends --json
   deepcli benchmark clean --dry-run --json
   deepcli round --json
   deepcli round --json --fail-on-gaps

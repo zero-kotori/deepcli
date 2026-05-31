@@ -28,7 +28,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli recipes [topic]`：查看任务型工作流命令清单。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard 和 benchmark status，输出本轮产品迭代状态、门禁和下一步动作。
-- `deepcli benchmark presets|run|record|status|gate|summary|list|show|clean [--json]`：发现推荐 workload、执行、记录、评估证据质量、门禁、汇总、列出、查看和清理本地 benchmark 证据 artifact。
+- `deepcli benchmark presets|run|record|status|gate|summary|trends|list|show|clean [--json]`：发现推荐 workload、执行、记录、评估证据质量、门禁、汇总、趋势分析、列出、查看和清理本地 benchmark 证据 artifact。
 
 启动 wrapper 会自动补充当前工作目录、配置路径和 yes 授权默认值，同时保留显式参数。
 
@@ -130,6 +130,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli benchmark status --json`
 - `deepcli benchmark gate --json`
 - `deepcli benchmark summary --json`
+- `deepcli benchmark trends --json`
 - `deepcli benchmark clean --dry-run --json`
 - `deepcli test discover --json`
 - `deepcli test run --json -- cargo test`
@@ -145,7 +146,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `recipes` / `playbook` 是任务型工作流目录，按 start、code、debug、release、support、environment、shell 等主题输出可复制命令和稳定 `deepcli.recipes.v1` JSON，适合 TUI、外部 UI 或团队脚本引导用户选择下一步；该命令本地只读，不创建 session、不调用 Provider。
 
-`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`round` 输出稳定 `deepcli.round.v1`，把 scorecard 与 benchmark status 聚合成本轮产品迭代报告，包含 ready 状态、门禁、gaps 和下一步命令；`--fail-on-gaps` 适合在持续产品循环或 CI 中要求本轮 evidence ready。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `presets/run/record/status/gate/summary/list/show/clean`：`presets` 列出 cargo-test、preflight-quick、selftest、scorecard 和 smoke 等推荐 workload，`run --preset <name>` 显式执行对应本地命令、采集 exit code、耗时和输出摘要并写入 `.deepcli/benchmarks/*.json`，`record` 只记录声明证据，`status` 输出稳定 `deepcli.benchmark.status.v1` 并把证据判定为 missing、weak、failing、stale 或 ready，`gate` 在 status 不是 ready 时返回非零，`summary` 聚合历史 artifact 的通过率、失败数、耗时范围和最新 artifact，`list/show` 用于本地验收和持续产品循环，`clean` 输出稳定 `deepcli.benchmark.cleanup.v1`，默认 dry-run 预览旧 artifact，只有显式 `--force` 才删除。
+`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`round` 输出稳定 `deepcli.round.v1`，把 scorecard 与 benchmark status 聚合成本轮产品迭代报告，包含 ready 状态、门禁、gaps 和下一步命令；`--fail-on-gaps` 适合在持续产品循环或 CI 中要求本轮 evidence ready。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `presets/run/record/status/gate/summary/trends/list/show/clean`：`presets` 列出 cargo-test、preflight-quick、selftest、scorecard 和 smoke 等推荐 workload，`run --preset <name>` 显式执行对应本地命令、采集 exit code、耗时和输出摘要并写入 `.deepcli/benchmarks/*.json`，`record` 只记录声明证据，`status` 输出稳定 `deepcli.benchmark.status.v1` 并把证据判定为 missing、weak、failing、stale 或 ready，`gate` 在 status 不是 ready 时返回非零，`summary` 聚合历史 artifact 的通过率、失败数、耗时范围和最新 artifact，`trends` 输出稳定 `deepcli.benchmark.trends.v1`，按 suite/case 展示最近状态回归、恢复和耗时变化，`list/show` 用于本地验收和持续产品循环，`clean` 输出稳定 `deepcli.benchmark.cleanup.v1`，默认 dry-run 预览旧 artifact，只有显式 `--force` 才删除。
 
 ## 诊断、日志与支持包
 
@@ -203,6 +204,7 @@ git diff --check
 ./scripts/deepcli benchmark status --json
 ./scripts/deepcli benchmark gate --json
 ./scripts/deepcli benchmark summary --json
+./scripts/deepcli benchmark trends --json
 ./scripts/deepcli benchmark clean --dry-run --json
 ./scripts/deepcli preflight --json
 ./scripts/deepcli release-check --dry-run
@@ -216,5 +218,5 @@ git diff --check
 - 更完整的自动环境准备与 smoke test。
 - 更智能的 session 恢复、搜索和交接。
 - 更系统的 provider 延迟、上下文压缩和工具失败诊断。
-- 更正式的端到端 benchmark workload 执行、横向模型/工具对比和趋势分析。
+- 更正式的端到端 benchmark workload 执行和横向模型/工具对比。
 - 更接近 SOTA 编程代理的端到端任务闭环。
