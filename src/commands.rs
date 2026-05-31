@@ -25,6 +25,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
@@ -56,6 +57,7 @@ pub enum SlashCommand {
     Doctor { args: Vec<String> },
     Trace { args: Vec<String> },
     Logs { args: Vec<String> },
+    Privacy { args: Vec<String> },
     Context,
     Permissions { args: Vec<String> },
     Credentials { args: Vec<String> },
@@ -143,6 +145,7 @@ impl CommandRouter {
             "/doctor" => SlashCommand::Doctor { args },
             "/trace" => SlashCommand::Trace { args },
             "/logs" | "/log" => SlashCommand::Logs { args },
+            "/privacy" => SlashCommand::Privacy { args },
             "/context" => SlashCommand::Context,
             "/permissions" => SlashCommand::Permissions { args },
             "/login" | "/auth" | "/apikey" | "/key" => SlashCommand::Credentials {
@@ -287,6 +290,7 @@ impl CommandRouter {
                 handle_trace(context.workspace, context.session_id, args)
             }
             SlashCommand::Logs { args } => handle_logs(context.workspace, args),
+            SlashCommand::Privacy { args } => handle_privacy_scan(context.workspace, args),
             SlashCommand::Context => handle_context(context.workspace),
             SlashCommand::Permissions { args } => {
                 handle_permissions(context.workspace, context.config, args)
@@ -463,6 +467,7 @@ impl CommandRouter {
             "/doctor",
             "/trace",
             "/logs",
+            "/privacy",
             "/context",
             "/permissions",
             "/login",
@@ -841,6 +846,28 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli logs --limit 120",
             ],
             notes: &["`/logs` reads only `.deepcli/logs` in the current workspace, redacts sensitive-looking content, and never creates a session or calls a provider. By default it tails the latest modified log file; use `--list` to inspect available files and `--file <name>` to select one. Use `--json` for the stable `deepcli.logs.v1` schema."],
+        },
+        CommandHelp {
+            name: "/privacy",
+            listing: "/privacy [scan] [--json] [--output path] [--fail-on-findings] [--limit n] [--no-history]",
+            summary: "Scan git history and tracked paths for likely secrets or privacy metadata before sharing a repo.",
+            usage: &[
+                "/privacy",
+                "/privacy scan",
+                "/privacy --json",
+                "/privacy --output <workspace-relative-path>",
+                "/privacy --fail-on-findings",
+                "/privacy --limit <revision-count>",
+                "/privacy --no-history",
+                "deepcli privacy --json",
+            ],
+            examples: &[
+                "/privacy",
+                "/privacy --json --output .deepcli/exports/privacy.json",
+                "/privacy --fail-on-findings",
+                "deepcli privacy --json",
+            ],
+            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
         },
         CommandHelp {
             name: "/context",
@@ -2415,6 +2442,7 @@ fn selftest_required_commands() -> Vec<&'static str> {
         "/usage",
         "/trace",
         "/logs",
+        "/privacy",
         "/support",
         "/credentials",
         "/model",
@@ -3263,7 +3291,7 @@ fn completion_words(commands: &[CompletionCommand]) -> String {
 }
 
 fn provider_completion_words() -> &'static str {
-    "ask stream resume tui repl version about quickstart selftest completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs"
+    "ask stream resume tui repl version about quickstart selftest completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
 }
 
 fn fish_escape(value: &str) -> String {
@@ -3319,6 +3347,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/handoff"
             | "/trace"
             | "/logs"
+            | "/privacy"
             | "/approval"
             | "/session"
             | "/history"
@@ -4669,6 +4698,920 @@ fn log_file_summary_json(file: &LogFileSummary) -> Value {
         "bytes": file.bytes,
         "modifiedAt": file.modified_at.map(|time| time.to_rfc3339()),
     })
+}
+
+fn handle_privacy_scan(workspace: &Path, args: Vec<String>) -> Result<String> {
+    let options = parse_privacy_scan_options(&args)?;
+    let report = build_privacy_scan_report(workspace, &options)?;
+    let output = if options.json_output {
+        format_privacy_scan_json(workspace, &report)?
+    } else {
+        report.report.clone()
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    if options.fail_on_findings && report.actionable_finding_count() > 0 {
+        return Err(CommandExit::new(output, 1).into());
+    }
+    Ok(output)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivacyScanOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    fail_on_findings: bool,
+    include_history: bool,
+    max_revisions: usize,
+}
+
+impl Default for PrivacyScanOptions {
+    fn default() -> Self {
+        Self {
+            json_output: false,
+            output_path: None,
+            fail_on_findings: false,
+            include_history: true,
+            max_revisions: 200,
+        }
+    }
+}
+
+fn parse_privacy_scan_options(args: &[String]) -> Result<PrivacyScanOptions> {
+    let mut options = PrivacyScanOptions::default();
+    let mut index = usize::from(args.first().is_some_and(|arg| arg == "scan"));
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--fail-on-findings" | "--strict" => {
+                options.fail_on_findings = true;
+                index += 1;
+            }
+            "--no-history" => {
+                options.include_history = false;
+                index += 1;
+            }
+            "--history" => {
+                options.include_history = true;
+                index += 1;
+            }
+            "--limit" | "-n" => {
+                let raw = required_arg(args, index + 1, "revision limit")?;
+                options.max_revisions =
+                    parse_positive_usize(raw, "revision limit")?.clamp(1, 10_000);
+                index += 2;
+            }
+            value if value.starts_with("--limit=") => {
+                options.max_revisions =
+                    parse_positive_usize(value.trim_start_matches("--limit="), "revision limit")?
+                        .clamp(1, 10_000);
+                index += 1;
+            }
+            value => bail!("unsupported /privacy option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+#[derive(Debug, Clone)]
+struct PrivacyScanReport {
+    git_present: bool,
+    include_history: bool,
+    revision_limit: usize,
+    revisions_scanned: usize,
+    tracked_sensitive_paths: Vec<String>,
+    findings: Vec<PrivacyFinding>,
+    next_actions: Vec<String>,
+    report: String,
+}
+
+impl PrivacyScanReport {
+    fn high_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == "high")
+            .count()
+    }
+
+    fn medium_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == "medium")
+            .count()
+    }
+
+    fn low_count(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.severity == "low")
+            .count()
+    }
+
+    fn actionable_finding_count(&self) -> usize {
+        self.high_count() + self.medium_count()
+    }
+
+    fn occurrence_count(&self) -> usize {
+        self.findings
+            .iter()
+            .map(|finding| finding.occurrences)
+            .sum()
+    }
+
+    fn status(&self) -> &'static str {
+        if !self.git_present {
+            "no_git"
+        } else if self.high_count() > 0 {
+            "high_risk"
+        } else if self.medium_count() > 0 {
+            "needs_review"
+        } else {
+            "ok"
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PrivacyFinding {
+    severity: String,
+    category: String,
+    source: String,
+    revision: Option<String>,
+    path: Option<String>,
+    line: Option<usize>,
+    detail: String,
+    sample: Option<String>,
+    occurrences: usize,
+}
+
+fn build_privacy_scan_report(
+    workspace: &Path,
+    options: &PrivacyScanOptions,
+) -> Result<PrivacyScanReport> {
+    let git_present = git_stdout(workspace, &["rev-parse", "--is-inside-work-tree"])?
+        .as_deref()
+        .is_some_and(|value| value.trim() == "true");
+    let mut findings = Vec::new();
+    let mut tracked_sensitive_paths = Vec::new();
+    let mut revisions_scanned = 0;
+
+    if git_present {
+        scan_remote_urls(workspace, &mut findings)?;
+        scan_commit_metadata(workspace, options.max_revisions, &mut findings)?;
+        tracked_sensitive_paths = scan_tracked_sensitive_paths(workspace, &mut findings)?;
+        scan_historical_sensitive_paths(workspace, options.max_revisions, &mut findings)?;
+        revisions_scanned = scan_git_content_history(workspace, options, &mut findings)?;
+    }
+
+    let mut report = PrivacyScanReport {
+        git_present,
+        include_history: options.include_history,
+        revision_limit: options.max_revisions,
+        revisions_scanned,
+        tracked_sensitive_paths,
+        findings,
+        next_actions: Vec::new(),
+        report: String::new(),
+    };
+    report.next_actions = privacy_next_actions(&report);
+    report.report = format_privacy_scan_text(workspace, &report);
+    Ok(report)
+}
+
+fn scan_remote_urls(workspace: &Path, findings: &mut Vec<PrivacyFinding>) -> Result<()> {
+    let Some(output) = git_stdout(workspace, &["remote", "-v"])? else {
+        return Ok(());
+    };
+    for line in output.lines() {
+        if remote_url_contains_credentials(line) {
+            push_privacy_finding(
+                findings,
+                PrivacyFinding {
+                    severity: "high".to_string(),
+                    category: "remote_embedded_credentials".to_string(),
+                    source: "git_remote".to_string(),
+                    revision: None,
+                    path: None,
+                    line: None,
+                    detail: "git remote URL appears to contain embedded credentials".to_string(),
+                    sample: Some(sanitize_privacy_sample(line)),
+                    occurrences: 1,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn scan_commit_metadata(
+    workspace: &Path,
+    max_revisions: usize,
+    findings: &mut Vec<PrivacyFinding>,
+) -> Result<()> {
+    let limit = format!("--max-count={max_revisions}");
+    let Some(output) = git_stdout(
+        workspace,
+        &[
+            "log",
+            "--all",
+            &limit,
+            "--format=%H%x09%an%x09%ae%x09%cn%x09%ce%x09%s",
+        ],
+    )?
+    else {
+        return Ok(());
+    };
+    for row in output.lines() {
+        let parts = row.split('\t').collect::<Vec<_>>();
+        if parts.len() < 6 {
+            continue;
+        }
+        let revision = short_revision(parts[0]);
+        for email in [parts[2], parts[4]] {
+            if privacy_email_is_placeholder(email) {
+                continue;
+            }
+            push_privacy_finding(
+                findings,
+                PrivacyFinding {
+                    severity: "medium".to_string(),
+                    category: "commit_email".to_string(),
+                    source: "git_metadata".to_string(),
+                    revision: Some(revision.clone()),
+                    path: None,
+                    line: None,
+                    detail: format!("commit metadata exposes {}", redact_email(email)),
+                    sample: Some(sanitize_privacy_sample(row)),
+                    occurrences: 1,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
+fn scan_tracked_sensitive_paths(
+    workspace: &Path,
+    findings: &mut Vec<PrivacyFinding>,
+) -> Result<Vec<String>> {
+    let Some(output) = git_stdout(workspace, &["ls-files"])? else {
+        return Ok(Vec::new());
+    };
+    let mut sensitive = Vec::new();
+    for path in output
+        .lines()
+        .filter(|line| privacy_path_looks_sensitive(line))
+    {
+        let path = path.to_string();
+        sensitive.push(path.clone());
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: "high".to_string(),
+                category: "tracked_sensitive_path".to_string(),
+                source: "git_index".to_string(),
+                revision: None,
+                path: Some(path.clone()),
+                line: None,
+                detail: format!("tracked sensitive-looking path `{path}`"),
+                sample: None,
+                occurrences: 1,
+            },
+        );
+    }
+    sensitive.sort();
+    sensitive.dedup();
+    Ok(sensitive)
+}
+
+fn scan_historical_sensitive_paths(
+    workspace: &Path,
+    max_revisions: usize,
+    findings: &mut Vec<PrivacyFinding>,
+) -> Result<()> {
+    let limit = format!("--max-count={max_revisions}");
+    let Some(output) = git_stdout(
+        workspace,
+        &["log", "--all", &limit, "--name-only", "--pretty=format:"],
+    )?
+    else {
+        return Ok(());
+    };
+    for path in output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .filter(|line| privacy_path_looks_sensitive(line))
+    {
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: "high".to_string(),
+                category: "historical_sensitive_path".to_string(),
+                source: "git_history_paths".to_string(),
+                revision: None,
+                path: Some(path.to_string()),
+                line: None,
+                detail: format!("git history contains sensitive-looking path `{path}`"),
+                sample: None,
+                occurrences: 1,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn scan_git_content_history(
+    workspace: &Path,
+    options: &PrivacyScanOptions,
+    findings: &mut Vec<PrivacyFinding>,
+) -> Result<usize> {
+    let revisions = if options.include_history {
+        let limit = format!("--max-count={}", options.max_revisions);
+        git_stdout(workspace, &["rev-list", "--all", &limit])?
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    } else {
+        git_stdout(workspace, &["rev-parse", "HEAD"])?
+            .unwrap_or_default()
+            .lines()
+            .take(1)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    for revision in &revisions {
+        scan_git_revision_content(workspace, revision, findings)?;
+    }
+    Ok(revisions.len())
+}
+
+fn scan_git_revision_content(
+    workspace: &Path,
+    revision: &str,
+    findings: &mut Vec<PrivacyFinding>,
+) -> Result<()> {
+    let Some(files) = git_stdout(workspace, &["ls-tree", "-r", "--name-only", revision])? else {
+        return Ok(());
+    };
+    let short_revision = short_revision(revision);
+    for path in files.lines().filter(|line| !line.trim().is_empty()) {
+        let spec = format!("{revision}:{path}");
+        let Some(bytes) = git_stdout_bytes(workspace, &["show", &spec])? else {
+            continue;
+        };
+        if bytes.len() > 2_000_000 || bytes.iter().take(4096).any(|byte| *byte == 0) {
+            continue;
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        for (line_index, line) in text.lines().enumerate() {
+            scan_privacy_line(findings, &short_revision, path, line_index + 1, line);
+        }
+    }
+    Ok(())
+}
+
+fn scan_privacy_line(
+    findings: &mut Vec<PrivacyFinding>,
+    revision: &str,
+    path: &str,
+    line_number: usize,
+    line: &str,
+) {
+    if line.contains(USER_HOME_PREFIX) {
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: "medium".to_string(),
+                category: "absolute_user_path".to_string(),
+                source: "git_history_content".to_string(),
+                revision: Some(revision.to_string()),
+                path: Some(path.to_string()),
+                line: Some(line_number),
+                detail: first_redacted_user_path(line).unwrap_or_else(redacted_user_home),
+                sample: Some(sanitize_privacy_sample(line)),
+                occurrences: 1,
+            },
+        );
+    }
+
+    if line.contains("-----BEGIN") && line.contains("PRIVATE KEY-----") {
+        let fixture = privacy_line_is_detector_literal(path, line);
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: if fixture { "low" } else { "high" }.to_string(),
+                category: if fixture {
+                    "private_key_detector_literal".to_string()
+                } else {
+                    "private_key_block".to_string()
+                },
+                source: "git_history_content".to_string(),
+                revision: Some(revision.to_string()),
+                path: Some(path.to_string()),
+                line: Some(line_number),
+                detail: if fixture {
+                    "private-key marker appears to be scanner/test source text".to_string()
+                } else {
+                    "private-key block marker appears in history content".to_string()
+                },
+                sample: Some(sanitize_privacy_sample(line)),
+                occurrences: 1,
+            },
+        );
+    }
+
+    for token in privacy_token_candidates(line) {
+        if let Some((category, severity, detail)) = classify_privacy_token(path, line, &token) {
+            push_privacy_finding(
+                findings,
+                PrivacyFinding {
+                    severity,
+                    category,
+                    source: "git_history_content".to_string(),
+                    revision: Some(revision.to_string()),
+                    path: Some(path.to_string()),
+                    line: Some(line_number),
+                    detail,
+                    sample: Some(sanitize_privacy_sample(line)),
+                    occurrences: 1,
+                },
+            );
+        }
+    }
+
+    for email in privacy_email_candidates(line) {
+        if privacy_email_is_placeholder(&email) {
+            continue;
+        }
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: "medium".to_string(),
+                category: "content_email".to_string(),
+                source: "git_history_content".to_string(),
+                revision: Some(revision.to_string()),
+                path: Some(path.to_string()),
+                line: Some(line_number),
+                detail: format!("file content exposes {}", redact_email(&email)),
+                sample: Some(sanitize_privacy_sample(line)),
+                occurrences: 1,
+            },
+        );
+    }
+}
+
+fn classify_privacy_token(path: &str, line: &str, token: &str) -> Option<(String, String, String)> {
+    let lower = token.to_ascii_lowercase();
+    if token.starts_with("github_pat_") && token.len() >= 30 {
+        return Some((
+            "github_token".to_string(),
+            "high".to_string(),
+            "GitHub token-shaped value appears in history content".to_string(),
+        ));
+    }
+    if ["ghp_", "gho_", "ghu_", "ghs_", "ghr_"]
+        .iter()
+        .any(|prefix| token.starts_with(prefix))
+        && token.len() >= 20
+    {
+        return Some((
+            "github_token".to_string(),
+            "high".to_string(),
+            "GitHub token-shaped value appears in history content".to_string(),
+        ));
+    }
+    if token.starts_with("AKIA")
+        && token.len() == 20
+        && token
+            .chars()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit())
+    {
+        return Some((
+            "aws_access_key".to_string(),
+            "high".to_string(),
+            "AWS access-key-shaped value appears in history content".to_string(),
+        ));
+    }
+    if token.starts_with("xox") && token.len() >= 20 {
+        return Some((
+            "slack_token".to_string(),
+            "high".to_string(),
+            "Slack token-shaped value appears in history content".to_string(),
+        ));
+    }
+    if token.starts_with("sk-") && token.len() >= 20 {
+        let fixture = privacy_token_is_fixture_like(path, line, &lower);
+        return Some((
+            if fixture {
+                "secret_shaped_fixture".to_string()
+            } else {
+                "openai_deepseek_style_key".to_string()
+            },
+            if fixture { "low" } else { "high" }.to_string(),
+            if fixture {
+                "sk-shaped value appears to be a test fixture or detector sample".to_string()
+            } else {
+                "OpenAI/DeepSeek-style key-shaped value appears in history content".to_string()
+            },
+        ));
+    }
+    None
+}
+
+fn privacy_token_is_fixture_like(path: &str, line: &str, lower_token: &str) -> bool {
+    let lower_line = line.to_ascii_lowercase();
+    let lower_path = path.to_ascii_lowercase();
+    lower_path.contains("test")
+        || lower_path.ends_with("_test.rs")
+        || lower_path.contains("fixture")
+        || lower_line.contains("assert")
+        || lower_line.contains("redact")
+        || [
+            "test", "fixture", "dummy", "fake", "example", "replace", "secret",
+        ]
+        .iter()
+        .any(|marker| lower_token.contains(marker))
+}
+
+fn privacy_line_is_detector_literal(path: &str, line: &str) -> bool {
+    let lower_path = path.to_ascii_lowercase();
+    let lower_line = line.to_ascii_lowercase();
+    lower_path.ends_with("privacy.rs")
+        || lower_path.contains("test")
+        || lower_line.contains("secret_markers")
+        || lower_line.contains("redact")
+        || line.contains('"')
+        || line.contains('\'')
+}
+
+fn privacy_token_candidates(line: &str) -> Vec<String> {
+    line.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_' || ch == '-'))
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn privacy_email_candidates(line: &str) -> Vec<String> {
+    line.split(|ch: char| {
+        !(ch.is_ascii_alphanumeric() || matches!(ch, '@' | '.' | '_' | '%' | '+' | '-'))
+    })
+    .filter(|token| {
+        let Some((local, domain)) = token.split_once('@') else {
+            return false;
+        };
+        !local.is_empty() && domain.contains('.') && !domain.ends_with('.')
+    })
+    .map(|token| token.trim_matches('.').to_string())
+    .collect()
+}
+
+fn privacy_email_is_placeholder(email: &str) -> bool {
+    let lower = email.to_ascii_lowercase();
+    lower.ends_with("@local")
+        || lower.ends_with(".local")
+        || lower.ends_with("@example.com")
+        || lower.ends_with("@example.test")
+        || lower.ends_with(".example")
+        || lower.contains("@example.")
+}
+
+fn redact_email(email: &str) -> String {
+    let Some((local, domain)) = email.split_once('@') else {
+        return "<email:redacted>".to_string();
+    };
+    let prefix = local.chars().next().unwrap_or('*');
+    format!("{prefix}***@{domain}")
+}
+
+fn redact_emails(value: &str) -> String {
+    let mut output = value.to_string();
+    for email in privacy_email_candidates(value) {
+        output = output.replace(&email, &redact_email(&email));
+    }
+    output
+}
+
+fn privacy_path_looks_sensitive(path: &str) -> bool {
+    let normalized = path.replace('\\', "/").to_ascii_lowercase();
+    let segments = normalized.split('/').collect::<Vec<_>>();
+    let file_name = segments.last().copied().unwrap_or_default();
+    if normalized == ".env" || file_name == ".env" || file_name.starts_with(".env.") {
+        return true;
+    }
+    if matches!(
+        file_name,
+        "id_rsa" | "id_ed25519" | "credentials.json" | "authorization.json"
+    ) {
+        return true;
+    }
+    if file_name.ends_with("-credentials.json")
+        || file_name.ends_with(".pem")
+        || file_name.ends_with(".key")
+        || file_name.ends_with(".p12")
+        || file_name.ends_with(".pfx")
+    {
+        return true;
+    }
+    segments
+        .windows(2)
+        .any(|pair| pair[0] == ".deepcli" && matches!(pair[1], "credentials" | "sessions" | "logs"))
+        || segments
+            .iter()
+            .any(|segment| matches!(*segment, "credentials" | "secrets" | "secret"))
+}
+
+fn remote_url_contains_credentials(line: &str) -> bool {
+    let Some(url) = line.split_whitespace().nth(1) else {
+        return false;
+    };
+    let Some((_, after_scheme)) = url.split_once("://") else {
+        return false;
+    };
+    let authority = after_scheme.split('/').next().unwrap_or_default();
+    let Some((userinfo, _host)) = authority.rsplit_once('@') else {
+        return false;
+    };
+    !userinfo.is_empty()
+}
+
+fn first_redacted_user_path(line: &str) -> Option<String> {
+    let start = line.find(USER_HOME_PREFIX)?;
+    let rest = &line[start..];
+    let end = rest
+        .find(|ch: char| {
+            ch.is_whitespace()
+                || matches!(
+                    ch,
+                    '"' | '\'' | '`' | '<' | '>' | ')' | '(' | ',' | ';' | '}'
+                )
+        })
+        .unwrap_or(rest.len());
+    Some(redact_user_paths(&rest[..end]))
+}
+
+fn redact_user_paths(value: &str) -> String {
+    let mut output = String::new();
+    let mut rest = value;
+    while let Some(index) = rest.find(USER_HOME_PREFIX) {
+        output.push_str(&rest[..index]);
+        rest = &rest[index + USER_HOME_PREFIX.len()..];
+        let user_end = rest.find('/').unwrap_or(rest.len());
+        output.push_str(&redacted_user_home());
+        output.push_str(&rest[user_end..]);
+        rest = "";
+    }
+    output.push_str(rest);
+    output
+}
+
+fn sanitize_privacy_sample(line: &str) -> String {
+    let redacted = redact_sensitive_text(&redact_emails(&redact_user_paths(line)));
+    truncate_display(&redacted, 240)
+}
+
+fn push_privacy_finding(findings: &mut Vec<PrivacyFinding>, mut finding: PrivacyFinding) {
+    finding.occurrences = finding.occurrences.max(1);
+    if let Some(existing) = findings
+        .iter_mut()
+        .find(|existing| privacy_findings_equivalent(existing, &finding))
+    {
+        existing.occurrences += finding.occurrences;
+        return;
+    }
+    if findings.len() < 250 {
+        findings.push(finding);
+    }
+}
+
+fn privacy_findings_equivalent(existing: &PrivacyFinding, finding: &PrivacyFinding) -> bool {
+    if existing.severity != finding.severity
+        || existing.category != finding.category
+        || existing.source != finding.source
+        || existing.path != finding.path
+        || existing.detail != finding.detail
+    {
+        return false;
+    }
+
+    match finding.category.as_str() {
+        "absolute_user_path"
+        | "commit_email"
+        | "historical_sensitive_path"
+        | "private_key_detector_literal"
+        | "secret_shaped_fixture" => true,
+        _ => {
+            existing.revision == finding.revision
+                && existing.line == finding.line
+                && existing.sample == finding.sample
+        }
+    }
+}
+
+fn short_revision(revision: &str) -> String {
+    revision.chars().take(8).collect()
+}
+
+fn git_stdout(workspace: &Path, args: &[&str]) -> Result<Option<String>> {
+    Ok(git_stdout_bytes(workspace, args)?.map(|bytes| String::from_utf8_lossy(&bytes).to_string()))
+}
+
+fn git_stdout_bytes(workspace: &Path, args: &[&str]) -> Result<Option<Vec<u8>>> {
+    let output = ProcessCommand::new("git")
+        .args(args)
+        .current_dir(workspace)
+        .output()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(output.stdout))
+}
+
+fn privacy_next_actions(report: &PrivacyScanReport) -> Vec<String> {
+    if !report.git_present {
+        return vec!["run `/privacy` inside a Git repository".to_string()];
+    }
+    let mut actions = Vec::new();
+    if report.high_count() > 0 {
+        actions.push(
+            "rotate any real exposed credentials, then remove them from history before sharing"
+                .to_string(),
+        );
+        actions.push(
+            "rewrite history only after coordinating force-push impact with collaborators"
+                .to_string(),
+        );
+    }
+    if report.medium_count() > 0 {
+        actions.push("review metadata findings before making the repository public".to_string());
+    }
+    if report.low_count() > 0 {
+        actions.push(
+            "consider renaming test fixtures that look like real secrets to reduce scanner noise"
+                .to_string(),
+        );
+    }
+    if actions.is_empty() {
+        actions.push("no privacy findings detected by this local scan".to_string());
+    }
+    actions.push("export a machine-readable report with `/privacy --json --output .deepcli/exports/privacy.json`".to_string());
+    dedup_preserve_order(actions)
+}
+
+fn format_privacy_scan_text(workspace: &Path, report: &PrivacyScanReport) -> String {
+    let mut lines = vec![
+        "deepcli privacy scan".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!(
+            "git: {}",
+            if report.git_present {
+                "present"
+            } else {
+                "missing"
+            }
+        ),
+        format!("status: {}", report.status()),
+        format!(
+            "history: {} revision_limit={} revisions_scanned={}",
+            if report.include_history {
+                "enabled"
+            } else {
+                "current-only"
+            },
+            report.revision_limit,
+            report.revisions_scanned
+        ),
+        format!(
+            "findings: high={} medium={} low={} occurrences={}",
+            report.high_count(),
+            report.medium_count(),
+            report.low_count(),
+            report.occurrence_count()
+        ),
+    ];
+
+    if !report.tracked_sensitive_paths.is_empty() {
+        lines.push("tracked sensitive paths:".to_string());
+        for path in report.tracked_sensitive_paths.iter().take(20) {
+            lines.push(format!("  - {path}"));
+        }
+        if report.tracked_sensitive_paths.len() > 20 {
+            lines.push(format!(
+                "  ... {} more",
+                report.tracked_sensitive_paths.len() - 20
+            ));
+        }
+    }
+
+    if report.findings.is_empty() {
+        lines.push("privacy findings: none".to_string());
+    } else {
+        lines.push("privacy findings:".to_string());
+        for finding in report.findings.iter().take(40) {
+            lines.push(format_privacy_finding_line(finding));
+        }
+        if report.findings.len() > 40 {
+            lines.push(format!("  ... {} more", report.findings.len() - 40));
+        }
+    }
+
+    lines.push("next actions:".to_string());
+    lines.extend(
+        report
+            .next_actions
+            .iter()
+            .map(|action| format!("  - {action}")),
+    );
+    lines.join("\n")
+}
+
+fn format_privacy_finding_line(finding: &PrivacyFinding) -> String {
+    let location = match (&finding.revision, &finding.path, finding.line) {
+        (Some(rev), Some(path), Some(line)) => format!("{rev} {path}:{line}"),
+        (Some(rev), Some(path), None) => format!("{rev} {path}"),
+        (Some(rev), None, _) => rev.clone(),
+        (None, Some(path), Some(line)) => format!("{path}:{line}"),
+        (None, Some(path), None) => path.clone(),
+        (None, None, _) => finding.source.clone(),
+    };
+    let sample = finding
+        .sample
+        .as_ref()
+        .map(|sample| format!(" sample={sample}"))
+        .unwrap_or_default();
+    let occurrences = if finding.occurrences > 1 {
+        format!(" occurrences={}", finding.occurrences)
+    } else {
+        String::new()
+    };
+    format!(
+        "  - [{}] {} {}: {}{}{}",
+        finding.severity, finding.category, location, finding.detail, occurrences, sample
+    )
+}
+
+fn format_privacy_scan_json(workspace: &Path, report: &PrivacyScanReport) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.privacy.scan.v1",
+        "status": report.status(),
+        "workspace": workspace.display().to_string(),
+        "git": {
+            "present": report.git_present,
+            "includeHistory": report.include_history,
+            "revisionLimit": report.revision_limit,
+            "revisionsScanned": report.revisions_scanned,
+        },
+        "counts": {
+            "high": report.high_count(),
+            "medium": report.medium_count(),
+            "low": report.low_count(),
+            "total": report.findings.len(),
+            "occurrences": report.occurrence_count(),
+            "actionable": report.actionable_finding_count(),
+        },
+        "trackedSensitivePaths": report.tracked_sensitive_paths,
+        "findings": report.findings.iter().map(privacy_finding_json).collect::<Vec<_>>(),
+        "nextActions": report.next_actions,
+        "report": report.report,
+    }))?)
+}
+
+fn privacy_finding_json(finding: &PrivacyFinding) -> Value {
+    json!({
+        "severity": finding.severity,
+        "category": finding.category,
+        "source": finding.source,
+        "revision": finding.revision,
+        "path": finding.path,
+        "line": finding.line,
+        "detail": finding.detail,
+        "sample": finding.sample,
+        "occurrences": finding.occurrences,
+    })
+}
+
+const USER_HOME_PREFIX: &str = concat!("/", "Users", "/");
+
+fn redacted_user_home() -> String {
+    format!("{USER_HOME_PREFIX}<user>")
 }
 
 async fn handle_diagnose(
@@ -17641,6 +18584,16 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/privacy --json --output .deepcli/exports/privacy.json").unwrap(),
+            Some(SlashCommand::Privacy {
+                args: vec![
+                    "--json".to_string(),
+                    "--output".to_string(),
+                    ".deepcli/exports/privacy.json".to_string()
+                ]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/diff --staged").unwrap(),
             Some(SlashCommand::Diff {
                 args: vec!["--staged".to_string()]
@@ -18272,6 +19225,13 @@ mod tests {
         assert!(status_help.contains("/status --output"));
         assert!(status_help.contains("deepcli.status.v1"));
         assert!(status_help.contains("running-safe: yes"));
+
+        let privacy_help = CommandRouter::help_for(&["privacy".to_string()]).unwrap();
+        assert!(privacy_help.contains("/privacy - "));
+        assert!(privacy_help.contains("running-safe: yes"));
+        assert!(privacy_help.contains("deepcli.privacy.scan.v1"));
+        assert!(privacy_help.contains("does not create a session or call a provider"));
+        assert!(privacy_help.contains("deepcli privacy --json"));
 
         let diagnose_help = CommandRouter::help_for(&["diagnose".to_string()]).unwrap();
         assert!(diagnose_help.contains("/diagnose [docker|compiler]"));
@@ -19318,6 +20278,119 @@ mod tests {
         fs::write(dir.join(".gitignore"), "target/\n").unwrap();
         run_git(dir, &["add", "Cargo.toml", "src/lib.rs", ".gitignore"]);
         run_git(dir, &["commit", "-m", "baseline"]);
+    }
+
+    #[test]
+    fn privacy_scan_reports_history_findings_and_redacts_samples() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"privacy-test\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        let fixture_key = format!("{}{}", "sk-", "test-secret-value");
+        let local_path = format!("{USER_HOME_PREFIX}alice/private/repo");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            format!(
+                "pub const LOCAL_PATH: &str = \"{local_path}\";\npub const FAKE_KEY: &str = \"{fixture_key}\";\n",
+            ),
+        )
+        .unwrap();
+        fs::write(dir.path().join(".env"), "DEEPSEEK_API_KEY=placeholder\n").unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", "person@example.org"]);
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "privacy baseline"]);
+
+        let output = handle_privacy_scan(
+            dir.path(),
+            vec![
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/privacy.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.privacy.scan.v1");
+        assert_eq!(value["status"], "high_risk");
+        assert!(value["counts"]["high"].as_u64().unwrap() >= 1);
+        assert!(value["counts"]["medium"].as_u64().unwrap() >= 1);
+        assert!(value["counts"]["low"].as_u64().unwrap() >= 1);
+        assert!(output.contains("tracked_sensitive_path"));
+        assert!(output.contains("absolute_user_path"));
+        assert!(output.contains("secret_shaped_fixture"));
+        assert!(output.contains("\"occurrences\""));
+        assert!(output.contains(&redacted_user_home()));
+        assert!(!output.contains(&local_path));
+        assert!(!output.contains(&fixture_key));
+        let written = fs::read_to_string(dir.path().join(".deepcli/exports/privacy.json")).unwrap();
+        assert_eq!(written, output);
+    }
+
+    #[test]
+    fn privacy_scan_deduplicates_repeated_history_occurrences() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let local_path = format!("{USER_HOME_PREFIX}alice/private/repo");
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            format!("pub const LOCAL_PATH: &str = \"{local_path}\";\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "deepcli-test@example.com"],
+        );
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "."]);
+        run_git(dir.path(), &["commit", "-m", "baseline"]);
+        fs::write(dir.path().join("README.md"), "second commit\n").unwrap();
+        run_git(dir.path(), &["add", "README.md"]);
+        run_git(dir.path(), &["commit", "-m", "second"]);
+
+        let output = handle_privacy_scan(dir.path(), vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let findings = value["findings"].as_array().unwrap();
+        let user_path_findings = findings
+            .iter()
+            .filter(|finding| finding["category"] == "absolute_user_path")
+            .collect::<Vec<_>>();
+
+        assert_eq!(user_path_findings.len(), 1);
+        assert_eq!(user_path_findings[0]["occurrences"], 2);
+        assert!(value["counts"]["occurrences"].as_u64().unwrap() >= 2);
+    }
+
+    #[test]
+    fn privacy_scan_fail_on_findings_returns_report_with_exit_code() {
+        let dir = tempdir().unwrap();
+        let private_email = format!("person@{}", "corp.dev");
+        fs::write(
+            dir.path().join("README.md"),
+            format!("contact {private_email}\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.email", &private_email]);
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "README.md"]);
+        run_git(dir.path(), &["commit", "-m", "metadata"]);
+
+        let error = handle_privacy_scan(dir.path(), vec!["--fail-on-findings".into()])
+            .unwrap_err()
+            .downcast::<CommandExit>()
+            .unwrap();
+
+        assert_eq!(error.code, 1);
+        assert!(error.output.contains("deepcli privacy scan"));
+        assert!(error.output.contains("status: needs_review"));
+        assert!(error.output.contains("commit_email"));
     }
 
     #[tokio::test]

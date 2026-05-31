@@ -35,7 +35,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - message box 支持编辑、粘贴、多行输入和历史输入。
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
-- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/selftest`、`/completion`、`/session`、`/approval`、`/stop` 和 `/quit`。
+- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/selftest`、`/completion`、`/session`、`/approval`、`/stop` 和 `/quit`。
 - 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情。
 
 ## 会话管理
@@ -134,6 +134,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli usage --json`
 - `deepcli trace --limit 30`
 - `deepcli logs --limit 80`
+- `deepcli privacy --json`
 - `deepcli diagnose --json`
 - `deepcli support .deepcli/support/latest`
 
@@ -156,6 +157,7 @@ deepcli 默认强调本地安全边界：
 - 工作区写入和危险 shell 命令走权限策略。
 - Docker、安装包、系统写入等操作需要更严格审批。
 - 凭据、日志、trace、support bundle 输出会脱敏。
+- `deepcli privacy` 可在开源或共享前扫描 git history、提交邮箱、本机绝对路径、敏感路径和疑似密钥，并支持 JSON artifact 与 `--fail-on-findings`。
 - 只读 one-shot 命令不应创建空会话或污染项目授权状态。
 
 ## 常用验收命令
