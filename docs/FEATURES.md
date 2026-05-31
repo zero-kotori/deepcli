@@ -81,6 +81,8 @@ deepcli 内置多层本地检查能力：
 - `deepcli health --json`：快捷健康检查。
 - `deepcli version --json` / `deepcli about --json`：版本与支持元数据。
 
+`selftest` 和 `doctor` 会读取项目配置中的 `project.gitIdentity`，对比当前 Git 仓库有效的 `user.name` / `user.email`，在提交前提示错误作者身份，并给出可复制的 `git config` 修复命令。非 Git 目录只报告 `no_git`，不会读取全局 Git 身份。
+
 `doctor shell` 会检查：
 
 - `deepcli` 是否在 PATH。
@@ -158,6 +160,7 @@ deepcli 默认强调本地安全边界：
 - Docker、安装包、系统写入等操作需要更严格审批。
 - 凭据、日志、trace、support bundle 输出会脱敏。
 - `deepcli privacy` 可在开源或共享前扫描 git history、提交邮箱、本机绝对路径、敏感路径和疑似密钥，并支持 JSON artifact 与 `--fail-on-findings`。
+- `project.gitIdentity` 可把仓库预期提交身份写入 `.deepcli/config.json`，由 `doctor` / `selftest` 作为正式健康检查项持续验证。
 - 只读 one-shot 命令不应创建空会话或污染项目授权状态。
 
 ## 常用验收命令

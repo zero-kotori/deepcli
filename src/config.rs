@@ -40,6 +40,16 @@ pub struct ProjectConfig {
     pub implementation_language: String,
     #[serde(default = "default_locale")]
     pub language: String,
+    #[serde(rename = "gitIdentity", default)]
+    pub git_identity: GitIdentityConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct GitIdentityConfig {
+    #[serde(rename = "userName", default)]
+    pub user_name: Option<String>,
+    #[serde(rename = "userEmail", default)]
+    pub user_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -316,6 +326,7 @@ impl Default for ProjectConfig {
             command: default_command_name(),
             implementation_language: default_language_runtime(),
             language: default_locale(),
+            git_identity: GitIdentityConfig::default(),
         }
     }
 }
@@ -551,6 +562,12 @@ mod tests {
             deepcli.join("config.json"),
             r#"{
               "version": 1,
+              "project": {
+                "gitIdentity": {
+                  "userName": "zero-kotori",
+                  "userEmail": "kotorizero8@gmail.com"
+                }
+              },
               "defaultProvider": "deepseek",
               "providers": {
                 "deepseek": {
@@ -570,6 +587,14 @@ mod tests {
         .unwrap();
 
         let config = AppConfig::load_effective(dir.path(), None).unwrap();
+        assert_eq!(
+            config.project.git_identity.user_name.as_deref(),
+            Some("zero-kotori")
+        );
+        assert_eq!(
+            config.project.git_identity.user_email.as_deref(),
+            Some("kotorizero8@gmail.com")
+        );
         let runtime = config.redacted_provider_runtime(dir.path(), None).unwrap();
         assert_eq!(runtime.model.as_deref(), Some("runtime-model"));
         assert_eq!(runtime.api_key.as_deref(), Some("<redacted>"));

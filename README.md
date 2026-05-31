@@ -32,6 +32,7 @@ deepcli
 
 ```bash
 deepcli selftest --json
+deepcli doctor --quick --json
 deepcli doctor shell --json
 deepcli health --json
 ```
@@ -79,6 +80,7 @@ deepcli stream "请只回答 OK"
 
 ```bash
 deepcli status --json
+deepcli doctor --quick --json
 deepcli usage --json
 deepcli trace --limit 30
 deepcli logs --limit 80
@@ -121,7 +123,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
+./scripts/deepcli doctor --quick --json
 ```
+
+`selftest` 和 `doctor` 会读取 `.deepcli/config.json` 中的 `project.gitIdentity`，对比当前 Git 仓库的有效 `user.name` / `user.email`，用于提交前发现错误作者身份。
 
 ## 仓库
 

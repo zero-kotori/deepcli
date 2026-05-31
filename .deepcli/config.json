@@ -4,7 +4,11 @@
     "name": "deepcli",
     "command": "deepcli",
     "implementationLanguage": "rust",
-    "language": "zh-CN"
+    "language": "zh-CN",
+    "gitIdentity": {
+      "userName": "zero-kotori",
+      "userEmail": "kotorizero8@gmail.com"
+    }
   },
   "defaultProvider": "deepseek",
   "providers": {

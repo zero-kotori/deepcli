@@ -1,5 +1,5 @@
 use crate::agents::{AgentStore, SubagentTask};
-use crate::config::{absolutize_workspace_path, AppConfig, ProviderCredentials};
+use crate::config::{absolutize_workspace_path, AppConfig, GitIdentityConfig, ProviderCredentials};
 use crate::privacy::{looks_sensitive, redact_sensitive_text, redact_sensitive_value};
 use crate::prompts::PromptStore;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
@@ -662,7 +662,7 @@ fn help_topics() -> &'static [CommandHelp] {
         CommandHelp {
             name: "/selftest",
             listing: "/selftest [--json] [--output path] [--fail-on-issues]",
-            summary: "Run a local product self-test for install readiness, command wiring, config, credentials, sessions, logs, and tests.",
+            summary: "Run a local product self-test for install readiness, command wiring, config, Git identity, credentials, sessions, logs, and tests.",
             usage: &[
                 "/selftest",
                 "/selftest --json",
@@ -675,7 +675,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/selftest --json --output .deepcli/exports/selftest.json",
                 "deepcli selftest --json --fail-on-issues",
             ],
-            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
+            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
         },
         CommandHelp {
             name: "/completion",
@@ -794,7 +794,7 @@ fn help_topics() -> &'static [CommandHelp] {
         CommandHelp {
             name: "/doctor",
             listing: "/doctor [shell] [--fix] [--quick|--no-env] [--probe-provider] [--provider <name>] [--json] [--output path]",
-            summary: "Diagnose configuration, credentials, provider readiness, tests, permissions, and local environment.",
+            summary: "Diagnose configuration, Git identity, credentials, provider readiness, tests, permissions, and local environment.",
             usage: &[
                 "/doctor",
                 "/doctor shell [--json] [--output path]",
@@ -807,7 +807,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/doctor --output <workspace-relative-path>",
             ],
             examples: &["/doctor --quick", "/doctor shell --json", "/doctor docker --json", "/doctor --quick --json --output .deepcli/exports/doctor.json", "/doctor --fix --quick", "/doctor --probe-provider --provider deepseek"],
-            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, and provider turn timeout for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema and `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, provider turn timeout, and configured Git identity for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema and `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/trace",
@@ -2232,6 +2232,7 @@ struct SelftestReport {
     provider_credentials_path: String,
     provider_env_key: String,
     provider_env: String,
+    git_identity: GitIdentityReport,
     session_count: usize,
     resumable_session_count: usize,
     log_file_count: usize,
@@ -2339,11 +2340,13 @@ fn build_selftest_report(
         .map(|file| redact_sensitive_text(&file.name));
 
     let tests = discover_tests_in(workspace).unwrap_or_default();
+    let git_identity = build_git_identity_report(workspace, &config.project.git_identity);
     let issues = selftest_issues(
         &missing_commands,
         project_config_present,
         &provider_api_key,
         tests.is_empty(),
+        &git_identity,
     );
     let ready = issues.is_empty();
     let next_actions = selftest_next_actions(
@@ -2353,6 +2356,7 @@ fn build_selftest_report(
         project_config_present,
         &provider_api_key,
         tests.is_empty(),
+        &git_identity,
     );
 
     let mut lines = vec![
@@ -2381,6 +2385,10 @@ fn build_selftest_report(
             provider_credentials,
             provider_api_key,
             provider_env
+        ),
+        format!(
+            "git identity: {}",
+            format_git_identity_summary(&git_identity)
         ),
         format!("sessions: total={}", sessions.len()),
         format!("resumable sessions: {resumable_session_count}"),
@@ -2421,6 +2429,7 @@ fn build_selftest_report(
         provider_credentials_path,
         provider_env_key,
         provider_env,
+        git_identity,
         session_count: sessions.len(),
         resumable_session_count,
         log_file_count,
@@ -2462,6 +2471,7 @@ fn selftest_issues(
     project_config_present: bool,
     provider_api_key: &str,
     tests_missing: bool,
+    git_identity: &GitIdentityReport,
 ) -> Vec<String> {
     let mut issues = Vec::new();
     if !missing_commands.is_empty() {
@@ -2479,6 +2489,7 @@ fn selftest_issues(
     if tests_missing {
         issues.push("no discoverable project tests were found".to_string());
     }
+    issues.extend(git_identity.issues.clone());
     issues
 }
 
@@ -2489,6 +2500,7 @@ fn selftest_next_actions(
     project_config_present: bool,
     provider_api_key: &str,
     tests_missing: bool,
+    git_identity: &GitIdentityReport,
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if !missing_commands.is_empty() {
@@ -2507,6 +2519,7 @@ fn selftest_next_actions(
     if tests_missing {
         actions.push("add or configure tests, then run `/test discover --json`".to_string());
     }
+    actions.extend(git_identity.next_actions.clone());
     actions.push("inspect detailed health with `/doctor --quick`".to_string());
     actions.push("check shell install health with `/doctor shell --json`".to_string());
     actions.push("create a redacted support bundle with `/support`".to_string());
@@ -2549,6 +2562,7 @@ fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<Str
                 "present": report.provider_env == "present",
             },
         },
+        "gitIdentity": git_identity_json(&report.git_identity),
         "sessions": {
             "total": report.session_count,
             "resumable": report.resumable_session_count,
@@ -2575,6 +2589,186 @@ fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<Str
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GitIdentityReport {
+    git_present: bool,
+    status: String,
+    expected_name: Option<String>,
+    expected_email: Option<String>,
+    actual_name: Option<String>,
+    actual_email: Option<String>,
+    local_name: Option<String>,
+    local_email: Option<String>,
+    issues: Vec<String>,
+    next_actions: Vec<String>,
+}
+
+fn build_git_identity_report(workspace: &Path, expected: &GitIdentityConfig) -> GitIdentityReport {
+    let git_present = git_stdout(workspace, &["rev-parse", "--is-inside-work-tree"])
+        .ok()
+        .flatten()
+        .as_deref()
+        .is_some_and(|value| value.trim() == "true");
+    let expected_name = normalize_optional_config_value(expected.user_name.as_deref());
+    let expected_email = normalize_optional_config_value(expected.user_email.as_deref());
+    let (actual_name, actual_email, local_name, local_email) = if git_present {
+        (
+            git_config_value(workspace, &["config", "--get", "user.name"]),
+            git_config_value(workspace, &["config", "--get", "user.email"]),
+            git_config_value(workspace, &["config", "--local", "--get", "user.name"]),
+            git_config_value(workspace, &["config", "--local", "--get", "user.email"]),
+        )
+    } else {
+        (None, None, None, None)
+    };
+    let expected_configured = expected_name.is_some() || expected_email.is_some();
+
+    let mut issues = Vec::new();
+    if git_present && expected_configured {
+        if let Some(expected) = &expected_name {
+            match actual_name.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => issues.push(format!(
+                    "git user.name is `{}`; expected `{}`",
+                    redact_sensitive_text(actual),
+                    redact_sensitive_text(expected)
+                )),
+                None => issues.push(format!(
+                    "git user.name is missing; expected `{}`",
+                    redact_sensitive_text(expected)
+                )),
+            }
+        }
+        if let Some(expected) = &expected_email {
+            match actual_email.as_deref() {
+                Some(actual) if actual == expected => {}
+                Some(actual) => issues.push(format!(
+                    "git user.email is `{}`; expected `{}`",
+                    redact_sensitive_text(actual),
+                    redact_sensitive_text(expected)
+                )),
+                None => issues.push(format!(
+                    "git user.email is missing; expected `{}`",
+                    redact_sensitive_text(expected)
+                )),
+            }
+        }
+    }
+
+    let status = if !git_present {
+        "no_git"
+    } else if !expected_configured {
+        "unconfigured"
+    } else if issues.is_empty() {
+        "ok"
+    } else {
+        "mismatch"
+    }
+    .to_string();
+
+    let mut next_actions = Vec::new();
+    if git_present && expected_configured && !issues.is_empty() {
+        next_actions.push("fix repo git identity before committing".to_string());
+        if let Some(expected) = &expected_name {
+            next_actions.push(format!(
+                "run `git config user.name {}` in this repo",
+                shell_words::quote(expected)
+            ));
+        }
+        if let Some(expected) = &expected_email {
+            next_actions.push(format!(
+                "run `git config user.email {}` in this repo",
+                shell_words::quote(expected)
+            ));
+        }
+    } else if git_present && expected_configured && status == "ok" {
+        if expected_name.as_deref() != local_name.as_deref()
+            || expected_email.as_deref() != local_email.as_deref()
+        {
+            next_actions.push(
+                "optionally pin matching git identity in this repo with `git config user.name ...` and `git config user.email ...`"
+                    .to_string(),
+            );
+        }
+    } else if git_present {
+        next_actions.push(
+            "configure `project.gitIdentity` in `.deepcli/config.json` to make doctor/selftest guard commit identity".to_string(),
+        );
+    }
+    GitIdentityReport {
+        git_present,
+        status,
+        expected_name,
+        expected_email,
+        actual_name,
+        actual_email,
+        local_name,
+        local_email,
+        issues,
+        next_actions,
+    }
+}
+
+fn normalize_optional_config_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn git_config_value(workspace: &Path, args: &[&str]) -> Option<String> {
+    git_stdout(workspace, args)
+        .ok()
+        .flatten()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn format_git_identity_summary(identity: &GitIdentityReport) -> String {
+    if !identity.git_present {
+        return format!("not a git repository status={}", identity.status);
+    }
+    let actual_name = identity.actual_name.as_deref().unwrap_or("<unset>");
+    let actual_email = identity.actual_email.as_deref().unwrap_or("<unset>");
+    let expected = match (
+        identity.expected_name.as_deref(),
+        identity.expected_email.as_deref(),
+    ) {
+        (Some(name), Some(email)) => format!(" expected={name} <{email}>"),
+        (Some(name), None) => format!(" expected_name={name}"),
+        (None, Some(email)) => format!(" expected_email={email}"),
+        (None, None) => String::new(),
+    };
+    format!(
+        "{} <{}> status={}{}",
+        redact_sensitive_text(actual_name),
+        redact_sensitive_text(actual_email),
+        identity.status,
+        expected
+    )
+}
+
+fn git_identity_json(identity: &GitIdentityReport) -> Value {
+    json!({
+        "gitPresent": identity.git_present,
+        "status": identity.status.as_str(),
+        "expected": {
+            "userName": identity.expected_name.as_deref(),
+            "userEmail": identity.expected_email.as_deref(),
+        },
+        "actual": {
+            "userName": identity.actual_name.as_deref(),
+            "userEmail": identity.actual_email.as_deref(),
+        },
+        "local": {
+            "userName": identity.local_name.as_deref(),
+            "userEmail": identity.local_email.as_deref(),
+        },
+        "issues": &identity.issues,
+        "nextActions": &identity.next_actions,
+    })
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -6270,6 +6464,7 @@ async fn handle_doctor(
     let project_config = workspace.join(".deepcli").join("config.json");
     let project_config_present = project_config.exists();
     let authorization_present = auth.is_some();
+    let git_identity = build_git_identity_report(workspace, &config.project.git_identity);
     let mut title = vec!["deepcli doctor".to_string()];
     if options.fix {
         title.push("--fix".to_string());
@@ -6310,6 +6505,7 @@ async fn handle_doctor(
             config.agent.provider_turn_timeout_seconds
         ),
         format!("permission mode: {}", config.permissions.default_mode),
+        format!("git identity: {}", format_git_identity_summary(&git_identity)),
         format!(
             "sandbox: enabled={} allow_network={} allow_system_write={} allow_dangerous_commands={}",
             config.sandbox.enabled_by_default,
@@ -6487,6 +6683,7 @@ async fn handle_doctor(
 
     let mut next_actions =
         doctor_next_actions(workspace, config, environment_report.as_ref(), &tests);
+    next_actions.extend(git_identity.next_actions.clone());
     if let Some(shell) = &shell {
         next_actions.extend(shell.next_actions.clone());
         next_actions = dedup_preserve_order(next_actions);
@@ -6506,6 +6703,7 @@ async fn handle_doctor(
         fix_actions,
         providers: provider_statuses,
         readiness,
+        git_identity,
         provider_probe,
         provider_probe_audit,
         session_count: sessions.len(),
@@ -6605,6 +6803,7 @@ fn format_doctor_report_json(
             .iter()
             .map(provider_readiness_json)
             .collect::<Vec<_>>(),
+        "gitIdentity": git_identity_json(&report.git_identity),
         "providerProbe": provider_probe,
         "providerProbeAudit": report.provider_probe_audit.as_deref(),
         "sessions": {
@@ -7056,6 +7255,7 @@ struct DoctorReport {
     fix_actions: Option<Vec<String>>,
     providers: Vec<DoctorProviderStatus>,
     readiness: Vec<ProviderReadinessReport>,
+    git_identity: GitIdentityReport,
     provider_probe: Option<ProviderProbeReport>,
     provider_probe_audit: Option<String>,
     session_count: usize,
@@ -19717,6 +19917,7 @@ mod tests {
             .iter()
             .any(|item| item.as_str().unwrap() == "/logs"));
         assert_eq!(value["config"]["projectConfig"]["present"], true);
+        assert_eq!(value["gitIdentity"]["status"], "no_git");
         assert_eq!(value["provider"]["apiKey"], "configured");
         assert_eq!(value["sessions"]["total"], 1);
         assert_eq!(value["sessions"]["resumable"], 1);
@@ -20268,6 +20469,82 @@ mod tests {
             "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn expected_git_identity(name: &str, email: &str) -> GitIdentityConfig {
+        GitIdentityConfig {
+            user_name: Some(name.to_string()),
+            user_email: Some(email.to_string()),
+        }
+    }
+
+    #[test]
+    fn git_identity_report_matches_project_expectation() {
+        let dir = tempdir().unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.name", "zero-kotori"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "kotorizero8@gmail.com"],
+        );
+
+        let report = build_git_identity_report(
+            dir.path(),
+            &expected_git_identity("zero-kotori", "kotorizero8@gmail.com"),
+        );
+
+        assert_eq!(report.status, "ok");
+        assert!(report.issues.is_empty());
+        assert_eq!(report.actual_name.as_deref(), Some("zero-kotori"));
+        assert_eq!(
+            report.actual_email.as_deref(),
+            Some("kotorizero8@gmail.com")
+        );
+    }
+
+    #[test]
+    fn git_identity_report_flags_wrong_effective_identity() {
+        let dir = tempdir().unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(dir.path(), &["config", "user.name", "wrong-user"]);
+        run_git(dir.path(), &["config", "user.email", "wrong@example.test"]);
+
+        let report = build_git_identity_report(
+            dir.path(),
+            &expected_git_identity("zero-kotori", "kotorizero8@gmail.com"),
+        );
+
+        assert_eq!(report.status, "mismatch");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("git user.name")));
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.contains("git user.email")));
+        assert!(report
+            .next_actions
+            .iter()
+            .any(|action| action.contains("git config user.email")));
+    }
+
+    #[test]
+    fn git_identity_report_skips_global_config_outside_git_repo() {
+        let dir = tempdir().unwrap();
+
+        let report = build_git_identity_report(
+            dir.path(),
+            &expected_git_identity("zero-kotori", "kotorizero8@gmail.com"),
+        );
+
+        assert_eq!(report.status, "no_git");
+        assert_eq!(report.actual_name, None);
+        assert_eq!(report.actual_email, None);
+        assert_eq!(
+            format_git_identity_summary(&report),
+            "not a git repository status=no_git"
         );
     }
 
@@ -23769,6 +24046,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["mode"]["probeProvider"], false);
         assert_eq!(value["projectConfig"]["present"], false);
         assert_eq!(value["authorization"]["present"], false);
+        assert_eq!(value["gitIdentity"]["status"], "no_git");
         assert_eq!(value["config"]["defaultProvider"], "deepseek");
         assert_eq!(value["config"]["providerTurnTimeoutSeconds"], 600);
         assert!(value["providers"]
