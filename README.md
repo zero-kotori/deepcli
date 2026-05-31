@@ -103,13 +103,14 @@ deepcli recipes release --json
 deepcli playbook support
 deepcli scorecard --json
 deepcli benchmark --fail-below 85
+deepcli benchmark run --command 'cargo test' --json --fail-on-command
 deepcli benchmark record --json --suite product --case scorecard
 deepcli benchmark list --json
 ```
 
 `recipes` / `playbook` 是本地只读入口，用于按 start、code、debug、release、support、environment、shell 等主题查看可复制命令，不创建 session、不调用 Provider。
 
-`scorecard` 是本地只读产品能力评分入口，用于按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据查看 SOTA 差距；支持稳定 `deepcli.scorecard.v1` JSON、workspace 内 `--output` 和 `--fail-below` 门禁。`benchmark` 保留 scorecard 兼容参数，同时支持 `record/list/show` 在 `.deepcli/benchmarks/` 下记录和查看稳定 `deepcli.benchmark.record.v1` 证据 artifact；该目录默认本地忽略，不会误提交凭据或机器路径。
+`scorecard` 是本地只读产品能力评分入口，用于按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据查看 SOTA 差距；支持稳定 `deepcli.scorecard.v1` JSON、workspace 内 `--output` 和 `--fail-below` 门禁。`benchmark` 保留 scorecard 兼容参数，同时支持 `run/record/list/show` 在 `.deepcli/benchmarks/` 下执行、记录和查看稳定 `deepcli.benchmark.record.v1` 证据 artifact；该目录默认本地忽略，不会误提交凭据或机器路径。
 
 准备本地环境：
 

@@ -27,7 +27,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli kimi ...`：使用 Kimi provider 预设。
 - `deepcli recipes [topic]`：查看任务型工作流命令清单。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
-- `deepcli benchmark record|list|show [--json]`：记录、列出和查看本地 benchmark 证据 artifact。
+- `deepcli benchmark run|record|list|show [--json]`：执行、记录、列出和查看本地 benchmark 证据 artifact。
 
 启动 wrapper 会自动补充当前工作目录、配置路径和 yes 授权默认值，同时保留显式参数。
 
@@ -138,7 +138,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `recipes` / `playbook` 是任务型工作流目录，按 start、code、debug、release、support、environment、shell 等主题输出可复制命令和稳定 `deepcli.recipes.v1` JSON，适合 TUI、外部 UI 或团队脚本引导用户选择下一步；该命令本地只读，不创建 session、不调用 Provider。
 
-`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `record/list/show`：`record` 写入 `.deepcli/benchmarks/*.json` 的 `deepcli.benchmark.record.v1` artifact，`list/show` 用于本地验收和持续产品循环。
+`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `run/record/list/show`：`run` 显式执行本地命令、采集 exit code、耗时和输出摘要并写入 `.deepcli/benchmarks/*.json`，`record` 只记录声明证据，`list/show` 用于本地验收和持续产品循环。
 
 ## 诊断、日志与支持包
 
