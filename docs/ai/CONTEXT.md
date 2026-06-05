@@ -33,6 +33,11 @@
    - `/plan` 无参数保留查看执行计划；带需求文本时生成带推荐选项的需求澄清草稿，可写入 docs，并在有当前 session 时把问题加入旁路问题队列。
    - `/fork` 复制已持久化 session 上下文到新 session id，默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；当前运行中的后台 Agent 热分叉暂不宣称支持。
 
+4. goal readiness gate
+   - 结果：新增 `/goal status` 和 `/goal gate`。
+   - `/goal status` 输出 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据。
+   - `/goal gate` 复用同一报告，并在仍有 blockers 时返回非零，用作“当前长期目标是否允许停止”的本地门禁。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。

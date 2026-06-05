@@ -254,6 +254,18 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/goal", "完整实现全部需求", "--json"]
     ));
 
+    let goal_status = run_wrapper(&["goal", "status", "--json"]);
+    assert!(ends_with_args(
+        &goal_status.args,
+        &["/goal", "status", "--json"]
+    ));
+
+    let goal_gate = run_wrapper(&["goal", "gate", "--json"]);
+    assert!(ends_with_args(
+        &goal_gate.args,
+        &["/goal", "gate", "--json"]
+    ));
+
     let plan = run_wrapper(&[
         "plan",
         "做一个需求澄清工具",

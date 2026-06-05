@@ -1281,15 +1281,19 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/goal",
                 "/goal <objective>",
                 "/goal start <objective>",
+                "/goal status [--json]",
+                "/goal gate [--json]",
                 "/goal show [--json]",
                 "/goal --acceptance-cmd 'cargo test' --acceptance-cmd './scripts/deepcli preflight --json'",
             ],
             examples: &[
                 "/goal 完整实现当前项目文档中的全部需求",
+                "/goal status --json",
+                "/goal gate --json",
                 "/goal --json --output .deepcli/exports/goal.json",
                 "deepcli goal start 'complete docs/ai requirements'",
             ],
-            notes: &["With no existing goal, `/goal` creates a default project-document goal for the active session. The active goal is injected into future agent context and tells the agent not to stop until requirements, acceptance commands, tests, and final verification all pass. Use `/goal show` to inspect the saved `goal.json` without changing it. Use `--json` for the stable `deepcli.goal.v1` schema."],
+            notes: &["With no existing goal, `/goal` creates a default project-document goal for the active session. The active goal is injected into future agent context and tells the agent not to stop until requirements, acceptance commands, tests, and final verification all pass. Use `/goal status` for the stable `deepcli.goal.status.v1` readiness report, and `/goal gate` when a script should exit non-zero until the goal is ready to complete. Use `/goal show` to inspect the saved `goal.json` without changing it."],
         },
         CommandHelp {
             name: "/plan",
@@ -15814,6 +15818,8 @@ enum GoalMode {
     Show,
     Start,
     Clear,
+    Status,
+    Gate,
 }
 
 fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
@@ -15825,14 +15831,23 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
     let store = SessionStore::new(workspace);
     let session = store.load(&session_id)?;
 
-    let output = match options.mode {
+    let (output, should_fail) = match options.mode {
         GoalMode::Show => {
             let existing = session.load_goal()?;
             if let Some(goal) = existing {
                 if options.json_output {
-                    format_goal_json(workspace, &session, &goal, "show", &format_goal_text(&goal))?
+                    (
+                        format_goal_json(
+                            workspace,
+                            &session,
+                            &goal,
+                            "show",
+                            &format_goal_text(&goal),
+                        )?,
+                        false,
+                    )
                 } else {
-                    format_goal_text(&goal)
+                    (format_goal_text(&goal), false)
                 }
             } else if !explicit_show {
                 let goal = default_goal_contract(options.acceptance_commands);
@@ -15840,12 +15855,15 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
                 session.save_plan(&goal_contract_plan(&goal))?;
                 let report = format_goal_text(&goal);
                 if options.json_output {
-                    format_goal_json(workspace, &session, &goal, "created", &report)?
+                    (
+                        format_goal_json(workspace, &session, &goal, "created", &report)?,
+                        false,
+                    )
                 } else {
-                    report
+                    (report, false)
                 }
             } else {
-                "no active goal".to_string()
+                ("no active goal".to_string(), false)
             }
         }
         GoalMode::Start => {
@@ -15864,9 +15882,12 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             )?;
             let report = format_goal_text(&goal);
             if options.json_output {
-                format_goal_json(workspace, &session, &goal, "created", &report)?
+                (
+                    format_goal_json(workspace, &session, &goal, "created", &report)?,
+                    false,
+                )
             } else {
-                report
+                (report, false)
             }
         }
         GoalMode::Clear => {
@@ -15879,15 +15900,36 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             session.append_audit_event("goal_cancelled", json!({}))?;
             let report = "cancelled active goal".to_string();
             if options.json_output {
-                format_goal_json(workspace, &session, &goal, "cancelled", &report)?
+                (
+                    format_goal_json(workspace, &session, &goal, "cancelled", &report)?,
+                    false,
+                )
             } else {
-                report
+                (report, false)
             }
+        }
+        GoalMode::Status | GoalMode::Gate => {
+            let goal = session
+                .load_goal()?
+                .ok_or_else(|| anyhow::anyhow!("no active goal"))?;
+            let report = collect_goal_readiness(workspace, &session, &goal)?;
+            let output = if options.json_output {
+                format_goal_status_json(workspace, &session, &goal, &report)?
+            } else {
+                report.report.clone()
+            };
+            (
+                output,
+                matches!(options.mode, GoalMode::Gate) && !report.ready,
+            )
         }
     };
 
     if let Some(output_path) = &options.output_path {
         write_command_output(workspace, output_path, &output)?;
+    }
+    if should_fail {
+        return Err(CommandExit::new(output, 1).into());
     }
     Ok(output)
 }
@@ -15907,6 +15949,14 @@ fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
             }
             "start" if objective_parts.is_empty() && mode == GoalMode::Show => {
                 mode = GoalMode::Start;
+                index += 1;
+            }
+            "status" | "check" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Status;
+                index += 1;
+            }
+            "gate" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Gate;
                 index += 1;
             }
             "clear" | "cancel" if objective_parts.is_empty() && mode == GoalMode::Show => {
@@ -15941,6 +15991,9 @@ fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
             }
             value if value.starts_with('-') => bail!("unsupported /goal option `{value}`"),
             value => {
+                if matches!(mode, GoalMode::Status | GoalMode::Gate | GoalMode::Clear) {
+                    bail!("unexpected /goal argument `{value}`");
+                }
                 if mode == GoalMode::Show {
                     mode = GoalMode::Start;
                 }
@@ -16079,6 +16132,264 @@ fn format_goal_json(
         "session": session_metadata_json(&session.metadata),
         "goal": goal,
         "report": report,
+    }))?)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalReadinessReport {
+    ready: bool,
+    blockers: Vec<String>,
+    missing_sources: Vec<String>,
+    plan: GoalPlanReadiness,
+    acceptance: Vec<GoalAcceptanceEvidence>,
+    report: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalPlanReadiness {
+    present: bool,
+    total: usize,
+    completed: usize,
+    pending: usize,
+    in_progress: usize,
+    failed: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalAcceptanceEvidence {
+    command: String,
+    status: &'static str,
+    exit_code: Option<i32>,
+    created_at: Option<DateTime<Utc>>,
+}
+
+fn collect_goal_readiness(
+    workspace: &Path,
+    session: &Session,
+    goal: &GoalContract,
+) -> Result<GoalReadinessReport> {
+    let mut blockers = Vec::new();
+    if !matches!(goal.status, GoalStatus::Active | GoalStatus::Complete) {
+        blockers.push(format!("goal status is {:?}, not active", goal.status));
+    }
+
+    let missing_sources = goal
+        .source_requirements
+        .iter()
+        .filter(|source| !workspace.join(source.as_str()).exists())
+        .cloned()
+        .collect::<Vec<_>>();
+    if !missing_sources.is_empty() {
+        blockers.push(format!(
+            "missing requirement source(s): {}",
+            missing_sources.join(", ")
+        ));
+    }
+
+    let plan = goal_plan_readiness(session)?;
+    if !plan.present {
+        blockers.push("goal guard plan is missing".to_string());
+    } else if plan.pending + plan.in_progress + plan.failed > 0 {
+        blockers.push(format!(
+            "plan has {} pending, {} in progress, and {} failed step(s)",
+            plan.pending, plan.in_progress, plan.failed
+        ));
+    }
+
+    if goal.acceptance_commands.is_empty() {
+        blockers.push("goal has no acceptance commands".to_string());
+    }
+    let acceptance = goal_acceptance_evidence(session, &goal.acceptance_commands)?;
+    for item in &acceptance {
+        match item.status {
+            "missing" => blockers.push(format!(
+                "missing passing evidence for acceptance command `{}`; run `/test run -- {}`",
+                redact_sensitive_text(&item.command),
+                redact_sensitive_text(&item.command)
+            )),
+            "failed" => blockers.push(format!(
+                "latest evidence for acceptance command `{}` failed",
+                redact_sensitive_text(&item.command)
+            )),
+            _ => {}
+        }
+    }
+
+    let ready = blockers.is_empty();
+    let report =
+        format_goal_status_text(goal, ready, &blockers, &missing_sources, &plan, &acceptance);
+    Ok(GoalReadinessReport {
+        ready,
+        blockers,
+        missing_sources,
+        plan,
+        acceptance,
+        report,
+    })
+}
+
+fn goal_plan_readiness(session: &Session) -> Result<GoalPlanReadiness> {
+    let Some(plan) = session.load_plan()? else {
+        return Ok(GoalPlanReadiness {
+            present: false,
+            total: 0,
+            completed: 0,
+            pending: 0,
+            in_progress: 0,
+            failed: 0,
+        });
+    };
+    let mut readiness = GoalPlanReadiness {
+        present: true,
+        total: plan.steps.len(),
+        completed: 0,
+        pending: 0,
+        in_progress: 0,
+        failed: 0,
+    };
+    for step in plan.steps {
+        match step.status {
+            PlanStepStatus::Pending => readiness.pending += 1,
+            PlanStepStatus::InProgress => readiness.in_progress += 1,
+            PlanStepStatus::Completed => readiness.completed += 1,
+            PlanStepStatus::Failed => readiness.failed += 1,
+        }
+    }
+    Ok(readiness)
+}
+
+fn goal_acceptance_evidence(
+    session: &Session,
+    commands: &[String],
+) -> Result<Vec<GoalAcceptanceEvidence>> {
+    let tests = session.load_test_runs()?;
+    Ok(commands
+        .iter()
+        .map(|command| {
+            let latest = tests
+                .iter()
+                .filter(|test| test.command == *command)
+                .max_by_key(|test| test.created_at);
+            match latest {
+                Some(test) if test.passed => GoalAcceptanceEvidence {
+                    command: command.clone(),
+                    status: "passed",
+                    exit_code: test.exit_code,
+                    created_at: Some(test.created_at),
+                },
+                Some(test) => GoalAcceptanceEvidence {
+                    command: command.clone(),
+                    status: "failed",
+                    exit_code: test.exit_code,
+                    created_at: Some(test.created_at),
+                },
+                None => GoalAcceptanceEvidence {
+                    command: command.clone(),
+                    status: "missing",
+                    exit_code: None,
+                    created_at: None,
+                },
+            }
+        })
+        .collect())
+}
+
+fn format_goal_status_text(
+    goal: &GoalContract,
+    ready: bool,
+    blockers: &[String],
+    missing_sources: &[String],
+    plan: &GoalPlanReadiness,
+    acceptance: &[GoalAcceptanceEvidence],
+) -> String {
+    let mut lines = vec![
+        "goal readiness".to_string(),
+        format!("ready: {ready}"),
+        format!("goal status: {:?}", goal.status),
+        format!("objective: {}", redact_sensitive_text(&goal.objective)),
+        format!(
+            "plan: present={} total={} completed={} pending={} in_progress={} failed={}",
+            plan.present, plan.total, plan.completed, plan.pending, plan.in_progress, plan.failed
+        ),
+    ];
+    if missing_sources.is_empty() {
+        lines.push("requirement sources: ok".to_string());
+    } else {
+        lines.push(format!(
+            "missing requirement sources: {}",
+            missing_sources.join(", ")
+        ));
+    }
+    lines.push("acceptance evidence:".to_string());
+    lines.extend(acceptance.iter().map(|item| {
+        let when = item
+            .created_at
+            .map(|value| value.to_rfc3339())
+            .unwrap_or_else(|| "<none>".to_string());
+        format!(
+            "  - [{}] {} exit={:?} at={}",
+            item.status,
+            redact_sensitive_text(&item.command),
+            item.exit_code,
+            when
+        )
+    }));
+    if blockers.is_empty() {
+        lines.push("blockers: none".to_string());
+        lines.push("next: the goal is ready for final human review or completion".to_string());
+    } else {
+        lines.push("blockers:".to_string());
+        lines.extend(
+            blockers
+                .iter()
+                .map(|item| format!("  - {}", redact_sensitive_text(item))),
+        );
+        lines.push(
+            "next: keep working; `/goal gate` will fail until blockers are resolved".to_string(),
+        );
+    }
+    lines.join("\n")
+}
+
+fn format_goal_status_json(
+    workspace: &Path,
+    session: &Session,
+    goal: &GoalContract,
+    report: &GoalReadinessReport,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.goal.status.v1",
+        "status": if report.ready { "ready" } else { "blocked" },
+        "ready": report.ready,
+        "workspace": workspace.display().to_string(),
+        "session": session_metadata_json(&session.metadata),
+        "goal": goal,
+        "blockers": report.blockers,
+        "missingSources": report.missing_sources,
+        "plan": {
+            "present": report.plan.present,
+            "total": report.plan.total,
+            "completed": report.plan.completed,
+            "pending": report.plan.pending,
+            "inProgress": report.plan.in_progress,
+            "failed": report.plan.failed,
+        },
+        "acceptance": report.acceptance.iter().map(|item| json!({
+            "command": redact_sensitive_text(&item.command),
+            "status": item.status,
+            "exitCode": item.exit_code,
+            "createdAt": item.created_at,
+        })).collect::<Vec<_>>(),
+        "nextActions": if report.ready {
+            vec!["perform final human review before marking the broader goal complete"]
+        } else {
+            vec![
+                "complete pending goal plan steps",
+                "run each acceptance command through `/test run -- <command>`",
+                "rerun `/goal gate --json`"
+            ]
+        },
+        "report": report.report,
     }))?)
 }
 
@@ -26348,6 +26659,18 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/goal status --json").unwrap(),
+            Some(SlashCommand::Goal {
+                args: vec!["status".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/goal gate --json").unwrap(),
+            Some(SlashCommand::Goal {
+                args: vec!["gate".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/plan 做一个需求澄清工具 --write-doc docs/ai/REQ.md").unwrap(),
             Some(SlashCommand::Plan {
                 args: vec![
@@ -26657,6 +26980,107 @@ mod tests {
         assert!(loaded.load_goal().unwrap().is_some());
         let plan = loaded.load_plan().unwrap().unwrap();
         assert!(plan.steps.iter().any(|step| step.id == "goal_tests"));
+    }
+
+    #[test]
+    fn goal_gate_fails_until_plan_and_acceptance_evidence_are_complete() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "实现全部需求".to_string(),
+                "--acceptance-cmd".to_string(),
+                "cargo test".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let error = handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec!["gate".to_string(), "--json".to_string()],
+        )
+        .unwrap_err();
+        let exit = error.downcast_ref::<CommandExit>().unwrap();
+        assert_eq!(exit.code, 1);
+        let value: Value = serde_json::from_str(&exit.output).unwrap();
+        assert_eq!(value["schema"], "deepcli.goal.status.v1");
+        assert_eq!(value["ready"], false);
+        assert!(value["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("plan has")));
+        assert!(value["blockers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap().contains("cargo test")));
+    }
+
+    #[test]
+    fn goal_gate_passes_when_plan_and_acceptance_evidence_are_complete() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("README.md"), "# test\n").unwrap();
+        fs::create_dir_all(dir.path().join("docs/ai")).unwrap();
+        fs::write(dir.path().join("docs/FEATURES.md"), "# test\n").unwrap();
+        fs::write(dir.path().join("docs/ai/REQUIREMENTS.md"), "# test\n").unwrap();
+        fs::write(dir.path().join("docs/ai/TECHNICAL_PLAN.md"), "# test\n").unwrap();
+        fs::write(dir.path().join("docs/ai/CONTEXT.md"), "# test\n").unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "实现全部需求".to_string(),
+                "--acceptance-cmd".to_string(),
+                "cargo test".to_string(),
+                "--acceptance-cmd".to_string(),
+                "./scripts/deepcli preflight --json".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        let goal = loaded.load_goal().unwrap().unwrap();
+        for step in loaded.load_plan().unwrap().unwrap().steps {
+            loaded
+                .update_plan_step(&step.id, PlanStepStatus::Completed)
+                .unwrap();
+        }
+        for command in goal.acceptance_commands {
+            loaded
+                .append_test_run(&TestRunRecord {
+                    command,
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    passed: true,
+                    created_at: Utc::now(),
+                })
+                .unwrap();
+        }
+
+        let output = handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec!["gate".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.goal.status.v1");
+        assert_eq!(value["ready"], true);
+        assert!(value["blockers"].as_array().unwrap().is_empty());
     }
 
     #[test]
@@ -27066,7 +27490,9 @@ mod tests {
 
         let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
         assert!(goal_help.contains("/goal <objective>"));
-        assert!(goal_help.contains("deepcli.goal.v1"));
+        assert!(goal_help.contains("/goal status"));
+        assert!(goal_help.contains("/goal gate"));
+        assert!(goal_help.contains("deepcli.goal.status.v1"));
 
         let plan_help = CommandRouter::help_for(&["plan".to_string()]).unwrap();
         assert!(plan_help.contains("/plan <rough requirement>"));
