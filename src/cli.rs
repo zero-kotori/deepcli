@@ -600,7 +600,9 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "switch"
             | "models"
             | "providers"
+            | "goal"
             | "plan"
+            | "fork"
             | "diff"
             | "review"
             | "accept"
@@ -716,6 +718,8 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
                 None | Some("show" | "list" | "set")
             )
         }
+        SlashCommand::Plan { .. } => true,
+        SlashCommand::Fork { .. } => true,
         SlashCommand::Prompt { args } => {
             matches!(
                 args.first().map(String::as_str),
@@ -1928,6 +1932,10 @@ mod tests {
             vec!["/model", "list", "--json"],
             vec!["/models", "--json"],
             vec!["/providers", "--json"],
+            vec!["/plan"],
+            vec!["/plan", "--json"],
+            vec!["/plan", "show"],
+            vec!["/plan", "做一个功能", "--json"],
             vec!["/health", "--json"],
             vec!["/history", "--limit", "5"],
             vec!["/docker", "--json"],
@@ -1970,6 +1978,33 @@ mod tests {
                 "command {command:?} should not create a session"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn one_shot_fork_without_sessions_fails_without_creating_empty_session() {
+        let dir = tempdir().unwrap();
+        let error = run_cli(Cli {
+            task: vec!["/fork".to_string(), "--no-open".to_string()],
+            cwd: Some(dir.path().to_path_buf()),
+            config: None,
+            provider: None,
+            model: None,
+            resume: None,
+            resume_picker: false,
+            stream: false,
+            tui: false,
+            repl: false,
+            yes: true,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("missing session id"));
+        assert!(
+            !dir.path().join(".deepcli/sessions").exists(),
+            "failed one-shot /fork should not create an empty session"
+        );
     }
 
     #[tokio::test]

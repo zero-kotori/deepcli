@@ -26,6 +26,9 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli deepseek ...`：使用 DeepSeek provider 预设。
 - `deepcli kimi ...`：使用 Kimi provider 预设。
 - `deepcli recipes [topic]`：查看任务型工作流命令清单。
+- `deepcli goal [objective...]`：为当前会话写入长期目标契约和验收停止条件。
+- `deepcli plan <rough requirement>`：围绕不成熟需求生成澄清问题、推荐选项和需求草稿。
+- `deepcli fork [session_id|--current]`：复制已持久化会话上下文，并可打开新终端恢复到副本。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard 和 benchmark status，输出本轮产品迭代状态、门禁和下一步动作。
 - `deepcli benchmark presets|run-suite|run|record|status|gate|summary|trends|list|show|clean [--json]`：发现推荐 workload、一键执行推荐基准套件、执行单项 preset、记录、评估证据质量、门禁、汇总、趋势分析、列出、查看和清理本地 benchmark 证据 artifact。
@@ -51,6 +54,8 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `deepcli sessions --all --limit 20` 查看历史。
 - `deepcli history` 是历史列表快捷入口。
 - `/rename` 可重命名当前或指定会话。
+- `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
+- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；当前运行中的 Agent 任务分叉暂不宣称支持，建议等待或先 `/stop`。
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史。
 - `/cleanup sessions` 可预览或删除空的一次性会话。
 
@@ -124,6 +129,9 @@ deepcli 可以检查、规划和准备本地任务环境：
 deepcli 不只负责生成代码，也负责形成交付证据：
 
 - `deepcli recipes release --json`
+- `deepcli goal "完整实现当前项目文档中的全部需求" --json`
+- `deepcli plan "做一个需求澄清功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md`
+- `deepcli fork --current --no-open --json`
 - `deepcli scorecard --json`
 - `deepcli round --json`
 - `deepcli round --json --run-benchmark --fail-on-command`
@@ -143,6 +151,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli preflight --json`
 
 验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
+
+`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；当前运行中的后台 Agent 分叉先作为明确限制处理。
 
 `preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，`--quick` 跳过较慢的 clippy/gate。
 
@@ -198,6 +208,9 @@ cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor shell --json
+./scripts/deepcli help goal
+./scripts/deepcli help plan
+./scripts/deepcli help fork
 ./scripts/deepcli recipes release --json
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json

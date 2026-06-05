@@ -9,9 +9,10 @@ use crate::privacy::{
 use crate::prompts::PromptStore;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
 use crate::session::{
-    ApprovalRequest, ApprovalStatus, AuditEvent, PlanStepStatus, Session, SessionActivitySummary,
-    SessionBackupRecord, SessionDiffRecord, SessionMessage, SessionMetadata, SessionState,
-    SessionStore, SideQuestion, SideQuestionStatus, TestRunRecord, ToolCallRecord, ToolCallStatus,
+    ApprovalRequest, ApprovalStatus, AuditEvent, GoalContract, GoalStatus, Plan, PlanStep,
+    PlanStepStatus, Session, SessionActivitySummary, SessionBackupRecord, SessionDiffRecord,
+    SessionMessage, SessionMetadata, SessionState, SessionStore, SideQuestion, SideQuestionStatus,
+    TestRunRecord, ToolCallRecord, ToolCallStatus,
 };
 use crate::skills::{LoadedSkill, SkillMetadata, SkillStore};
 use crate::tools::{
@@ -76,7 +77,9 @@ pub enum SlashCommand {
     Config { args: Vec<String> },
     Timeout { args: Vec<String> },
     Model { args: Vec<String> },
-    Plan,
+    Goal { args: Vec<String> },
+    Plan { args: Vec<String> },
+    Fork { args: Vec<String> },
     Diff { args: Vec<String> },
     Review { args: Vec<String> },
     Verify { args: Vec<String> },
@@ -195,7 +198,9 @@ impl CommandRouter {
             "/model" => SlashCommand::Model {
                 args: normalize_model_args(args),
             },
-            "/plan" => SlashCommand::Plan,
+            "/goal" => SlashCommand::Goal { args },
+            "/plan" => SlashCommand::Plan { args },
+            "/fork" => SlashCommand::Fork { args },
             "/diff" => SlashCommand::Diff { args },
             "/review" => SlashCommand::Review { args },
             "/accept" => SlashCommand::Verify {
@@ -338,16 +343,11 @@ impl CommandRouter {
                 handle_timeout(context.workspace, context.config, args)
             }
             SlashCommand::Model { args } => handle_model(context.workspace, context.config, args),
-            SlashCommand::Plan => {
-                if let Some(session_id) = context.session_id {
-                    let store = SessionStore::new(context.workspace);
-                    let session = store.load(&session_id)?;
-                    if let Some(plan) = session.load_plan()? {
-                        return Ok(serde_json::to_string_pretty(&plan)?);
-                    }
-                }
-                Ok("no active plan".to_string())
+            SlashCommand::Goal { args } => handle_goal(context.workspace, context.session_id, args),
+            SlashCommand::Plan { args } => {
+                handle_plan_command(context.workspace, context.session_id, args)
             }
+            SlashCommand::Fork { args } => handle_fork(context.workspace, context.session_id, args),
             SlashCommand::Diff { args } => {
                 handle_diff(
                     context.workspace,
@@ -521,7 +521,9 @@ impl CommandRouter {
             "/switch",
             "/models",
             "/providers",
+            "/goal",
             "/plan",
+            "/fork",
             "/diff",
             "/review",
             "/accept",
@@ -1272,12 +1274,58 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &["`/providers` maps to `/model list`; use `/model set <provider> [model]` when you want to switch the active provider/model."],
         },
         CommandHelp {
+            name: "/goal",
+            listing: "/goal [objective...] [--json] [--output path] [--acceptance-cmd cmd]",
+            summary: "Create or inspect a strict session goal contract with stop conditions and acceptance commands.",
+            usage: &[
+                "/goal",
+                "/goal <objective>",
+                "/goal start <objective>",
+                "/goal show [--json]",
+                "/goal --acceptance-cmd 'cargo test' --acceptance-cmd './scripts/deepcli preflight --json'",
+            ],
+            examples: &[
+                "/goal 完整实现当前项目文档中的全部需求",
+                "/goal --json --output .deepcli/exports/goal.json",
+                "deepcli goal start 'complete docs/ai requirements'",
+            ],
+            notes: &["With no existing goal, `/goal` creates a default project-document goal for the active session. The active goal is injected into future agent context and tells the agent not to stop until requirements, acceptance commands, tests, and final verification all pass. Use `/goal show` to inspect the saved `goal.json` without changing it. Use `--json` for the stable `deepcli.goal.v1` schema."],
+        },
+        CommandHelp {
             name: "/plan",
-            listing: "/plan",
-            summary: "Show the active task plan when one has been recorded.",
-            usage: &["/plan"],
-            examples: &["/plan"],
-            notes: &[],
+            listing: "/plan [requirement...] [--json] [--output path] [--write-doc path]",
+            summary: "Turn an immature request into clarification questions and a requirements draft.",
+            usage: &[
+                "/plan",
+                "/plan show",
+                "/plan <rough requirement>",
+                "/plan <rough requirement> --write-doc docs/ai/REQUIREMENTS_DRAFT.md",
+                "/plan <rough requirement> --json --output .deepcli/exports/plan.json",
+            ],
+            examples: &[
+                "/plan 做一个更好的会话恢复能力",
+                "/plan 支持团队共享配置 --write-doc docs/ai/REQUIREMENTS_DRAFT.md",
+                "deepcli plan '支持插件市场'",
+            ],
+            notes: &["`/plan show` preserves the old behavior and prints the saved execution plan. Passing a requirement creates a product-planning artifact: clarifying questions with 2-3 options and recommended choices, assumptions, functional requirements, acceptance criteria, and next steps. In an active session the questions are also queued as by-the-way questions so the user can answer them interactively. Use `--json` for the stable `deepcli.plan.requirements_draft.v1` schema."],
+        },
+        CommandHelp {
+            name: "/fork",
+            listing: "/fork [session_id|--current] [--no-open] [--json] [--output path]",
+            summary: "Clone a saved conversation context and optionally open a new terminal resumed into the clone.",
+            usage: &[
+                "/fork",
+                "/fork --current",
+                "/fork <session_id>",
+                "/fork --current --no-open",
+                "/fork <session_id> --json --output .deepcli/exports/fork.json",
+            ],
+            examples: &[
+                "/fork --current",
+                "/fork 6155c14e --no-open",
+                "deepcli fork 6155c14e --no-open --json",
+            ],
+            notes: &["The idle-session path copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--no-open` for CI or when you only need the forked id. Forking a currently running agent task is intentionally not claimed as supported yet; stop or wait for the task before forking."],
         },
         CommandHelp {
             name: "/diff",
@@ -15752,6 +15800,957 @@ pub(crate) fn update_project_model_config(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct GoalOptions {
+    mode: GoalMode,
+    objective: Option<String>,
+    acceptance_commands: Vec<String>,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoalMode {
+    Show,
+    Start,
+    Clear,
+}
+
+fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
+    let options = parse_goal_options(&args)?;
+    let explicit_show = args.iter().any(|arg| arg == "show");
+    let session_id = current.ok_or_else(|| {
+        anyhow::anyhow!("`/goal` requires an active session; start deepcli or pass a task first")
+    })?;
+    let store = SessionStore::new(workspace);
+    let session = store.load(&session_id)?;
+
+    let output = match options.mode {
+        GoalMode::Show => {
+            let existing = session.load_goal()?;
+            if let Some(goal) = existing {
+                if options.json_output {
+                    format_goal_json(workspace, &session, &goal, "show", &format_goal_text(&goal))?
+                } else {
+                    format_goal_text(&goal)
+                }
+            } else if !explicit_show {
+                let goal = default_goal_contract(options.acceptance_commands);
+                session.save_goal(&goal)?;
+                session.save_plan(&goal_contract_plan(&goal))?;
+                let report = format_goal_text(&goal);
+                if options.json_output {
+                    format_goal_json(workspace, &session, &goal, "created", &report)?
+                } else {
+                    report
+                }
+            } else {
+                "no active goal".to_string()
+            }
+        }
+        GoalMode::Start => {
+            let mut goal = default_goal_contract(options.acceptance_commands);
+            if let Some(objective) = options.objective {
+                goal.objective = objective;
+            }
+            session.save_goal(&goal)?;
+            session.save_plan(&goal_contract_plan(&goal))?;
+            session.append_audit_event(
+                "goal_started",
+                json!({
+                    "objective": redact_sensitive_text(&goal.objective),
+                    "acceptance_commands": goal.acceptance_commands,
+                }),
+            )?;
+            let report = format_goal_text(&goal);
+            if options.json_output {
+                format_goal_json(workspace, &session, &goal, "created", &report)?
+            } else {
+                report
+            }
+        }
+        GoalMode::Clear => {
+            let mut goal = session
+                .load_goal()?
+                .ok_or_else(|| anyhow::anyhow!("no active goal to clear"))?;
+            goal.status = GoalStatus::Cancelled;
+            goal.updated_at = Utc::now();
+            session.save_goal(&goal)?;
+            session.append_audit_event("goal_cancelled", json!({}))?;
+            let report = "cancelled active goal".to_string();
+            if options.json_output {
+                format_goal_json(workspace, &session, &goal, "cancelled", &report)?
+            } else {
+                report
+            }
+        }
+    };
+
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
+    let mut mode = GoalMode::Show;
+    let mut objective_parts = Vec::new();
+    let mut acceptance_commands = Vec::new();
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "show" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Show;
+                index += 1;
+            }
+            "start" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Start;
+                index += 1;
+            }
+            "clear" | "cancel" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Clear;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            "--acceptance-cmd" | "--acceptance-command" => {
+                let raw = required_arg(args, index + 1, "acceptance command")?;
+                acceptance_commands.push(raw.trim().to_string());
+                index += 2;
+            }
+            value if value.starts_with("--acceptance-cmd=") => {
+                let raw = value.trim_start_matches("--acceptance-cmd=").trim();
+                if raw.is_empty() {
+                    bail!("--acceptance-cmd requires a command");
+                }
+                acceptance_commands.push(raw.to_string());
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported /goal option `{value}`"),
+            value => {
+                if mode == GoalMode::Show {
+                    mode = GoalMode::Start;
+                }
+                objective_parts.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+    acceptance_commands.retain(|command| !command.trim().is_empty());
+    let objective = (!objective_parts.is_empty()).then(|| objective_parts.join(" "));
+    Ok(GoalOptions {
+        mode,
+        objective,
+        acceptance_commands,
+        json_output,
+        output_path,
+    })
+}
+
+fn default_goal_contract(extra_acceptance_commands: Vec<String>) -> GoalContract {
+    let now = Utc::now();
+    let mut acceptance_commands = vec![
+        "cargo fmt --check".to_string(),
+        "cargo clippy --all-targets -- -D warnings".to_string(),
+        "cargo test".to_string(),
+        "./scripts/deepcli preflight --json".to_string(),
+        "./scripts/deepcli round --json --run-benchmark --fail-on-command".to_string(),
+    ];
+    acceptance_commands.extend(extra_acceptance_commands);
+    GoalContract {
+        objective: "完整实现当前项目文档中的全部需求，并且只有在所有验收要求通过、所有测试通过且目标达成后才可停止。".to_string(),
+        source_requirements: vec![
+            "README.md".to_string(),
+            "docs/FEATURES.md".to_string(),
+            "docs/ai/REQUIREMENTS.md".to_string(),
+            "docs/ai/TECHNICAL_PLAN.md".to_string(),
+            "docs/ai/CONTEXT.md".to_string(),
+        ],
+        stop_conditions: vec![
+            "已经逐项检查当前项目文档中的明确需求、命令、门禁和验收要求。".to_string(),
+            "实现覆盖所有未完成需求，且没有用更窄范围替代原目标。".to_string(),
+            "所有相关测试、格式检查、lint、preflight 和产品 round/benchmark 门禁均通过。".to_string(),
+            "隐私、命名和提交身份扫描未发现阻断问题。".to_string(),
+            "工作区状态、残余风险和未验证项已明确汇报；若存在未验证项，不得宣称 goal 完成。".to_string(),
+        ],
+        acceptance_commands,
+        status: GoalStatus::Active,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
+fn goal_contract_plan(goal: &GoalContract) -> Plan {
+    Plan {
+        title: "Goal contract: complete documented project requirements".to_string(),
+        updated_at: Utc::now(),
+        steps: vec![
+            PlanStep {
+                id: "goal_context".to_string(),
+                description: format!(
+                    "Read and derive requirements from: {}.",
+                    goal.source_requirements.join(", ")
+                ),
+                status: PlanStepStatus::Pending,
+            },
+            PlanStep {
+                id: "goal_implementation".to_string(),
+                description:
+                    "Implement the missing product behavior without narrowing the goal scope."
+                        .to_string(),
+                status: PlanStepStatus::Pending,
+            },
+            PlanStep {
+                id: "goal_tests".to_string(),
+                description: "Run all acceptance commands and repair any failure.".to_string(),
+                status: PlanStepStatus::Pending,
+            },
+            PlanStep {
+                id: "goal_privacy".to_string(),
+                description: "Run privacy, naming, artifact, and Git identity checks.".to_string(),
+                status: PlanStepStatus::Pending,
+            },
+            PlanStep {
+                id: "goal_completion_audit".to_string(),
+                description:
+                    "Prove every requirement is satisfied before claiming the goal is complete."
+                        .to_string(),
+                status: PlanStepStatus::Pending,
+            },
+        ],
+    }
+}
+
+fn format_goal_text(goal: &GoalContract) -> String {
+    let mut lines = vec![
+        "active goal contract".to_string(),
+        format!("status: {:?}", goal.status),
+        format!("objective: {}", redact_sensitive_text(&goal.objective)),
+        "requirement sources:".to_string(),
+    ];
+    lines.extend(
+        goal.source_requirements
+            .iter()
+            .map(|item| format!("  - {}", redact_sensitive_text(item))),
+    );
+    lines.push("stop conditions:".to_string());
+    lines.extend(
+        goal.stop_conditions
+            .iter()
+            .map(|item| format!("  - {}", redact_sensitive_text(item))),
+    );
+    lines.push("acceptance commands:".to_string());
+    lines.extend(
+        goal.acceptance_commands
+            .iter()
+            .map(|item| format!("  - {}", redact_sensitive_text(item))),
+    );
+    lines.push(
+        "next: continue implementation; do not claim completion until all conditions pass"
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn format_goal_json(
+    workspace: &Path,
+    session: &Session,
+    goal: &GoalContract,
+    status: &str,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.goal.v1",
+        "status": status,
+        "workspace": workspace.display().to_string(),
+        "session": session_metadata_json(&session.metadata),
+        "goal": goal,
+        "report": report,
+    }))?)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanCommandOptions {
+    mode: PlanCommandMode,
+    requirement: Option<String>,
+    json_output: bool,
+    output_path: Option<String>,
+    write_doc: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanCommandMode {
+    Show,
+    Draft,
+}
+
+fn handle_plan_command(
+    workspace: &Path,
+    current: Option<String>,
+    args: Vec<String>,
+) -> Result<String> {
+    let options = parse_plan_command_options(&args)?;
+    match options.mode {
+        PlanCommandMode::Show => {
+            let Some(session_id) = current else {
+                return Ok("no active plan".to_string());
+            };
+            let store = SessionStore::new(workspace);
+            let session = store.load(&session_id)?;
+            if let Some(plan) = session.load_plan()? {
+                return Ok(serde_json::to_string_pretty(&plan)?);
+            }
+            Ok("no active plan".to_string())
+        }
+        PlanCommandMode::Draft => {
+            let requirement = options
+                .requirement
+                .as_deref()
+                .ok_or_else(|| anyhow::anyhow!("/plan requires a requirement or `show`"))?;
+            let questions = planning_questions(requirement);
+            let markdown = format_requirements_draft(requirement, &questions);
+            let queued_questions = if let Some(session_id) = current {
+                let store = SessionStore::new(workspace);
+                let session = store.load(&session_id)?;
+                let mut queued = Vec::new();
+                for question in &questions {
+                    let item = session.enqueue_side_question(format_planning_question(question))?;
+                    queued.push(item.id.to_string());
+                }
+                queued
+            } else {
+                Vec::new()
+            };
+            if let Some(path) = &options.write_doc {
+                write_command_output(workspace, path, &markdown)?;
+            }
+            let output = if options.json_output {
+                format_plan_draft_json(
+                    workspace,
+                    requirement,
+                    &questions,
+                    &queued_questions,
+                    &markdown,
+                )?
+            } else {
+                markdown
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
+        }
+    }
+}
+
+fn parse_plan_command_options(args: &[String]) -> Result<PlanCommandOptions> {
+    let mut mode = PlanCommandMode::Show;
+    let mut requirement_parts = Vec::new();
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut write_doc = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "show" if requirement_parts.is_empty() => {
+                mode = PlanCommandMode::Show;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            "--write-doc" | "--write-requirements" => {
+                let raw = required_arg(args, index + 1, "requirements document path")?;
+                set_command_output_path(&mut write_doc, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--write-doc=") => {
+                set_command_output_path(&mut write_doc, value.trim_start_matches("--write-doc="))?;
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported /plan option `{value}`"),
+            value => {
+                if mode == PlanCommandMode::Show {
+                    mode = PlanCommandMode::Draft;
+                }
+                requirement_parts.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+    let requirement = (!requirement_parts.is_empty()).then(|| requirement_parts.join(" "));
+    if mode == PlanCommandMode::Show && write_doc.is_some() {
+        bail!("--write-doc requires a requirement");
+    }
+    Ok(PlanCommandOptions {
+        mode,
+        requirement,
+        json_output,
+        output_path,
+        write_doc,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanningQuestion {
+    id: &'static str,
+    question: String,
+    options: Vec<PlanningOption>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlanningOption {
+    label: &'static str,
+    description: &'static str,
+    recommended: bool,
+}
+
+fn planning_questions(requirement: &str) -> Vec<PlanningQuestion> {
+    vec![
+        PlanningQuestion {
+            id: "scope",
+            question: format!(
+                "这次需求 `{}` 的首轮交付范围应如何收敛？",
+                compact_text_line(requirement, 80)
+            ),
+            options: vec![
+                PlanningOption {
+                    label: "MVP first",
+                    description: "先交付可验收主路径，保留清晰扩展点。",
+                    recommended: true,
+                },
+                PlanningOption {
+                    label: "Full feature",
+                    description: "一次覆盖完整体验，耗时和风险更高。",
+                    recommended: false,
+                },
+                PlanningOption {
+                    label: "Research only",
+                    description: "先只输出调研和方案，不修改产品。",
+                    recommended: false,
+                },
+            ],
+        },
+        PlanningQuestion {
+            id: "user",
+            question: "主要用户是谁，优先优化哪类使用场景？".to_string(),
+            options: vec![
+                PlanningOption {
+                    label: "Daily developer",
+                    description: "面向日常编码、修复、测试和交付闭环。",
+                    recommended: true,
+                },
+                PlanningOption {
+                    label: "Maintainer",
+                    description: "更重视审计、发布、CI 和团队治理。",
+                    recommended: false,
+                },
+                PlanningOption {
+                    label: "New user",
+                    description: "更重视安装、引导和低学习成本。",
+                    recommended: false,
+                },
+            ],
+        },
+        PlanningQuestion {
+            id: "interaction",
+            question: "交互方式优先放在哪里？".to_string(),
+            options: vec![
+                PlanningOption {
+                    label: "TUI slash command",
+                    description: "先在现有 TUI/CLI 命令体系内闭环。",
+                    recommended: true,
+                },
+                PlanningOption {
+                    label: "One-shot CLI",
+                    description: "优先脚本化和 CI 调用。",
+                    recommended: false,
+                },
+                PlanningOption {
+                    label: "Both",
+                    description: "同时做 TUI 和 one-shot，测试面更大。",
+                    recommended: false,
+                },
+            ],
+        },
+        PlanningQuestion {
+            id: "persistence",
+            question: "需求产物需要保存到哪里？".to_string(),
+            options: vec![
+                PlanningOption {
+                    label: "Session first",
+                    description: "先写入当前 session，便于恢复和继续追问。",
+                    recommended: true,
+                },
+                PlanningOption {
+                    label: "Docs file",
+                    description: "直接写入 docs/ai，便于提交和评审。",
+                    recommended: false,
+                },
+                PlanningOption {
+                    label: "Export only",
+                    description: "只生成本地导出，不改变项目文档。",
+                    recommended: false,
+                },
+            ],
+        },
+        PlanningQuestion {
+            id: "acceptance",
+            question: "验收标准应以什么为准？".to_string(),
+            options: vec![
+                PlanningOption {
+                    label: "Tests and gates",
+                    description: "以已有测试、preflight、gate 和文档要求为准。",
+                    recommended: true,
+                },
+                PlanningOption {
+                    label: "Manual UX",
+                    description: "以人工体验流程为主，适合纯交互变化。",
+                    recommended: false,
+                },
+                PlanningOption {
+                    label: "Benchmark",
+                    description: "以 benchmark/scorecard 变化为主。",
+                    recommended: false,
+                },
+            ],
+        },
+    ]
+}
+
+fn format_planning_question(question: &PlanningQuestion) -> String {
+    let options = question
+        .options
+        .iter()
+        .map(|option| {
+            format!(
+                "- {}{}: {}",
+                option.label,
+                if option.recommended {
+                    " (Recommended)"
+                } else {
+                    ""
+                },
+                option.description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("{}\n{}", question.question, options)
+}
+
+fn format_requirements_draft(requirement: &str, questions: &[PlanningQuestion]) -> String {
+    let title = compact_text_line(requirement, 72);
+    let mut lines = vec![
+        format!("# Requirements Draft: {title}"),
+        String::new(),
+        "> Status: draft. Generated by `deepcli /plan`; answer the clarification questions before treating this as final.".to_string(),
+        String::new(),
+        "## Original Request".to_string(),
+        String::new(),
+        redact_sensitive_text(requirement),
+        String::new(),
+        "## Clarifying Questions".to_string(),
+        String::new(),
+    ];
+    for (index, question) in questions.iter().enumerate() {
+        lines.push(format!("{}. {}", index + 1, question.question));
+        for option in &question.options {
+            lines.push(format!(
+                "   - {}{}: {}",
+                option.label,
+                if option.recommended {
+                    " (Recommended)"
+                } else {
+                    ""
+                },
+                option.description
+            ));
+        }
+    }
+    lines.extend([
+        String::new(),
+        "## Working Assumptions".to_string(),
+        String::new(),
+        "- Prefer the smallest product increment that creates a usable, testable workflow.".to_string(),
+        "- Keep behavior local-first, session-aware, and compatible with existing slash commands.".to_string(),
+        "- Do not call a provider or modify unrelated files during planning unless explicitly requested.".to_string(),
+        String::new(),
+        "## Functional Requirements".to_string(),
+        String::new(),
+        "- The feature must be reachable from the CLI/TUI command surface.".to_string(),
+        "- The feature must preserve existing session, permission, and output-path safety behavior.".to_string(),
+        "- The feature must provide human-readable output and a stable JSON/report path when useful.".to_string(),
+        "- The feature must make the next action obvious after partial or missing answers.".to_string(),
+        String::new(),
+        "## Acceptance Criteria".to_string(),
+        String::new(),
+        "- Help text and command discovery include the new workflow.".to_string(),
+        "- Focused tests cover parsing, successful output, and at least one error/edge path.".to_string(),
+        "- `cargo test` passes for the touched behavior.".to_string(),
+        "- No credentials, local logs, benchmark artifacts, or machine-only evidence are committed.".to_string(),
+        String::new(),
+        "## Next Actions".to_string(),
+        String::new(),
+        "- Answer the clarification questions, then ask the agent to update this draft into a final requirements document.".to_string(),
+        "- Use `/goal` before implementation if the work must continue until all documented acceptance gates pass.".to_string(),
+    ]);
+    lines.join("\n")
+}
+
+fn format_plan_draft_json(
+    workspace: &Path,
+    requirement: &str,
+    questions: &[PlanningQuestion],
+    queued_questions: &[String],
+    markdown: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.plan.requirements_draft.v1",
+        "status": "draft",
+        "workspace": workspace.display().to_string(),
+        "requirement": redact_sensitive_text(requirement),
+        "questions": questions.iter().map(planning_question_json).collect::<Vec<_>>(),
+        "queuedSideQuestions": queued_questions,
+        "recommendedNextActions": [
+            "answer queued questions in the current session",
+            "write the draft with `/plan <requirement> --write-doc docs/ai/REQUIREMENTS_DRAFT.md`",
+            "start a strict implementation goal with `/goal <objective>`"
+        ],
+        "document": markdown,
+    }))?)
+}
+
+fn planning_question_json(question: &PlanningQuestion) -> Value {
+    json!({
+        "id": question.id,
+        "question": redact_sensitive_text(&question.question),
+        "options": question.options.iter().map(|option| json!({
+            "label": option.label,
+            "description": option.description,
+            "recommended": option.recommended,
+        })).collect::<Vec<_>>(),
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkOptions {
+    session_id: Option<String>,
+    explicit_session: bool,
+    no_open: bool,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkReport {
+    source: SessionMetadata,
+    fork: SessionMetadata,
+    terminal_opened: bool,
+    terminal_error: Option<String>,
+    report: String,
+}
+
+fn handle_fork(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
+    let options = parse_fork_options(&args, current)?;
+    let store = SessionStore::new(workspace);
+    let (source, note) = resolve_session_for_optional_inspection(
+        &store,
+        options.session_id.as_deref(),
+        options.explicit_session,
+        SessionFallbackKind::RecordedActivity,
+    )?;
+    let fork = fork_session(&store, workspace, &source)?;
+    let fork_id = fork.id().to_string();
+    let (terminal_opened, terminal_error) = if options.no_open {
+        (false, None)
+    } else {
+        match open_fork_terminal(workspace, &fork_id) {
+            Ok(()) => (true, None),
+            Err(error) => (false, Some(error.to_string())),
+        }
+    };
+    fork.append_audit_event(
+        "session_fork_ready",
+        json!({
+            "source_session": source.id().to_string(),
+            "terminal_opened": terminal_opened,
+            "terminal_error": terminal_error,
+        }),
+    )?;
+    let report = format_fork_report(
+        &source,
+        &fork,
+        note.as_deref(),
+        terminal_opened,
+        terminal_error.as_deref(),
+    );
+    let fork_report = ForkReport {
+        source: source.metadata,
+        fork: fork.metadata,
+        terminal_opened,
+        terminal_error,
+        report,
+    };
+    let output = if options.json_output {
+        format_fork_json(workspace, &fork_report)?
+    } else {
+        fork_report.report.clone()
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOptions> {
+    let mut session_id = None;
+    let mut explicit_session = false;
+    let mut no_open = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--current" => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(
+                    current
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("no active session is available"))?,
+                );
+                explicit_session = true;
+                index += 1;
+            }
+            "--session" => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(required_arg(args, index + 1, "session id")?.to_string());
+                explicit_session = true;
+                index += 2;
+            }
+            "--no-open" | "--no-terminal" | "--dry-run" => {
+                no_open = true;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported /fork option `{value}`"),
+            value => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(value.to_string());
+                explicit_session = true;
+                index += 1;
+            }
+        }
+    }
+    if session_id.is_none() {
+        if let Some(current) = current {
+            session_id = Some(current);
+            explicit_session = true;
+        }
+    }
+    Ok(ForkOptions {
+        session_id,
+        explicit_session,
+        no_open,
+        json_output,
+        output_path,
+    })
+}
+
+fn fork_session(store: &SessionStore, workspace: &Path, source: &Session) -> Result<Session> {
+    let mut fork = store.create(
+        workspace,
+        source.metadata.provider.clone(),
+        source.metadata.model.clone(),
+    )?;
+    copy_session_payload(source.path(), fork.path())?;
+    let source_title = source
+        .metadata
+        .title
+        .as_deref()
+        .filter(|title| !title.trim().is_empty())
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| short_id(&source.id()));
+    fork.rename(format!("Fork of {source_title}"))?;
+    fork.set_state(SessionState::WaitingUser)?;
+    fork.append_audit_event(
+        "session_forked",
+        json!({
+            "source_session": source.id().to_string(),
+            "source_title": source.metadata.title.as_deref().map(redact_sensitive_text),
+        }),
+    )?;
+    Ok(fork)
+}
+
+fn copy_session_payload(source: &Path, destination: &Path) -> Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_name = entry.file_name();
+        if file_name == "metadata.json" {
+            continue;
+        }
+        let target = destination.join(&file_name);
+        copy_path_recursively(&entry.path(), &target)?;
+    }
+    Ok(())
+}
+
+fn copy_path_recursively(source: &Path, destination: &Path) -> Result<()> {
+    let metadata = fs::metadata(source)?;
+    if metadata.is_dir() {
+        fs::create_dir_all(destination)?;
+        for entry in fs::read_dir(source)? {
+            let entry = entry?;
+            copy_path_recursively(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+    } else if metadata.is_file() {
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(source, destination).with_context(|| {
+            format!(
+                "failed to copy {} to {}",
+                source.display(),
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
+    let command = format!(
+        "cd {} && deepcli resume {}",
+        shell_words::quote(&workspace.display().to_string()),
+        shell_words::quote(fork_id)
+    );
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\" to do script {}",
+            apple_script_string(&command)
+        );
+        let status = ProcessCommand::new("osascript")
+            .arg("-e")
+            .arg(script)
+            .status()
+            .context("failed to launch osascript")?;
+        if !status.success() {
+            bail!("osascript exited with status {status}");
+        }
+        Ok(())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = command;
+        bail!("opening a resumed fork is only implemented for macOS Terminal; rerun with --no-open")
+    }
+}
+
+fn apple_script_string(value: &str) -> String {
+    let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("\"{escaped}\"")
+}
+
+fn format_fork_report(
+    source: &Session,
+    fork: &Session,
+    note: Option<&str>,
+    terminal_opened: bool,
+    terminal_error: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        format!(
+            "forked session id={} full={} from id={} full={}",
+            short_id(&fork.id()),
+            fork.id(),
+            short_id(&source.id()),
+            source.id()
+        ),
+        format!("resume command: deepcli resume {}", fork.id()),
+    ];
+    if let Some(note) = note {
+        lines.push(format!("note: {note}"));
+    }
+    if terminal_opened {
+        lines.push("opened new Terminal with the forked conversation".to_string());
+    } else if let Some(error) = terminal_error {
+        lines.push(format!(
+            "terminal not opened: {}; run `deepcli resume {}` manually",
+            redact_sensitive_text(error),
+            fork.id()
+        ));
+    } else {
+        lines.push("terminal open skipped by --no-open".to_string());
+    }
+    lines.push(
+        "running-agent fork is not supported yet; stop or wait for the task before forking"
+            .to_string(),
+    );
+    lines.join("\n")
+}
+
+fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.session.fork.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "source": session_metadata_json(&report.source),
+        "fork": session_metadata_json(&report.fork),
+        "terminal": {
+            "opened": report.terminal_opened,
+            "error": report.terminal_error.as_deref().map(redact_sensitive_text),
+            "resumeCommand": format!("deepcli resume {}", report.fork.id),
+        },
+        "limitations": [
+            "forking a currently running agent task is not supported yet"
+        ],
+        "report": report.report,
+    }))?)
+}
+
 pub(crate) fn handle_session(
     workspace: &Path,
     current: Option<String>,
@@ -25338,6 +26337,33 @@ mod tests {
             Some(SlashCommand::Context)
         );
         assert_eq!(
+            CommandRouter::parse("/goal 完整实现 docs 需求 --json").unwrap(),
+            Some(SlashCommand::Goal {
+                args: vec![
+                    "完整实现".to_string(),
+                    "docs".to_string(),
+                    "需求".to_string(),
+                    "--json".to_string()
+                ]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/plan 做一个需求澄清工具 --write-doc docs/ai/REQ.md").unwrap(),
+            Some(SlashCommand::Plan {
+                args: vec![
+                    "做一个需求澄清工具".to_string(),
+                    "--write-doc".to_string(),
+                    "docs/ai/REQ.md".to_string()
+                ]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/fork --current --no-open").unwrap(),
+            Some(SlashCommand::Fork {
+                args: vec!["--current".to_string(), "--no-open".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/model set deepseek deepseek-v4-pro").unwrap(),
             Some(SlashCommand::Model {
                 args: vec![
@@ -25587,6 +26613,154 @@ mod tests {
                     ".deepcli/exports/approvals.json".to_string()
                 ]
             })
+        );
+    }
+
+    #[test]
+    fn goal_command_creates_contract_and_guard_plan() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+
+        let output = handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "实现".to_string(),
+                "全部文档需求".to_string(),
+                "--acceptance-cmd".to_string(),
+                "cargo test --all".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.goal.v1");
+        assert_eq!(value["status"], "created");
+        assert!(value["goal"]["objective"]
+            .as_str()
+            .unwrap()
+            .contains("全部文档需求"));
+        assert!(value["goal"]["acceptance_commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str() == Some("cargo test --all")));
+
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert!(loaded.load_goal().unwrap().is_some());
+        let plan = loaded.load_plan().unwrap().unwrap();
+        assert!(plan.steps.iter().any(|step| step.id == "goal_tests"));
+    }
+
+    #[test]
+    fn plan_command_generates_requirements_draft_and_side_questions() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let output = handle_plan_command(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "支持".to_string(),
+                "交互式需求澄清".to_string(),
+                "--write-doc".to_string(),
+                "docs/ai/REQUIREMENTS_DRAFT.md".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.plan.requirements_draft.v1");
+        assert_eq!(value["status"], "draft");
+        assert!(value["questions"].as_array().unwrap().len() >= 3);
+        assert!(value["document"]
+            .as_str()
+            .unwrap()
+            .contains("Requirements Draft"));
+        assert!(dir.path().join("docs/ai/REQUIREMENTS_DRAFT.md").exists());
+
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert!(!loaded.load_side_questions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn fork_command_clones_session_context_without_opening_terminal() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        session.rename("original task").unwrap();
+        session.append_message("user", "hello").unwrap();
+        session.append_message("assistant", "world").unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--no-open".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.session.fork.v1");
+        assert_eq!(value["terminal"]["opened"], false);
+        let fork_id = value["fork"]["id"].as_str().unwrap();
+        assert_ne!(fork_id, session.id().to_string());
+
+        let fork = store.load(fork_id).unwrap();
+        assert_eq!(fork.load_messages().unwrap().len(), 2);
+        assert!(fork.metadata.title.as_deref().unwrap().contains("Fork of"));
+        assert_eq!(fork.metadata.state, SessionState::WaitingUser);
+    }
+
+    #[test]
+    fn fork_without_session_arg_defaults_to_current_session() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let current = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        current.append_message("user", "current context").unwrap();
+        let other = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        other.append_message("user", "newer context").unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(current.id().to_string()),
+            vec!["--no-open".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(
+            value["source"]["id"].as_str(),
+            Some(current.id().to_string().as_str())
         );
     }
 
@@ -25889,6 +27063,19 @@ mod tests {
         assert!(providers_help.contains("/providers - "));
         assert!(providers_help.contains("/model list"));
         assert!(providers_help.contains("/model set <provider>"));
+
+        let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
+        assert!(goal_help.contains("/goal <objective>"));
+        assert!(goal_help.contains("deepcli.goal.v1"));
+
+        let plan_help = CommandRouter::help_for(&["plan".to_string()]).unwrap();
+        assert!(plan_help.contains("/plan <rough requirement>"));
+        assert!(plan_help.contains("requirements draft"));
+
+        let fork_help = CommandRouter::help_for(&["fork".to_string()]).unwrap();
+        assert!(fork_help.contains("/fork --current"));
+        assert!(fork_help.contains("/fork <session_id>"));
+        assert!(fork_help.contains("deepcli resume <new_id>"));
 
         let stop_help = CommandRouter::help_for(&["cancel".to_string()]).unwrap();
         assert!(stop_help.contains("/stop - "));

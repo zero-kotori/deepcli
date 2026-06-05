@@ -59,6 +59,14 @@ deepcli resume
 deepcli sessions --all --limit 20
 ```
 
+设置长期目标、澄清需求或复制会话：
+
+```bash
+deepcli goal "完整实现当前项目文档中的全部需求" --json
+deepcli plan "做一个可以交互式澄清需求的功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md
+deepcli fork --current --no-open --json
+```
+
 ## 常用工作流
 
 启动交互式编程会话：
@@ -94,6 +102,8 @@ deepcli accept --json
 deepcli gate --json
 deepcli handoff --pr
 ```
+
+`goal` 会在当前会话中写入目标契约和守护计划，后续 Agent 上下文会持续看到验收条件，只有目标达成、要求验收通过且测试通过后才可结束。`plan` 面向不成熟需求，生成带推荐选项的澄清问题、假设、功能要求和验收标准，并可写成需求草稿。`fork` 会复制已持久化的会话上下文，默认在新 macOS Terminal 中执行 `deepcli resume <new_id>`；`--no-open` 可用于脚本或验收。
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
@@ -158,6 +168,9 @@ cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor --quick --json
+./scripts/deepcli help goal
+./scripts/deepcli help plan
+./scripts/deepcli help fork
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json
 ./scripts/deepcli round --json --run-benchmark --fail-on-command

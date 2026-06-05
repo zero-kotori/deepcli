@@ -7,8 +7,8 @@ use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage, ToolCall, Usage};
 use crate::session::{
-    ApprovalStatus, AuditEvent, Plan, PlanStep, PlanStepStatus, Session, SessionMessage,
-    SessionState, SessionStore, SideQuestionStatus, ToolCallRecord, ToolCallStatus,
+    ApprovalStatus, AuditEvent, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
+    SessionMessage, SessionState, SessionStore, SideQuestionStatus, ToolCallRecord, ToolCallStatus,
 };
 use crate::tools::{ToolExecutor, ToolRegistry};
 use crate::workspace::WorkspaceManager;
@@ -1111,6 +1111,36 @@ impl AgentRuntime {
                     .collect::<Vec<_>>()
                     .join("\n");
                 sections.push(format!("Current saved plan: {}\n{steps}", plan.title));
+            }
+        }
+
+        if let Some(goal) = self.session.load_goal()? {
+            if goal.status == GoalStatus::Active {
+                let sources = goal
+                    .source_requirements
+                    .iter()
+                    .map(|item| format!("- {item}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let stop_conditions = goal
+                    .stop_conditions
+                    .iter()
+                    .map(|item| format!("- {item}"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let acceptance = goal
+                    .acceptance_commands
+                    .iter()
+                    .map(|item| format!("- `{item}`"))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                sections.push(format!(
+                    "Active goal contract:\nObjective: {}\nRequirement sources:\n{}\nStop conditions:\n{}\nAcceptance commands:\n{}\nYou must not claim this goal is complete or stop the implementation loop until the objective is achieved, all explicit requirements are verified, all acceptance commands pass, and residual risks are reported.",
+                    truncate_chars(&goal.objective, SESSION_CONTEXT_MESSAGE_CHARS),
+                    if sources.is_empty() { "- <none>".to_string() } else { sources },
+                    if stop_conditions.is_empty() { "- <none>".to_string() } else { stop_conditions },
+                    if acceptance.is_empty() { "- <none>".to_string() } else { acceptance }
+                ));
             }
         }
 

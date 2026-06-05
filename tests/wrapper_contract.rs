@@ -248,6 +248,34 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/iterate", "--json", "--fail-on-gaps"]
     ));
 
+    let goal = run_wrapper(&["goal", "完整实现全部需求", "--json"]);
+    assert!(ends_with_args(
+        &goal.args,
+        &["/goal", "完整实现全部需求", "--json"]
+    ));
+
+    let plan = run_wrapper(&[
+        "plan",
+        "做一个需求澄清工具",
+        "--write-doc",
+        "docs/ai/REQ.md",
+    ]);
+    assert!(ends_with_args(
+        &plan.args,
+        &[
+            "/plan",
+            "做一个需求澄清工具",
+            "--write-doc",
+            "docs/ai/REQ.md"
+        ]
+    ));
+
+    let fork = run_wrapper(&["fork", "--current", "--no-open"]);
+    assert!(ends_with_args(
+        &fork.args,
+        &["/fork", "--current", "--no-open"]
+    ));
+
     let benchmark = run_wrapper(&["benchmark", "--fail-below", "85"]);
     assert!(ends_with_args(
         &benchmark.args,

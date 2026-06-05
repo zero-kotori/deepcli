@@ -27,9 +27,17 @@
    - 结果：`round` 默认仍为只读产品循环报告；显式传入 `--run-benchmark` 或 `--run-suite` 时，先执行 benchmark suite，再在同一份 `deepcli.round.v1` JSON 中写入 `benchmarkRun` 和更新后的 `benchmarkStatus`。
    - 推荐命令：`deepcli round --json --run-benchmark --fail-on-command`
 
+3. 长期 goal、需求澄清 plan、会话 fork
+   - 结果：新增 `/goal`、`/plan <rough requirement>` 和 `/fork` 三个产品闭环命令。
+   - `/goal` 在当前 session 写入 `goal.json` 与守护 `plan.json`，并把 active goal contract 注入后续 Agent 上下文，约束 Agent 不能在目标、验收要求和测试通过前停止。
+   - `/plan` 无参数保留查看执行计划；带需求文本时生成带推荐选项的需求澄清草稿，可写入 docs，并在有当前 session 时把问题加入旁路问题队列。
+   - `/fork` 复制已持久化 session 上下文到新 session id，默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；当前运行中的后台 Agent 热分叉暂不宣称支持。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
+
+本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
 下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact。
 
@@ -41,6 +49,9 @@
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
+./scripts/deepcli help goal
+./scripts/deepcli help plan
+./scripts/deepcli help fork
 ./scripts/deepcli preflight --json
 ./scripts/deepcli review
 ```

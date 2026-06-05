@@ -86,6 +86,26 @@ pub struct Plan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalContract {
+    pub objective: String,
+    pub source_requirements: Vec<String>,
+    pub stop_conditions: Vec<String>,
+    pub acceptance_commands: Vec<String>,
+    pub status: GoalStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Complete,
+    Blocked,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlanStep {
     pub id: String,
     pub description: String,
@@ -435,6 +455,15 @@ impl Session {
 
     pub fn load_plan(&self) -> Result<Option<Plan>> {
         self.read_json_if_exists("plan.json")
+    }
+
+    pub fn save_goal(&self, goal: &GoalContract) -> Result<()> {
+        self.write_json("goal.json", goal)?;
+        self.touch_metadata()
+    }
+
+    pub fn load_goal(&self) -> Result<Option<GoalContract>> {
+        self.read_json_if_exists("goal.json")
     }
 
     pub fn update_plan_step(&self, id: &str, status: PlanStepStatus) -> Result<()> {
