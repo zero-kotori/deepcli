@@ -1293,7 +1293,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/goal --json --output .deepcli/exports/goal.json",
                 "deepcli goal start 'complete docs/ai requirements'",
             ],
-            notes: &["With no existing goal, `/goal` creates a default project-document goal for the active session. The active goal is injected into future agent context and tells the agent not to stop until requirements, acceptance commands, tests, and final verification all pass. Use `/goal status` for the stable `deepcli.goal.status.v1` readiness report, and `/goal gate` when a script should exit non-zero until the goal is ready to complete. Use `/goal show` to inspect the saved `goal.json` without changing it."],
+            notes: &["With no existing goal, `/goal` creates a default project-document goal for the active session. The active goal is injected into future agent context and tells the agent not to stop until requirements, acceptance commands, tests, and final verification all pass. Use `/goal status` for the stable `deepcli.goal.status.v1` readiness report, and `/goal gate` when a script should exit non-zero until the goal is ready to complete. `/goal show/status/gate` fall back to the latest session with a goal when no active goal is selected; create, start, and clear still require an active session."],
         },
         CommandHelp {
             name: "/plan",
@@ -15822,51 +15822,138 @@ enum GoalMode {
     Gate,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GoalSessionSource {
+    Current,
+    LatestWithGoal,
+}
+
+impl GoalSessionSource {
+    fn as_str(self) -> &'static str {
+        match self {
+            GoalSessionSource::Current => "current",
+            GoalSessionSource::LatestWithGoal => "latest_with_goal",
+        }
+    }
+}
+
+struct GoalSessionSelection {
+    session: Session,
+    goal: GoalContract,
+    source: GoalSessionSource,
+}
+
 fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
     let options = parse_goal_options(&args)?;
     let explicit_show = args.iter().any(|arg| arg == "show");
-    let session_id = current.ok_or_else(|| {
-        anyhow::anyhow!("`/goal` requires an active session; start deepcli or pass a task first")
-    })?;
     let store = SessionStore::new(workspace);
-    let session = store.load(&session_id)?;
 
     let (output, should_fail) = match options.mode {
         GoalMode::Show => {
-            let existing = session.load_goal()?;
-            if let Some(goal) = existing {
-                if options.json_output {
-                    (
-                        format_goal_json(
-                            workspace,
-                            &session,
-                            &goal,
-                            "show",
-                            &format_goal_text(&goal),
-                        )?,
-                        false,
-                    )
+            if let Some(session_id) = current.as_deref() {
+                let session = store.load(session_id)?;
+                if let Some(goal) = session.load_goal()? {
+                    let report =
+                        format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
+                    if options.json_output {
+                        (
+                            format_goal_json(
+                                workspace,
+                                &session,
+                                &goal,
+                                "show",
+                                GoalSessionSource::Current,
+                                &report,
+                            )?,
+                            false,
+                        )
+                    } else {
+                        (report, false)
+                    }
+                } else if !explicit_show {
+                    let goal = default_goal_contract(options.acceptance_commands);
+                    session.save_goal(&goal)?;
+                    session.save_plan(&goal_contract_plan(&goal))?;
+                    let report =
+                        format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
+                    if options.json_output {
+                        (
+                            format_goal_json(
+                                workspace,
+                                &session,
+                                &goal,
+                                "created",
+                                GoalSessionSource::Current,
+                                &report,
+                            )?,
+                            false,
+                        )
+                    } else {
+                        (report, false)
+                    }
+                } else if let Some(selection) = latest_session_with_goal(&store, Some(session_id))?
+                {
+                    let report = format_goal_text_with_source(
+                        &selection.goal,
+                        &selection.session,
+                        selection.source,
+                    );
+                    if options.json_output {
+                        (
+                            format_goal_json(
+                                workspace,
+                                &selection.session,
+                                &selection.goal,
+                                "show",
+                                selection.source,
+                                &report,
+                            )?,
+                            false,
+                        )
+                    } else {
+                        (report, false)
+                    }
                 } else {
-                    (format_goal_text(&goal), false)
+                    ("no active goal".to_string(), false)
                 }
-            } else if !explicit_show {
-                let goal = default_goal_contract(options.acceptance_commands);
-                session.save_goal(&goal)?;
-                session.save_plan(&goal_contract_plan(&goal))?;
-                let report = format_goal_text(&goal);
-                if options.json_output {
-                    (
-                        format_goal_json(workspace, &session, &goal, "created", &report)?,
-                        false,
-                    )
+            } else if explicit_show {
+                if let Some(selection) = latest_session_with_goal(&store, None)? {
+                    let report = format_goal_text_with_source(
+                        &selection.goal,
+                        &selection.session,
+                        selection.source,
+                    );
+                    if options.json_output {
+                        (
+                            format_goal_json(
+                                workspace,
+                                &selection.session,
+                                &selection.goal,
+                                "show",
+                                selection.source,
+                                &report,
+                            )?,
+                            false,
+                        )
+                    } else {
+                        (report, false)
+                    }
                 } else {
-                    (report, false)
+                    ("no active goal".to_string(), false)
                 }
             } else {
-                ("no active goal".to_string(), false)
+                return Err(anyhow::anyhow!(
+                    "`/goal` requires an active session when creating a goal; start deepcli or pass a task first"
+                ));
             }
         }
         GoalMode::Start => {
+            let session_id = current.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`/goal start` requires an active session; start deepcli or pass a task first"
+                )
+            })?;
+            let session = store.load(session_id)?;
             let mut goal = default_goal_contract(options.acceptance_commands);
             if let Some(objective) = options.objective {
                 goal.objective = objective;
@@ -15880,10 +15967,17 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
                     "acceptance_commands": goal.acceptance_commands,
                 }),
             )?;
-            let report = format_goal_text(&goal);
+            let report = format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
             if options.json_output {
                 (
-                    format_goal_json(workspace, &session, &goal, "created", &report)?,
+                    format_goal_json(
+                        workspace,
+                        &session,
+                        &goal,
+                        "created",
+                        GoalSessionSource::Current,
+                        &report,
+                    )?,
                     false,
                 )
             } else {
@@ -15891,6 +15985,12 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             }
         }
         GoalMode::Clear => {
+            let session_id = current.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "`/goal clear` requires an active session; use `/goal show` to inspect older goals"
+                )
+            })?;
+            let session = store.load(session_id)?;
             let mut goal = session
                 .load_goal()?
                 .ok_or_else(|| anyhow::anyhow!("no active goal to clear"))?;
@@ -15901,7 +16001,14 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             let report = "cancelled active goal".to_string();
             if options.json_output {
                 (
-                    format_goal_json(workspace, &session, &goal, "cancelled", &report)?,
+                    format_goal_json(
+                        workspace,
+                        &session,
+                        &goal,
+                        "cancelled",
+                        GoalSessionSource::Current,
+                        &report,
+                    )?,
                     false,
                 )
             } else {
@@ -15909,14 +16016,23 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             }
         }
         GoalMode::Status | GoalMode::Gate => {
-            let goal = session
-                .load_goal()?
+            let selection = select_goal_session(&store, current.as_deref())?
                 .ok_or_else(|| anyhow::anyhow!("no active goal"))?;
-            let report = collect_goal_readiness(workspace, &session, &goal)?;
+            let report = collect_goal_readiness(workspace, &selection.session, &selection.goal)?;
             let output = if options.json_output {
-                format_goal_status_json(workspace, &session, &goal, &report)?
+                format_goal_status_json(
+                    workspace,
+                    &selection.session,
+                    &selection.goal,
+                    selection.source,
+                    &report,
+                )?
             } else {
-                report.report.clone()
+                format_goal_status_text_with_source(
+                    report.report.clone(),
+                    &selection.session,
+                    selection.source,
+                )
             };
             (
                 output,
@@ -15932,6 +16048,45 @@ fn handle_goal(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
         return Err(CommandExit::new(output, 1).into());
     }
     Ok(output)
+}
+
+fn select_goal_session(
+    store: &SessionStore,
+    current: Option<&str>,
+) -> Result<Option<GoalSessionSelection>> {
+    if let Some(session_id) = current {
+        let session = store.load(session_id)?;
+        if let Some(goal) = session.load_goal()? {
+            return Ok(Some(GoalSessionSelection {
+                session,
+                goal,
+                source: GoalSessionSource::Current,
+            }));
+        }
+        return latest_session_with_goal(store, Some(session_id));
+    }
+    latest_session_with_goal(store, None)
+}
+
+fn latest_session_with_goal(
+    store: &SessionStore,
+    skip_id: Option<&str>,
+) -> Result<Option<GoalSessionSelection>> {
+    for metadata in store.list()? {
+        let id = metadata.id.to_string();
+        if skip_id.is_some_and(|skip| skip == id) {
+            continue;
+        }
+        let session = store.load(&id)?;
+        if let Some(goal) = session.load_goal()? {
+            return Ok(Some(GoalSessionSelection {
+                session,
+                goal,
+                source: GoalSessionSource::LatestWithGoal,
+            }));
+        }
+    }
+    Ok(None)
 }
 
 fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
@@ -16118,17 +16273,32 @@ fn format_goal_text(goal: &GoalContract) -> String {
     lines.join("\n")
 }
 
+fn format_goal_text_with_source(
+    goal: &GoalContract,
+    session: &Session,
+    source: GoalSessionSource,
+) -> String {
+    format!(
+        "session source: {}\nsession: {}\n{}",
+        source.as_str(),
+        session.id(),
+        format_goal_text(goal)
+    )
+}
+
 fn format_goal_json(
     workspace: &Path,
     session: &Session,
     goal: &GoalContract,
     status: &str,
+    source: GoalSessionSource,
     report: &str,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.goal.v1",
         "status": status,
         "workspace": workspace.display().to_string(),
+        "sessionSource": source.as_str(),
         "session": session_metadata_json(&session.metadata),
         "goal": goal,
         "report": report,
@@ -16351,10 +16521,24 @@ fn format_goal_status_text(
     lines.join("\n")
 }
 
+fn format_goal_status_text_with_source(
+    report: String,
+    session: &Session,
+    source: GoalSessionSource,
+) -> String {
+    format!(
+        "session source: {}\nsession: {}\n{}",
+        source.as_str(),
+        session.id(),
+        report
+    )
+}
+
 fn format_goal_status_json(
     workspace: &Path,
     session: &Session,
     goal: &GoalContract,
+    source: GoalSessionSource,
     report: &GoalReadinessReport,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
@@ -16362,6 +16546,7 @@ fn format_goal_status_json(
         "status": if report.ready { "ready" } else { "blocked" },
         "ready": report.ready,
         "workspace": workspace.display().to_string(),
+        "sessionSource": source.as_str(),
         "session": session_metadata_json(&session.metadata),
         "goal": goal,
         "blockers": report.blockers,
@@ -27022,6 +27207,60 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str().unwrap().contains("cargo test")));
+    }
+
+    #[test]
+    fn goal_status_and_gate_fall_back_to_latest_session_with_goal() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let goal_session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        handle_goal(
+            dir.path(),
+            Some(goal_session.id().to_string()),
+            vec![
+                "实现全部需求".to_string(),
+                "--acceptance-cmd".to_string(),
+                "cargo test".to_string(),
+            ],
+        )
+        .unwrap();
+        let empty_current = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let status = handle_goal(
+            dir.path(),
+            None,
+            vec!["status".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let status_value: Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status_value["schema"], "deepcli.goal.status.v1");
+        assert_eq!(status_value["sessionSource"], "latest_with_goal");
+        assert_eq!(status_value["session"]["id"], goal_session.id().to_string());
+
+        let error = handle_goal(
+            dir.path(),
+            Some(empty_current.id().to_string()),
+            vec!["gate".to_string(), "--json".to_string()],
+        )
+        .unwrap_err();
+        let exit = error.downcast_ref::<CommandExit>().unwrap();
+        assert_eq!(exit.code, 1);
+        let gate_value: Value = serde_json::from_str(&exit.output).unwrap();
+        assert_eq!(gate_value["sessionSource"], "latest_with_goal");
+        assert_eq!(gate_value["session"]["id"], goal_session.id().to_string());
+        assert_eq!(gate_value["ready"], false);
+    }
+
+    #[test]
+    fn goal_creation_still_requires_active_session() {
+        let dir = tempdir().unwrap();
+        let error = handle_goal(dir.path(), None, Vec::new()).unwrap_err();
+        assert!(error.to_string().contains("requires an active session"));
     }
 
     #[test]
