@@ -112,13 +112,18 @@
    - 当前全局 `scorecard.nextActions` 和 `benchmark_evidence.nextActions` 均不包含以 ``run `/`` 开头的动作，脚本和用户可以直接复制执行。
    - 目的：让 one-shot JSON 的 nextActions 成为可执行命令清单，减少 TUI slash 命令、shell 命令和说明性文本混用带来的集成成本。
 
+20. benchmark preset gap 修复提示统一为可执行 CLI 命令
+   - 结果：`deepcli benchmark status --json` 和 `deepcli round --json` 内嵌的 `benchmarkStatus.presetCoverage.requiredStatus[].gap` 不再输出 ``run `/benchmark ...` `` 这类说明性 slash 文本，而是使用 `deepcli benchmark run-suite --json --fail-on-command`。
+   - `deepcli benchmark show latest` 在没有本地 artifact 时，也会提示可直接执行的 `deepcli benchmark run-suite --json --fail-on-command`、`deepcli benchmark run --preset cargo-test --json --fail-on-command` 或 `deepcli benchmark record`。
+   - 目的：让 benchmark evidence JSON 和错误提示中的修复路径与 scorecard/round nextActions 一致，降低外部 UI、脚本和用户复制执行的集成成本。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
 
 本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦，以及 scorecard nextActions 的可执行 CLI 命令格式，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式，以及 benchmark preset gap 修复提示的可执行 CLI 命令格式，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 

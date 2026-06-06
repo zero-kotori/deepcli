@@ -2459,6 +2459,10 @@ struct ScorecardReport {
 
 const SCORECARD_BENCHMARK_REMEDIATION_ACTION: &str =
     "deepcli round --json --run-benchmark --fail-on-command";
+const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
+    "deepcli benchmark run-suite --json --fail-on-command";
+const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
+    "deepcli benchmark run --preset cargo-test --json --fail-on-command";
 
 fn handle_scorecard(
     workspace: &Path,
@@ -5732,8 +5736,8 @@ fn benchmark_required_preset_status(
                     .created_at
                     .map(|created_at| now.signed_duration_since(created_at).num_seconds().max(0)),
                 gap: Some(format!(
-                    "required benchmark preset `{}` has only record-only or unknown evidence; run `/benchmark run-suite --json --fail-on-command`",
-                    preset.name
+                    "required benchmark preset `{}` has only record-only or unknown evidence; run `{}`",
+                    preset.name, BENCHMARK_RUN_SUITE_REMEDIATION_ACTION
                 )),
             }
         } else {
@@ -5743,8 +5747,8 @@ fn benchmark_required_preset_status(
                 artifact: None,
                 age_seconds: None,
                 gap: Some(format!(
-                    "missing required benchmark preset `{}`; run `/benchmark run-suite --json --fail-on-command`",
-                    preset.name
+                    "missing required benchmark preset `{}`; run `{}`",
+                    preset.name, BENCHMARK_RUN_SUITE_REMEDIATION_ACTION
                 )),
             }
         };
@@ -5775,8 +5779,8 @@ fn benchmark_required_preset_status(
         _ => (
             "weak".to_string(),
             Some(format!(
-                "required benchmark preset `{}` has non-executable latest evidence; run `/benchmark run-suite --json --fail-on-command`",
-                preset.name
+                "required benchmark preset `{}` has non-executable latest evidence; run `{}`",
+                preset.name, BENCHMARK_RUN_SUITE_REMEDIATION_ACTION
             )),
         ),
     };
@@ -6615,7 +6619,9 @@ fn resolve_benchmark_artifact(workspace: &Path, target: &str) -> Result<Benchmar
     if target == "latest" {
         return artifacts.into_iter().next().ok_or_else(|| {
             anyhow::anyhow!(
-                "no benchmark artifacts found under .deepcli/benchmarks; run `/benchmark run-suite --json --fail-on-command`, `/benchmark run --preset cargo-test --json --fail-on-command`, or `/benchmark record` first"
+                "no benchmark artifacts found under .deepcli/benchmarks; run `{}`, `{}`, or `deepcli benchmark record` first",
+                BENCHMARK_RUN_SUITE_REMEDIATION_ACTION,
+                BENCHMARK_CARGO_TEST_REMEDIATION_ACTION
             )
         });
     }
@@ -30007,6 +30013,20 @@ mod tests {
                 .as_str()
                 .unwrap()
                 .contains("missing required benchmark preset `preflight-quick`")));
+        let required_status = incomplete_value["presetCoverage"]["requiredStatus"]
+            .as_array()
+            .unwrap();
+        assert!(required_status.iter().any(|preset| {
+            preset["preset"] == "selftest"
+                && preset["status"] == "missing"
+                && preset["gap"]
+                    .as_str()
+                    .unwrap()
+                    .contains("deepcli benchmark run-suite --json --fail-on-command")
+        }));
+        assert!(!required_status.iter().any(|preset| preset["gap"]
+            .as_str()
+            .is_some_and(|gap| gap.contains("run `/benchmark"))));
         assert!(incomplete_value["presetCoverage"]["requiredStatus"]
             .as_array()
             .unwrap()
@@ -30270,6 +30290,26 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../cleanup.json").exists());
+    }
+
+    #[test]
+    fn benchmark_show_latest_missing_artifact_suggests_executable_commands() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let error = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["show".into(), "latest".into()],
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("no benchmark artifacts found under .deepcli/benchmarks"));
+        assert!(error.contains("deepcli benchmark run-suite --json --fail-on-command"));
+        assert!(!error.contains("run `/benchmark"));
     }
 
     #[test]
