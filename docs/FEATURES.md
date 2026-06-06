@@ -42,7 +42,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - message box 支持编辑、粘贴、多行输入和历史输入。
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
-- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark status|summary|trends|compare|list|show|presets`、`/selftest`、`/preflight --dry-run`、`/completion`、`/session`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
+- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark status|summary|trends|compare|list|show|presets`、`/selftest`、`/preflight --dry-run`、`/completion`、`/session`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
 - 会执行本地 shell 或维护 artifact 的 `/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean` 和完整 `/preflight` 需要等当前 Agent 任务结束或先 `/stop`。
 - 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情。
 
@@ -57,7 +57,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
-- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；当前运行中的 Agent 任务分叉暂不宣称支持，建议等待或先 `/stop`。
+- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，但当前运行中的 Agent 任务不会被热分叉。
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史。
 - `/cleanup sessions` 可预览或删除空的一次性会话。
 
@@ -159,7 +159,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
 
-`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；`contextCopy` 与 `nextActions` 会明确暴露源会话状态、复制模式、运行中任务限制和恢复命令；当前运行中的后台 Agent 分叉先作为明确限制处理。
+`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；`contextCopy` 与 `nextActions` 会明确暴露源会话状态、复制模式、运行中任务限制和恢复命令；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。
 
 `preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，`--quick` 跳过较慢的 clippy/gate。
 

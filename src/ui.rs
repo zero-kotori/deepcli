@@ -1,9 +1,9 @@
 use crate::agents::AgentStore;
 use crate::commands::{
-    handle_approval, handle_benchmark, handle_completion_local, handle_logs, handle_preflight,
-    handle_privacy_scan, handle_recipes, handle_round, handle_scorecard, handle_selftest_local,
-    handle_session, handle_trace, handle_usage, list_resumable_sessions, CommandHelpSummary,
-    CommandRouter, SlashCommand,
+    handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_logs,
+    handle_preflight, handle_privacy_scan, handle_recipes, handle_round, handle_scorecard,
+    handle_selftest_local, handle_session, handle_trace, handle_usage, list_resumable_sessions,
+    CommandHelpSummary, CommandRouter, SlashCommand,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::permissions::PermissionEngine;
@@ -2576,6 +2576,12 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             });
             true
         }
+        SlashCommand::Fork { args } => {
+            push_running_command_result(state, |active| {
+                handle_fork(&active.workspace, Some(active.session_id.clone()), args)
+            });
+            true
+        }
         SlashCommand::Recipes { args } => {
             push_running_command_result(state, |active| {
                 let (config, registry) = running_local_product_context(&active.workspace)?;
@@ -2661,7 +2667,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
@@ -3062,7 +3068,7 @@ fn submit_tui_input(
         state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content:
-                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
+                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
                     .to_string(),
         });
         state.last_event = "input deferred while running".to_string();
@@ -5539,11 +5545,12 @@ fn running_safe_palette_priority(name: &str) -> usize {
         "/scorecard" => 11,
         "/benchmark" => 12,
         "/recipes" => 13,
-        "/privacy" => 14,
-        "/approval" => 15,
-        "/session" => 16,
-        "/terminal" => 17,
-        "/btw" => 18,
+        "/fork" => 14,
+        "/privacy" => 15,
+        "/approval" => 16,
+        "/session" => 17,
+        "/terminal" => 18,
+        "/btw" => 19,
         _ => 100,
     }
 }
@@ -6635,6 +6642,7 @@ mod tests {
             "/trace",
             "/logs",
             "/privacy",
+            "/fork",
             "/approval",
             "/session",
             "/history",
@@ -8616,6 +8624,77 @@ mod tests {
                     .content
                     .contains("stop or wait for the running task before executing")
         }));
+    }
+
+    #[test]
+    fn running_tui_can_fork_persisted_context_without_runtime() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session.rename("parallel investigation").unwrap();
+        session
+            .append_message("user", "inspect fork behavior")
+            .unwrap();
+        session
+            .append_message("assistant", "persisted answer")
+            .unwrap();
+        session.set_state(SessionState::Executing).unwrap();
+        let source_id = session.id().to_string();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: source_id.clone(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/fork --current --no-open --json"
+        ));
+        let output = state
+            .chat
+            .last()
+            .expect("fork should append a chat line")
+            .content
+            .clone();
+        let value: serde_json::Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.session.fork.v1");
+        assert_eq!(value["source"]["id"], source_id);
+        assert_eq!(value["contextCopy"]["sourceState"], "executing");
+        assert_eq!(value["contextCopy"]["runningAgentState"], true);
+        assert_eq!(value["contextCopy"]["hotForkSupported"], false);
+        let fork_id = value["fork"]["id"].as_str().unwrap();
+        let fork = store.load(fork_id).unwrap();
+        assert_eq!(fork.load_messages().unwrap().len(), 2);
+        assert_eq!(fork.metadata.state, SessionState::WaitingUser);
+        assert!(state.last_event.starts_with("running command ok"));
     }
 
     #[test]

@@ -1339,7 +1339,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["The idle-session path copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--no-open` for CI or when you only need the forked id. The JSON report includes `contextCopy` and `nextActions` so UIs can explain whether the source was idle or running. Forking a currently running agent task is intentionally not claimed as supported yet; stop or wait for the task before forking."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--no-open` for CI or when you only need the forked id. The JSON report includes `contextCopy` and `nextActions` so UIs can explain whether the source was idle or running. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -10534,6 +10534,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/trace"
             | "/logs"
             | "/privacy"
+            | "/fork"
             | "/approval"
             | "/session"
             | "/history"
@@ -18000,7 +18001,11 @@ struct ForkContextCopy {
     warning: Option<String>,
 }
 
-fn handle_fork(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
+pub(crate) fn handle_fork(
+    workspace: &Path,
+    current: Option<String>,
+    args: Vec<String>,
+) -> Result<String> {
     let options = parse_fork_options(&args, current)?;
     let store = SessionStore::new(workspace);
     let (source, note) = resolve_session_for_optional_inspection(
@@ -18225,7 +18230,7 @@ fn fork_next_actions(fork_id: &str, context_copy: &ForkContextCopy) -> Vec<Strin
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
         actions.push(
-            "wait for the current task to finish, then run `deepcli fork --current` again"
+            "after the current task finishes, run `deepcli fork --current` again if the fork needs final task output"
                 .to_string(),
         );
     }
@@ -18305,7 +18310,7 @@ fn format_fork_report(
         lines.push("terminal open skipped by --no-open".to_string());
     }
     lines.push(
-        "running-agent fork is not supported yet; stop or wait for the task before forking"
+        "running-agent task is not hot-forked; this clone contains persisted session files only"
             .to_string(),
     );
     lines.push("next actions:".to_string());
@@ -18337,7 +18342,7 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
         },
         "nextActions": report.next_actions,
         "limitations": [
-            "forking a currently running agent task is not supported yet"
+            "forking a currently running agent task copies persisted session files only; the in-memory task is not hot-forked"
         ],
         "report": report.report,
     }))?)
@@ -28915,6 +28920,7 @@ mod tests {
         assert!(fork_help.contains("/fork --current"));
         assert!(fork_help.contains("/fork <session_id>"));
         assert!(fork_help.contains("deepcli resume <new_id>"));
+        assert!(fork_help.contains("running-safe: yes"));
 
         let stop_help = CommandRouter::help_for(&["cancel".to_string()]).unwrap();
         assert!(stop_help.contains("/stop - "));
