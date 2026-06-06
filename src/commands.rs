@@ -3630,7 +3630,7 @@ fn round_benchmark_trends_gate_summary(status: &str, case_count: usize) -> Strin
     match status {
         "ok" => format!("benchmark trends status is ok with {case_count} case(s)"),
         "insufficient_history" => format!(
-            "benchmark trends status is insufficient_history with {case_count} case(s); run the benchmark suite again to create comparable history"
+            "benchmark trends status is insufficient_history with {case_count} case(s); run round with the benchmark suite to create comparable history"
         ),
         "regression" => format!(
             "benchmark trends status is regression with {case_count} case(s); inspect benchmark trends before marking the round ready"
@@ -3642,7 +3642,7 @@ fn round_benchmark_trends_gate_summary(status: &str, case_count: usize) -> Strin
 fn round_benchmark_trends_gap(status: &str) -> Option<String> {
     match status {
         "insufficient_history" => Some(
-            "benchmark_trends: benchmark trends have insufficient history; run `deepcli benchmark run-suite --json --fail-on-command` to create a comparable sample"
+            "benchmark_trends: benchmark trends have insufficient history; run `deepcli round --json --run-benchmark --fail-on-command` to create a comparable sample and re-check the round"
                 .to_string(),
         ),
         "regression" => Some(
@@ -3656,7 +3656,7 @@ fn round_benchmark_trends_gap(status: &str) -> Option<String> {
 fn round_benchmark_trends_next_action(status: &str) -> String {
     match status {
         "insufficient_history" => {
-            "deepcli benchmark run-suite --json --fail-on-command".to_string()
+            "deepcli round --json --run-benchmark --fail-on-command".to_string()
         }
         _ => "deepcli benchmark trends --json".to_string(),
     }
@@ -29779,11 +29779,11 @@ mod tests {
                     .as_str()
                     .unwrap()
                     .contains("insufficient_history")
-                && gate["nextAction"] == "deepcli benchmark run-suite --json --fail-on-command"
+                && gate["nextAction"] == "deepcli round --json --run-benchmark --fail-on-command"
         }));
         assert_eq!(
             next_actions.first().unwrap().as_str().unwrap(),
-            "deepcli benchmark run-suite --json --fail-on-command"
+            "deepcli round --json --run-benchmark --fail-on-command"
         );
         assert!(value["report"]
             .as_str()

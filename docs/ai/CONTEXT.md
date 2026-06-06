@@ -163,16 +163,20 @@
 
 30. round 聚合 benchmark trends gate
    - 结果：当 benchmark evidence 已 ready 但 benchmark trends 返回 `insufficient_history` 或 `regression` 时，`deepcli round --json` 会输出 `benchmark_trends` failed gate、`benchmark_trends:` gap 和优先修复动作。
-   - 当前单样本趋势不足时，round 的首个 `nextActions` 是 `deepcli benchmark run-suite --json --fail-on-command`，而不是继续显示 ready。
+   - 当前单样本趋势不足时，round 的首个 `nextActions` 是 `deepcli round --json --run-benchmark --fail-on-command`，而不是继续显示 ready 或只提示低层 benchmark 子命令。
    - 目的：让主产品循环直接暴露趋势证据质量，避免用户只看 `round.ready=true` 而忽略 benchmark trends 还没有可比历史。
+
+31. round benchmark trends 修复动作闭环
+   - 结果：`benchmark_trends` gate 的单样本历史不足修复动作使用 `deepcli round --json --run-benchmark --fail-on-command`。
+   - 目的：让用户执行一个命令即可生成第二组本地 benchmark 样本并立即看到更新后的 `deepcli.round.v1`，不需要先跑 `benchmark run-suite` 再手动回到 `round`。
 
 ## 当前产品自评
 
-当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示再次运行 benchmark suite。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
+当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态，以及 round 聚合 benchmark trends gate，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate，以及 round benchmark trends 修复动作闭环，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 
