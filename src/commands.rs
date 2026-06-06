@@ -813,7 +813,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. The `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
         },
         CommandHelp {
             name: "/selftest",
@@ -3459,13 +3459,13 @@ fn build_round_report(
     };
 
     let mut next_actions = Vec::new();
-    if !scorecard_threshold_ready || !scorecard.gaps.is_empty() {
+    if !scorecard_threshold_ready || scorecard_has_standalone_round_gaps(&scorecard) {
         next_actions.push("deepcli scorecard --json".to_string());
     }
     if !benchmark_ready {
-        next_actions.push("deepcli benchmark presets --json".to_string());
         next_actions.push("deepcli round --json --run-benchmark --fail-on-command".to_string());
         next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
+        next_actions.push("deepcli benchmark presets --json".to_string());
         next_actions
             .push("deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
         next_actions.push("deepcli benchmark status --json".to_string());
@@ -3507,6 +3507,13 @@ fn build_round_report(
         gaps,
         next_actions,
     }
+}
+
+fn scorecard_has_standalone_round_gaps(scorecard: &ScorecardReport) -> bool {
+    scorecard
+        .gaps
+        .iter()
+        .any(|gap| !gap.starts_with("benchmark_evidence:"))
 }
 
 fn round_benchmark_gate_summary(benchmark: &BenchmarkStatusReport) -> String {
@@ -26299,6 +26306,27 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
 
+    fn write_round_scorecard_ready_fixture(workspace: &Path) {
+        fs::create_dir_all(workspace.join("docs/ai")).unwrap();
+        fs::create_dir_all(workspace.join("docs")).unwrap();
+        fs::create_dir_all(workspace.join("src")).unwrap();
+        fs::create_dir_all(workspace.join(".deepcli")).unwrap();
+        fs::write(
+            workspace.join("docs/ai/REQUIREMENTS.md"),
+            "# Requirements\n",
+        )
+        .unwrap();
+        fs::write(workspace.join("docs/ai/TECHNICAL_PLAN.md"), "# Plan\n").unwrap();
+        fs::write(workspace.join("docs/FEATURES.md"), "# Features\n").unwrap();
+        fs::write(workspace.join("src/ui.rs"), "// test fixture\n").unwrap();
+        fs::write(
+            workspace.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+        )
+        .unwrap();
+        fs::write(workspace.join(".deepcli/config.json"), "{}\n").unwrap();
+    }
+
     #[test]
     fn parses_core_slash_commands() {
         assert_eq!(CommandRouter::parse("hello").unwrap(), None);
@@ -27658,6 +27686,8 @@ mod tests {
         assert!(round_help.contains("--run-benchmark"));
         assert!(round_help.contains("--fail-on-command"));
         assert!(round_help.contains("goalStatus"));
+        assert!(round_help.contains("failing gate remediation"));
+        assert!(round_help.contains("skips the redundant `deepcli scorecard --json` action"));
         assert!(round_help.contains("deepcli round --json"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
@@ -28476,6 +28506,39 @@ mod tests {
         assert!(gates
             .iter()
             .any(|gate| gate["id"] == "benchmark_evidence" && gate["status"] == "failed"));
+    }
+
+    #[test]
+    fn round_next_actions_prioritize_failing_benchmark_gate_when_scorecard_threshold_passes() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"].as_array().unwrap();
+
+        assert!(value["gates"].as_array().unwrap().iter().any(|gate| {
+            gate["id"] == "scorecard" && gate["status"] == "passed" && gate["nextAction"].is_null()
+        }));
+        assert!(value["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gate| gate["id"] == "benchmark_evidence" && gate["status"] == "failed"));
+        assert!(value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|gap| gap.as_str().unwrap().starts_with("benchmark_evidence:")));
+        assert_eq!(
+            next_actions.first().unwrap().as_str().unwrap(),
+            "deepcli round --json --run-benchmark --fail-on-command"
+        );
+        assert!(!next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
     }
 
     #[test]
