@@ -750,7 +750,7 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [presets|run-suite|run|record|status|gate|summary|trends|list|show|clean|scorecard] [--json] [--output path]",
+            listing: "/benchmark [presets|run-suite|run|record|status|gate|summary|trends|compare|list|show|clean|scorecard] [--json] [--output path]",
             summary: "Run, record, assess, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
@@ -766,6 +766,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark gate [--json] [--output path]",
                 "/benchmark summary [--json] [--limit n]",
                 "/benchmark trends [--json] [--limit n]",
+                "/benchmark compare [--baseline path] [--json]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
                 "/benchmark clean [--json] [--dry-run|--force] [--keep n] [--older-than-days n] [--all]",
@@ -780,6 +781,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark gate --json",
                 "/benchmark summary --json",
                 "/benchmark trends --json",
+                "/benchmark compare --baseline .deepcli/baselines/competitor.json --json",
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
                 "/benchmark show latest --json",
@@ -787,7 +789,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
         },
         CommandHelp {
             name: "/round",
@@ -3880,6 +3882,14 @@ struct BenchmarkTrendOptions {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BenchmarkCompareOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    baseline_path: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BenchmarkCleanupOptions {
     json_output: bool,
     output_path: Option<String>,
@@ -4076,6 +4086,7 @@ fn handle_benchmark(
         }
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "trend" | "trends" | "history" => handle_benchmark_trends(workspace, rest),
+        "compare" | "comparison" | "baseline" => handle_benchmark_compare(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
         "clean" | "cleanup" | "prune" => handle_benchmark_cleanup(workspace, rest),
@@ -4085,7 +4096,7 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected presets, run-suite, run, record, status, gate, summary, trends, list, show, clean, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run-suite, run, record, status, gate, summary, trends, compare, list, show, clean, or scorecard"
         ),
     }
 }
@@ -6069,6 +6080,93 @@ fn parse_benchmark_trend_options(args: &[String]) -> Result<BenchmarkTrendOption
     Ok(options)
 }
 
+fn handle_benchmark_compare(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_compare_options(args)?;
+    let mut artifacts = load_benchmark_artifacts(workspace)?;
+    if let Some(limit) = options.limit {
+        artifacts.truncate(limit);
+    }
+    let trends = build_benchmark_case_trends(&artifacts, 1);
+    let baseline = load_benchmark_baseline(workspace, options.baseline_path.as_deref())?;
+    let comparisons = build_benchmark_comparisons(&trends, &baseline);
+    let output = if options.json_output {
+        format_benchmark_compare_json(workspace, &artifacts, &baseline, &comparisons)?
+    } else {
+        format_benchmark_compare_text(workspace, artifacts.len(), &baseline, &comparisons)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_compare_options(args: &[String]) -> Result<BenchmarkCompareOptions> {
+    let mut options = BenchmarkCompareOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--baseline" => {
+                set_benchmark_baseline_path(
+                    &mut options.baseline_path,
+                    required_arg(args, index + 1, "baseline path")?,
+                )?;
+                index += 2;
+            }
+            value if value.starts_with("--baseline=") => {
+                set_benchmark_baseline_path(
+                    &mut options.baseline_path,
+                    value.trim_start_matches("--baseline="),
+                )?;
+                index += 1;
+            }
+            "--limit" => {
+                options.limit = Some(parse_positive_usize(
+                    required_arg(args, index + 1, "limit")?,
+                    "limit",
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--limit=") => {
+                options.limit = Some(parse_positive_usize(
+                    value.trim_start_matches("--limit="),
+                    "limit",
+                )?);
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark compare option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn set_benchmark_baseline_path(target: &mut Option<String>, raw: &str) -> Result<()> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("baseline path must not be empty");
+    }
+    if target.is_some() {
+        bail!("multiple benchmark baseline paths were provided");
+    }
+    *target = Some(trimmed.to_string());
+    Ok(())
+}
+
 fn parse_benchmark_list_options(args: &[String]) -> Result<BenchmarkListOptions> {
     let mut options = BenchmarkListOptions::default();
     let mut index = 0;
@@ -6426,6 +6524,7 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
             "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark trends --json",
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
             "deepcli benchmark show latest --json",
             "deepcli benchmark clean --dry-run --json",
             "deepcli scorecard --json",
@@ -6510,6 +6609,7 @@ fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
             "deepcli benchmark status --json",
             "deepcli benchmark summary --json",
             "deepcli benchmark trends --json",
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
             "deepcli benchmark clean --dry-run --json",
             "deepcli scorecard --json",
         ],
@@ -6552,6 +6652,10 @@ fn format_benchmark_presets_text(workspace: &Path) -> String {
     lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark trends --json".to_string());
+    lines.push(
+        "  - deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+            .to_string(),
+    );
     lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
     lines.join("\n")
 }
@@ -6622,6 +6726,33 @@ struct BenchmarkCaseTrend {
     duration_trend: String,
     status_trend: String,
     recent: Vec<BenchmarkTrendPoint>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BenchmarkBaselineReport {
+    present: bool,
+    name: Option<String>,
+    path: Option<String>,
+    cases: Vec<BenchmarkBaselineCase>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkBaselineCase {
+    suite: String,
+    case_name: String,
+    status: Option<String>,
+    duration_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct BenchmarkCaseComparison {
+    suite: String,
+    case_name: String,
+    current: Option<BenchmarkTrendPoint>,
+    baseline: Option<BenchmarkBaselineCase>,
+    status_comparison: String,
+    duration_delta_ms: Option<i64>,
+    duration_comparison: String,
 }
 
 fn build_benchmark_case_summaries(artifacts: &[BenchmarkArtifact]) -> Vec<BenchmarkCaseSummary> {
@@ -6759,6 +6890,156 @@ fn build_benchmark_case_trends(
         .collect()
 }
 
+fn load_benchmark_baseline(
+    workspace: &Path,
+    raw_path: Option<&str>,
+) -> Result<BenchmarkBaselineReport> {
+    let Some(raw_path) = raw_path else {
+        return Ok(BenchmarkBaselineReport::default());
+    };
+    let path = resolve_workspace_path(workspace, raw_path)?;
+    let raw =
+        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
+    let value: Value = serde_json::from_str(&raw)
+        .with_context(|| format!("failed to parse benchmark baseline {}", path.display()))?;
+    let cases_value = if let Some(cases) = value.get("cases").and_then(Value::as_array) {
+        cases
+    } else if let Some(cases) = value.as_array() {
+        cases
+    } else {
+        bail!("benchmark baseline must be a JSON object with a cases array or an array of cases");
+    };
+    let name = value
+        .get("name")
+        .and_then(Value::as_str)
+        .map(redact_sensitive_text)
+        .or_else(|| {
+            path.file_stem()
+                .and_then(|name| name.to_str())
+                .map(redact_sensitive_text)
+        });
+    let cases = cases_value
+        .iter()
+        .filter_map(benchmark_baseline_case_from_value)
+        .collect::<Vec<_>>();
+    Ok(BenchmarkBaselineReport {
+        present: true,
+        name,
+        path: Some(workspace_relative_display(workspace, &path).replace('\\', "/")),
+        cases,
+    })
+}
+
+fn benchmark_baseline_case_from_value(value: &Value) -> Option<BenchmarkBaselineCase> {
+    if !value.is_object() {
+        return None;
+    }
+    let suite = value
+        .get("suite")
+        .and_then(Value::as_str)
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let case_name = value
+        .get("case")
+        .or_else(|| value.get("caseName"))
+        .or_else(|| value.get("name"))
+        .and_then(Value::as_str)
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| "<unknown>".to_string());
+    let status = value
+        .get("status")
+        .and_then(Value::as_str)
+        .map(redact_sensitive_text);
+    let duration_ms = value
+        .get("durationMs")
+        .or_else(|| value.get("duration_ms"))
+        .and_then(Value::as_u64);
+    Some(BenchmarkBaselineCase {
+        suite,
+        case_name,
+        status,
+        duration_ms,
+    })
+}
+
+fn build_benchmark_comparisons(
+    trends: &[BenchmarkCaseTrend],
+    baseline: &BenchmarkBaselineReport,
+) -> Vec<BenchmarkCaseComparison> {
+    let mut cases: BTreeMap<
+        (String, String),
+        (Option<BenchmarkTrendPoint>, Option<BenchmarkBaselineCase>),
+    > = BTreeMap::new();
+    for trend in trends {
+        cases.insert(
+            (trend.suite.clone(), trend.case_name.clone()),
+            (trend.latest.clone(), None),
+        );
+    }
+    for baseline_case in &baseline.cases {
+        cases
+            .entry((baseline_case.suite.clone(), baseline_case.case_name.clone()))
+            .and_modify(|(_, baseline)| *baseline = Some(baseline_case.clone()))
+            .or_insert_with(|| (None, Some(baseline_case.clone())));
+    }
+    cases
+        .into_iter()
+        .map(|((suite, case_name), (current, baseline))| {
+            let status_comparison = benchmark_status_comparison(
+                current.as_ref().map(|point| point.status.as_str()),
+                baseline.as_ref().and_then(|case| case.status.as_deref()),
+            )
+            .to_string();
+            let duration_delta_ms = benchmark_compare_duration_delta_ms(&current, &baseline);
+            BenchmarkCaseComparison {
+                suite,
+                case_name,
+                current,
+                baseline,
+                status_comparison,
+                duration_delta_ms,
+                duration_comparison: benchmark_compare_duration_comparison(duration_delta_ms)
+                    .to_string(),
+            }
+        })
+        .collect()
+}
+
+fn benchmark_status_comparison(
+    current_status: Option<&str>,
+    baseline_status: Option<&str>,
+) -> &'static str {
+    match (current_status, baseline_status) {
+        (None, None) => "unknown",
+        (None, Some(_)) => "missing_current",
+        (Some(_), None) => "missing_baseline",
+        (Some(current), Some(baseline)) if current == baseline => match current {
+            "passed" => "same_pass",
+            status if benchmark_problem_status(status) => "same_problem",
+            _ => "same",
+        },
+        (Some(current), Some("passed")) if benchmark_problem_status(current) => "regressed",
+        (Some("passed"), Some(baseline)) if benchmark_problem_status(baseline) => "recovered",
+        (Some(_), Some(_)) => "changed",
+    }
+}
+
+fn benchmark_compare_duration_delta_ms(
+    current: &Option<BenchmarkTrendPoint>,
+    baseline: &Option<BenchmarkBaselineCase>,
+) -> Option<i64> {
+    Some(current.as_ref()?.duration_ms? as i64 - baseline.as_ref()?.duration_ms? as i64)
+}
+
+fn benchmark_compare_duration_comparison(delta_ms: Option<i64>) -> &'static str {
+    match delta_ms {
+        Some(delta) if delta < 0 => "faster",
+        Some(delta) if delta > 0 => "slower",
+        Some(_) => "flat",
+        None => "unknown",
+    }
+}
+
 fn benchmark_trend_point(artifact: &BenchmarkArtifact) -> BenchmarkTrendPoint {
     BenchmarkTrendPoint {
         artifact_path: artifact.relative_path.clone(),
@@ -6850,6 +7131,118 @@ fn benchmark_artifact_duration_ms(value: &Value) -> Option<u64> {
     found.then_some(total)
 }
 
+fn format_benchmark_compare_json(
+    workspace: &Path,
+    artifacts: &[BenchmarkArtifact],
+    baseline: &BenchmarkBaselineReport,
+    comparisons: &[BenchmarkCaseComparison],
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.benchmark.compare.v1",
+        "status": benchmark_compare_status(artifacts.len(), baseline, comparisons),
+        "workspace": workspace.display().to_string(),
+        "artifactCount": artifacts.len(),
+        "baseline": benchmark_baseline_report_json(baseline),
+        "comparisonCount": comparisons.len(),
+        "comparisons": comparisons
+            .iter()
+            .map(benchmark_case_comparison_json)
+            .collect::<Vec<_>>(),
+        "nextActions": benchmark_compare_next_actions(baseline.present, artifacts.is_empty()),
+        "report": format_benchmark_compare_text(workspace, artifacts.len(), baseline, comparisons),
+    }))?)
+}
+
+fn benchmark_compare_status(
+    artifact_count: usize,
+    baseline: &BenchmarkBaselineReport,
+    comparisons: &[BenchmarkCaseComparison],
+) -> &'static str {
+    if artifact_count == 0 && comparisons.is_empty() {
+        return "empty";
+    }
+    if !baseline.present {
+        return "needs_baseline";
+    }
+    if comparisons
+        .iter()
+        .any(|case| case.status_comparison == "regressed")
+    {
+        return "regression";
+    }
+    if comparisons.iter().any(|case| {
+        matches!(
+            case.status_comparison.as_str(),
+            "missing_current" | "missing_baseline"
+        )
+    }) {
+        return "incomplete";
+    }
+    "ok"
+}
+
+fn benchmark_baseline_report_json(baseline: &BenchmarkBaselineReport) -> Value {
+    json!({
+        "present": baseline.present,
+        "name": baseline.name,
+        "path": baseline.path,
+        "caseCount": baseline.cases.len(),
+        "cases": baseline
+            .cases
+            .iter()
+            .map(benchmark_baseline_case_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn benchmark_baseline_case_json(case: &BenchmarkBaselineCase) -> Value {
+    json!({
+        "suite": case.suite,
+        "case": case.case_name,
+        "status": case.status,
+        "durationMs": case.duration_ms,
+    })
+}
+
+fn benchmark_case_comparison_json(case: &BenchmarkCaseComparison) -> Value {
+    json!({
+        "suite": case.suite,
+        "case": case.case_name,
+        "current": benchmark_trend_point_json(&case.current),
+        "baseline": case
+            .baseline
+            .as_ref()
+            .map(benchmark_baseline_case_json)
+            .unwrap_or(Value::Null),
+        "statusComparison": case.status_comparison,
+        "durationDeltaMs": case.duration_delta_ms,
+        "durationComparison": case.duration_comparison,
+    })
+}
+
+fn benchmark_compare_next_actions(baseline_present: bool, empty: bool) -> Vec<String> {
+    let mut actions = Vec::new();
+    if !baseline_present {
+        actions.push(
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string(),
+        );
+    }
+    if empty {
+        actions.push("deepcli benchmark presets --json".to_string());
+        actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
+        actions
+            .push("deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string());
+    } else {
+        actions.push("deepcli benchmark summary --json".to_string());
+        actions.push("deepcli benchmark trends --json".to_string());
+        actions.push("deepcli benchmark status --json".to_string());
+        actions.push("deepcli benchmark list --json".to_string());
+    }
+    actions.push("deepcli scorecard --json".to_string());
+    actions
+}
+
 fn format_benchmark_summary_json(
     workspace: &Path,
     artifacts: &[BenchmarkArtifact],
@@ -6869,6 +7262,7 @@ fn format_benchmark_summary_json(
             "deepcli benchmark run --preset cargo-test --json --fail-on-command",
             "deepcli benchmark status --json",
             "deepcli benchmark trends --json",
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
             "deepcli benchmark list --json",
             "deepcli benchmark show latest --json",
             "deepcli benchmark clean --dry-run --json",
@@ -6967,6 +7361,8 @@ fn benchmark_trends_next_actions(empty: bool) -> Vec<String> {
         vec![
             "deepcli benchmark status --json".to_string(),
             "deepcli benchmark summary --json".to_string(),
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string(),
             "deepcli benchmark list --json".to_string(),
             "deepcli benchmark clean --dry-run --json".to_string(),
             "deepcli round --json".to_string(),
@@ -7098,10 +7494,97 @@ fn format_benchmark_summary_text(
     }
     lines.push("next actions:".to_string());
     lines.push("  - deepcli benchmark trends --json".to_string());
+    lines.push(
+        "  - deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+            .to_string(),
+    );
     lines.push("  - deepcli benchmark list --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
     lines.push("  - deepcli scorecard --json".to_string());
+    lines.join("\n")
+}
+
+fn format_benchmark_compare_text(
+    workspace: &Path,
+    artifact_count: usize,
+    baseline: &BenchmarkBaselineReport,
+    comparisons: &[BenchmarkCaseComparison],
+) -> String {
+    let status = benchmark_compare_status(artifact_count, baseline, comparisons);
+    let baseline_name = baseline.name.as_deref().unwrap_or("none");
+    let baseline_path = baseline.path.as_deref().unwrap_or("none");
+    let mut lines = vec![
+        "deepcli benchmark compare".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("status: {status}"),
+        format!("artifacts: {artifact_count}"),
+        format!("baseline: {baseline_name} ({baseline_path})"),
+        format!("comparison count: {}", comparisons.len()),
+    ];
+    if comparisons.is_empty() {
+        lines.push("comparisons: none".to_string());
+        lines.push("next actions:".to_string());
+        lines.extend(
+            benchmark_compare_next_actions(baseline.present, artifact_count == 0)
+                .into_iter()
+                .map(|action| format!("  - {action}")),
+        );
+        return lines.join("\n");
+    }
+
+    lines.push("comparisons:".to_string());
+    for comparison in comparisons {
+        let current_status = comparison
+            .current
+            .as_ref()
+            .map(|point| point.status.as_str())
+            .unwrap_or("none");
+        let baseline_status = comparison
+            .baseline
+            .as_ref()
+            .and_then(|case| case.status.as_deref())
+            .unwrap_or("none");
+        let current_duration = comparison
+            .current
+            .as_ref()
+            .and_then(|point| point.duration_ms)
+            .map(|duration| format!("{duration}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
+        let baseline_duration = comparison
+            .baseline
+            .as_ref()
+            .and_then(|case| case.duration_ms)
+            .map(|duration| format!("{duration}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
+        let duration_delta = comparison
+            .duration_delta_ms
+            .map(|delta| format!("{delta}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
+        lines.push(format!(
+            "  - {}/{}: current={} baseline={} status_comparison={} duration_delta={} duration_comparison={}",
+            comparison.suite,
+            comparison.case_name,
+            current_status,
+            baseline_status,
+            comparison.status_comparison,
+            duration_delta,
+            comparison.duration_comparison
+        ));
+        lines.push(format!(
+            "    current_duration={} baseline_duration={}",
+            current_duration, baseline_duration
+        ));
+        if let Some(current) = &comparison.current {
+            lines.push(format!("    current_artifact={}", current.artifact_path));
+        }
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(
+        benchmark_compare_next_actions(baseline.present, artifact_count == 0)
+            .into_iter()
+            .map(|action| format!("  - {action}")),
+    );
     lines.join("\n")
 }
 
@@ -7212,6 +7695,10 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
         lines.push("  - deepcli benchmark status --json".to_string());
         lines.push("  - deepcli benchmark summary --json".to_string());
         lines.push("  - deepcli benchmark trends --json".to_string());
+        lines.push(
+            "  - deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string(),
+        );
         lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
         lines.push("  - deepcli scorecard --json".to_string());
         return lines.join("\n");
@@ -7247,6 +7734,10 @@ fn format_benchmark_list_text(workspace: &Path, artifacts: &[BenchmarkArtifact])
     lines.push("next actions:".to_string());
     lines.push("  - deepcli benchmark summary --json".to_string());
     lines.push("  - deepcli benchmark trends --json".to_string());
+    lines.push(
+        "  - deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+            .to_string(),
+    );
     lines.push("  - deepcli benchmark status --json".to_string());
     lines.push("  - deepcli benchmark show latest --json".to_string());
     lines.push("  - deepcli benchmark clean --dry-run --json".to_string());
@@ -27673,6 +28164,7 @@ mod tests {
         assert!(bench_help.contains("deepcli.benchmark.status.v1"));
         assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
         assert!(bench_help.contains("deepcli.benchmark.trends.v1"));
+        assert!(bench_help.contains("deepcli.benchmark.compare.v1"));
         assert!(bench_help.contains("deepcli.benchmark.cleanup.v1"));
         assert!(bench_help.contains("/benchmark presets"));
         assert!(bench_help.contains("/benchmark run-suite"));
@@ -27684,6 +28176,7 @@ mod tests {
         assert!(bench_help.contains("non-zero exit"));
         assert!(bench_help.contains("/benchmark summary"));
         assert!(bench_help.contains("/benchmark trends"));
+        assert!(bench_help.contains("/benchmark compare"));
         assert!(bench_help.contains("/benchmark clean"));
         assert!(bench_help.contains("--keep n"));
 
@@ -29621,6 +30114,126 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../summary.json").exists());
+    }
+
+    #[test]
+    fn benchmark_compare_reports_baseline_status_and_duration_delta() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let now = Utc::now();
+
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            now + chrono::Duration::seconds(1),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+            120,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            now + chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "failed",
+            250,
+        );
+        fs::create_dir_all(dir.path().join(".deepcli/baselines")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/baselines/competitor.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": "deepcli.benchmark.baseline.v1",
+                "name": "competitor",
+                "cases": [
+                    {
+                        "suite": "product",
+                        "case": "cargo-test",
+                        "status": "passed",
+                        "durationMs": 150
+                    },
+                    {
+                        "suite": "product",
+                        "case": "preflight-quick",
+                        "status": "passed",
+                        "durationMs": 200
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--json".into(),
+                "--baseline".into(),
+                ".deepcli/baselines/competitor.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.benchmark.compare.v1");
+        assert_eq!(value["baseline"]["name"], "competitor");
+        assert_eq!(value["artifactCount"], 2);
+        assert_eq!(value["comparisonCount"], 2);
+        assert_eq!(value["status"], "regression");
+
+        let comparisons = value["comparisons"].as_array().unwrap();
+        let cargo = comparisons
+            .iter()
+            .find(|case| case["case"] == "cargo-test")
+            .unwrap();
+        assert_eq!(cargo["statusComparison"], "same_pass");
+        assert_eq!(cargo["durationDeltaMs"], -30);
+        assert_eq!(cargo["durationComparison"], "faster");
+
+        let preflight = comparisons
+            .iter()
+            .find(|case| case["case"] == "preflight-quick")
+            .unwrap();
+        assert_eq!(preflight["statusComparison"], "regressed");
+        assert_eq!(preflight["durationDeltaMs"], 50);
+        assert_eq!(preflight["durationComparison"], "slower");
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("benchmark trends --json")));
+
+        let text = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--baseline".into(),
+                ".deepcli/baselines/competitor.json".into(),
+            ],
+        )
+        .unwrap();
+        assert!(text.contains("deepcli benchmark compare"));
+        assert!(text.contains("status_comparison=regressed"));
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--baseline".into(),
+                "../competitor.json".into(),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
     }
 
     #[test]

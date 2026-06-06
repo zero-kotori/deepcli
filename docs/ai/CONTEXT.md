@@ -68,6 +68,11 @@
    - 当唯一剩余缺口属于 `benchmark_evidence:` 时，首个 `nextActions` 是 ``run `/round --json --run-benchmark --fail-on-command` ``，不再先展示 `deepcli quickstart --json`。
    - 目的：让产品评分报告也能直接指向本轮最该执行的修复命令，和 `round` 的失败 gate 优先语义保持一致。
 
+11. benchmark baseline 对比入口
+   - 结果：新增 `deepcli benchmark compare [--baseline path] [--json]`，输出稳定 `deepcli.benchmark.compare.v1`。
+   - 命令只读取 `.deepcli/benchmarks/` artifact 和 workspace 内 baseline JSON，不执行 shell、不调用 Provider、不创建 session；baseline path 走 workspace path 校验并拒绝路径穿越。
+   - 目的：让 benchmark 不只看本地历史趋势，还能和竞品、旧版本或人工维护 baseline 按 suite/case 对比状态和耗时差异，为 SOTA 产品循环提供横向证据。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
@@ -97,6 +102,7 @@ cargo test
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json
 ./scripts/deepcli round --json --run-benchmark --fail-on-command
+./scripts/deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json
 ```
 
 本地 artifact 清洁检查：
