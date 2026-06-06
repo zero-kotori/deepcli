@@ -1324,23 +1324,25 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/fork",
-            listing: "/fork [session_id|--current] [--dry-run|--no-open] [--json] [--output path]",
+            listing: "/fork [session_id|--current] [--dry-run|--no-open] [--verify] [--json] [--output path]",
             summary: "Clone a saved conversation context and optionally open a new terminal resumed into the clone.",
             usage: &[
                 "/fork",
                 "/fork --current",
                 "/fork <session_id>",
                 "/fork --current --dry-run --json",
+                "/fork --current --no-open --verify --json",
                 "/fork --current --no-open",
                 "/fork <session_id> --json --output .deepcli/exports/fork.json",
             ],
             examples: &[
                 "/fork --current",
                 "/fork --current --dry-run --json",
+                "/fork --current --no-open --verify --json",
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy` and `nextActions` so UIs can explain whether the source was idle or running. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -18130,6 +18132,7 @@ struct ForkOptions {
     explicit_session: bool,
     dry_run: bool,
     no_open: bool,
+    verify: bool,
     json_output: bool,
     output_path: Option<String>,
 }
@@ -18141,6 +18144,7 @@ struct ForkReport {
     terminal_opened: bool,
     terminal_error: Option<String>,
     context_copy: ForkContextCopy,
+    verification: Option<ForkVerification>,
     next_actions: Vec<String>,
     report: String,
 }
@@ -18151,6 +18155,42 @@ struct ForkContextCopy {
     running_agent_state: bool,
     complete_for_idle_session: bool,
     warning: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkVerification {
+    status: String,
+    resume_ready: bool,
+    same_workspace: bool,
+    provider_matches: bool,
+    model_matches: bool,
+    message_count: ForkCountCheck,
+    tool_count: ForkCountCheck,
+    test_count: ForkCountCheck,
+    diff_count: ForkCountCheck,
+    backup_count: ForkCountCheck,
+    fork_state: String,
+    resume_command: String,
+    issues: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkCountCheck {
+    source: usize,
+    fork: usize,
+    matches: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForkTerminalOutcome<'a> {
+    opened: bool,
+    error: Option<&'a str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ForkDryRunFlags {
+    would_open: bool,
+    verify_requested: bool,
 }
 
 pub(crate) fn handle_fork(
@@ -18174,7 +18214,10 @@ pub(crate) fn handle_fork(
             &source,
             note.as_deref(),
             &planned_title,
-            !options.no_open,
+            ForkDryRunFlags {
+                would_open: !options.no_open,
+                verify_requested: options.verify,
+            },
             &context_copy,
             &next_actions,
         );
@@ -18183,7 +18226,10 @@ pub(crate) fn handle_fork(
                 workspace,
                 &source,
                 &planned_title,
-                !options.no_open,
+                ForkDryRunFlags {
+                    would_open: !options.no_open,
+                    verify_requested: options.verify,
+                },
                 &context_copy,
                 &next_actions,
                 &report,
@@ -18215,14 +18261,22 @@ pub(crate) fn handle_fork(
         }),
     )?;
     let context_copy = fork_context_copy(&source.metadata.state);
+    let verification = if options.verify {
+        Some(build_fork_verification(&source, &fork)?)
+    } else {
+        None
+    };
     let next_actions = fork_next_actions(&fork_id, &context_copy);
     let report = format_fork_report(
         &source,
         &fork,
         note.as_deref(),
-        terminal_opened,
-        terminal_error.as_deref(),
+        ForkTerminalOutcome {
+            opened: terminal_opened,
+            error: terminal_error.as_deref(),
+        },
         &context_copy,
+        verification.as_ref(),
         &next_actions,
     );
     let fork_report = ForkReport {
@@ -18231,6 +18285,7 @@ pub(crate) fn handle_fork(
         terminal_opened,
         terminal_error,
         context_copy,
+        verification,
         next_actions,
         report,
     };
@@ -18250,6 +18305,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
     let mut explicit_session = false;
     let mut dry_run = false;
     let mut no_open = false;
+    let mut verify = false;
     let mut json_output = false;
     let mut output_path = None;
     let mut index = 0;
@@ -18281,6 +18337,10 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
             }
             "--dry-run" | "--preview" => {
                 dry_run = true;
+                index += 1;
+            }
+            "--verify" => {
+                verify = true;
                 index += 1;
             }
             "--json" => {
@@ -18318,6 +18378,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
         explicit_session,
         dry_run,
         no_open,
+        verify,
         json_output,
         output_path,
     })
@@ -18410,6 +18471,80 @@ fn fork_context_copy(source_state: &SessionState) -> ForkContextCopy {
     }
 }
 
+fn build_fork_verification(source: &Session, fork: &Session) -> Result<ForkVerification> {
+    let message_count =
+        fork_count_check(source.load_messages()?.len(), fork.load_messages()?.len());
+    let tool_count = fork_count_check(
+        source.load_tool_calls()?.len(),
+        fork.load_tool_calls()?.len(),
+    );
+    let test_count = fork_count_check(source.load_test_runs()?.len(), fork.load_test_runs()?.len());
+    let diff_count = fork_count_check(source.load_diffs()?.len(), fork.load_diffs()?.len());
+    let backup_count = fork_count_check(source.load_backups()?.len(), fork.load_backups()?.len());
+    let same_workspace = source.metadata.workspace == fork.metadata.workspace;
+    let provider_matches = source.metadata.provider == fork.metadata.provider;
+    let model_matches = source.metadata.model == fork.metadata.model;
+    let fork_state = session_state_name(&fork.metadata.state);
+    let resume_ready =
+        fork.path().exists() && matches!(fork.metadata.state, SessionState::WaitingUser);
+    let mut issues = Vec::new();
+    if !resume_ready {
+        issues.push("fork session is not ready to resume".to_string());
+    }
+    if !same_workspace {
+        issues.push("fork workspace differs from source workspace".to_string());
+    }
+    if !provider_matches {
+        issues.push("fork provider differs from source provider".to_string());
+    }
+    if !model_matches {
+        issues.push("fork model differs from source model".to_string());
+    }
+    for (label, check) in [
+        ("message", &message_count),
+        ("tool", &tool_count),
+        ("test", &test_count),
+        ("diff", &diff_count),
+        ("backup", &backup_count),
+    ] {
+        if !check.matches {
+            issues.push(format!(
+                "{label} count differs: source={} fork={}",
+                check.source, check.fork
+            ));
+        }
+    }
+    let status = if issues.is_empty() {
+        "ok"
+    } else {
+        "needs_attention"
+    }
+    .to_string();
+    Ok(ForkVerification {
+        status,
+        resume_ready,
+        same_workspace,
+        provider_matches,
+        model_matches,
+        message_count,
+        tool_count,
+        test_count,
+        diff_count,
+        backup_count,
+        fork_state,
+        resume_command: format!("deepcli resume {}", fork.id()),
+        issues,
+    })
+}
+
+fn fork_count_check(source: usize, fork: usize) -> ForkCountCheck {
+    ForkCountCheck {
+        source,
+        fork,
+        matches: source == fork,
+    }
+}
+
 fn session_state_name(state: &SessionState) -> String {
     serde_json::to_value(state)
         .ok()
@@ -18482,9 +18617,9 @@ fn format_fork_report(
     source: &Session,
     fork: &Session,
     note: Option<&str>,
-    terminal_opened: bool,
-    terminal_error: Option<&str>,
+    terminal: ForkTerminalOutcome<'_>,
     context_copy: &ForkContextCopy,
+    verification: Option<&ForkVerification>,
     next_actions: &[String],
 ) -> String {
     let mut lines = vec![
@@ -18505,9 +18640,9 @@ fn format_fork_report(
     if let Some(note) = note {
         lines.push(format!("note: {note}"));
     }
-    if terminal_opened {
+    if terminal.opened {
         lines.push("opened new Terminal with the forked conversation".to_string());
-    } else if let Some(error) = terminal_error {
+    } else if let Some(error) = terminal.error {
         lines.push(format!(
             "terminal not opened: {}; run `deepcli resume {}` manually",
             redact_sensitive_text(error),
@@ -18520,6 +18655,26 @@ fn format_fork_report(
         "running-agent task is not hot-forked; this clone contains persisted session files only"
             .to_string(),
     );
+    if let Some(verification) = verification {
+        lines.push(format!("verification: {}", verification.status));
+        lines.push(format!("  resume ready: {}", verification.resume_ready));
+        lines.push(format!(
+            "  copied records: messages={}/{} tools={}/{} tests={}/{} diffs={}/{} backups={}/{}",
+            verification.message_count.fork,
+            verification.message_count.source,
+            verification.tool_count.fork,
+            verification.tool_count.source,
+            verification.test_count.fork,
+            verification.test_count.source,
+            verification.diff_count.fork,
+            verification.diff_count.source,
+            verification.backup_count.fork,
+            verification.backup_count.source
+        ));
+        for issue in &verification.issues {
+            lines.push(format!("  issue: {}", redact_sensitive_text(issue)));
+        }
+    }
     lines.push("next actions:".to_string());
     for action in next_actions {
         lines.push(format!("  - {action}"));
@@ -18531,7 +18686,7 @@ fn format_fork_dry_run_report(
     source: &Session,
     note: Option<&str>,
     planned_title: &str,
-    would_open: bool,
+    flags: ForkDryRunFlags,
     context_copy: &ForkContextCopy,
     next_actions: &[String],
 ) -> String {
@@ -18544,7 +18699,7 @@ fn format_fork_dry_run_report(
         format!("source state: {}", context_copy.source_state),
         "context copy: persisted session files only".to_string(),
         format!("planned title: {planned_title}"),
-        format!("would open terminal: {would_open}"),
+        format!("would open terminal: {}", flags.would_open),
         "fork not created; rerun without --dry-run to create it".to_string(),
     ];
     if let Some(warning) = &context_copy.warning {
@@ -18557,6 +18712,11 @@ fn format_fork_dry_run_report(
         "running-agent task is not hot-forked; the preview covers persisted session files only"
             .to_string(),
     );
+    if flags.verify_requested {
+        lines.push(
+            "verification: not run during dry-run because no fork session is created".to_string(),
+        );
+    }
     lines.push("next actions:".to_string());
     for action in next_actions {
         lines.push(format!("  - {action}"));
@@ -18585,6 +18745,7 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
             "completeForIdleSession": report.context_copy.complete_for_idle_session,
             "warning": report.context_copy.warning.as_deref().map(redact_sensitive_text),
         },
+        "verification": report.verification.as_ref().map(fork_verification_json),
         "nextActions": report.next_actions,
         "limitations": [
             "forking a currently running agent task copies persisted session files only; the in-memory task is not hot-forked"
@@ -18597,7 +18758,7 @@ fn format_fork_dry_run_json(
     workspace: &Path,
     source: &Session,
     planned_title: &str,
-    would_open: bool,
+    flags: ForkDryRunFlags,
     context_copy: &ForkContextCopy,
     next_actions: &[String],
     report: &str,
@@ -18619,7 +18780,7 @@ fn format_fork_dry_run_json(
             "opened": false,
             "error": Value::Null,
             "resumeCommand": Value::Null,
-            "wouldOpen": would_open,
+            "wouldOpen": flags.would_open,
         },
         "contextCopy": {
             "mode": "persisted_session_files",
@@ -18629,6 +18790,15 @@ fn format_fork_dry_run_json(
             "completeForIdleSession": context_copy.complete_for_idle_session,
             "warning": context_copy.warning.as_deref().map(redact_sensitive_text),
         },
+        "verification": if flags.verify_requested {
+            json!({
+                "status": "dry_run",
+                "resumeReady": false,
+                "reason": "dry-run does not create a fork session, so resume health is not checked",
+            })
+        } else {
+            Value::Null
+        },
         "nextActions": next_actions,
         "limitations": [
             "dry-run does not create a fork session or copy files",
@@ -18636,6 +18806,36 @@ fn format_fork_dry_run_json(
         ],
         "report": report,
     }))?)
+}
+
+fn fork_verification_json(verification: &ForkVerification) -> Value {
+    json!({
+        "status": verification.status,
+        "resumeReady": verification.resume_ready,
+        "sameWorkspace": verification.same_workspace,
+        "providerMatches": verification.provider_matches,
+        "modelMatches": verification.model_matches,
+        "messageCount": fork_count_check_json(&verification.message_count),
+        "toolCount": fork_count_check_json(&verification.tool_count),
+        "testCount": fork_count_check_json(&verification.test_count),
+        "diffCount": fork_count_check_json(&verification.diff_count),
+        "backupCount": fork_count_check_json(&verification.backup_count),
+        "forkState": verification.fork_state,
+        "resumeCommand": verification.resume_command,
+        "issues": verification
+            .issues
+            .iter()
+            .map(|issue| redact_sensitive_text(issue))
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn fork_count_check_json(check: &ForkCountCheck) -> Value {
+    json!({
+        "source": check.source,
+        "fork": check.fork,
+        "matches": check.matches,
+    })
 }
 
 pub(crate) fn handle_session(
@@ -28278,9 +28478,13 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/fork --current --dry-run").unwrap(),
+            CommandRouter::parse("/fork --current --dry-run --verify").unwrap(),
             Some(SlashCommand::Fork {
-                args: vec!["--current".to_string(), "--dry-run".to_string()]
+                args: vec![
+                    "--current".to_string(),
+                    "--dry-run".to_string(),
+                    "--verify".to_string()
+                ]
             })
         );
         assert_eq!(
@@ -28817,6 +29021,70 @@ mod tests {
     }
 
     #[test]
+    fn fork_verify_json_reports_resume_health_for_created_clone() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        session.rename("debug long context").unwrap();
+        session.append_message("user", "hello").unwrap();
+        session.append_message("assistant", "world").unwrap();
+        session
+            .append_tool_call(&ToolCallRecord {
+                tool: "read_file".to_string(),
+                input: json!({"path": "src/main.rs"}),
+                output: json!({"path": "src/main.rs"}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        session.set_state(SessionState::WaitingUser).unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--no-open".to_string(),
+                "--verify".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.session.fork.v1");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["dryRun"], false);
+        assert_eq!(value["verification"]["status"], "ok");
+        assert_eq!(value["verification"]["resumeReady"], true);
+        assert_eq!(value["verification"]["sameWorkspace"], true);
+        assert_eq!(value["verification"]["providerMatches"], true);
+        assert_eq!(value["verification"]["modelMatches"], true);
+        assert_eq!(value["verification"]["messageCount"]["source"], 2);
+        assert_eq!(value["verification"]["messageCount"]["fork"], 2);
+        assert_eq!(value["verification"]["messageCount"]["matches"], true);
+        assert_eq!(value["verification"]["toolCount"]["source"], 1);
+        assert_eq!(value["verification"]["toolCount"]["fork"], 1);
+        assert_eq!(value["verification"]["toolCount"]["matches"], true);
+        assert_eq!(value["verification"]["forkState"], "waiting_user");
+        assert!(value["verification"]["resumeCommand"]
+            .as_str()
+            .unwrap()
+            .starts_with("deepcli resume "));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("verification: ok"));
+    }
+
+    #[test]
     fn fork_report_warns_when_source_session_is_running() {
         let dir = tempdir().unwrap();
         let store = SessionStore::new(dir.path());
@@ -29298,8 +29566,10 @@ mod tests {
         let fork_help = CommandRouter::help_for(&["fork".to_string()]).unwrap();
         assert!(fork_help.contains("/fork --current"));
         assert!(fork_help.contains("/fork --current --dry-run --json"));
+        assert!(fork_help.contains("/fork --current --no-open --verify --json"));
         assert!(fork_help.contains("/fork <session_id>"));
         assert!(fork_help.contains("deepcli resume <new_id>"));
+        assert!(fork_help.contains("verification"));
         assert!(fork_help.contains("without creating a session"));
         assert!(fork_help.contains("skip Terminal launch"));
         assert!(fork_help.contains("running-safe: yes"));
