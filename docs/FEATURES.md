@@ -31,7 +31,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli fork [session_id|--current]`：复制已持久化会话上下文，并可打开新终端恢复到副本。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard、benchmark status 和最近 goal readiness，输出本轮产品迭代状态、去重后的门禁和下一步动作。
-- `deepcli benchmark presets|run-suite|run|record|status|gate|summary|trends|compare|list|show|clean [--json]`：发现推荐 workload、一键执行推荐基准套件、执行单项 preset、记录、评估证据质量、门禁、汇总、趋势分析、baseline 对比、列出、查看和清理本地 benchmark 证据 artifact。
+- `deepcli benchmark presets|run-suite|run|record|status|gate|summary|trends|baseline-template|compare|list|show|clean [--json]`：发现推荐 workload、一键执行推荐基准套件、执行单项 preset、记录、评估证据质量、门禁、汇总、趋势分析、baseline 模板、baseline 对比、列出、查看和清理本地 benchmark 证据 artifact。
 
 启动 wrapper 会自动补充当前工作目录、配置路径和 yes 授权默认值，同时保留显式参数。
 
@@ -143,6 +143,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli benchmark run-suite --json --fail-on-command`
 - `deepcli benchmark summary --json`
 - `deepcli benchmark trends --json`
+- `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`
 - `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`
 - `deepcli benchmark clean --dry-run --json`
 - `deepcli test discover --json`
@@ -161,7 +162,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `recipes` / `playbook` 是任务型工作流目录，按 start、code、debug、release、support、environment、shell 等主题输出可复制命令和稳定 `deepcli.recipes.v1` JSON，适合 TUI、外部 UI 或团队脚本引导用户选择下一步；该命令本地只读，不创建 session、不调用 Provider。
 
-`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`scorecard.nextActions` 先列出当前 gaps 的直接修复动作，再保留通用探索命令；当只缺 benchmark evidence 时，首项直接指向 `/round --json --run-benchmark --fail-on-command` 修复动作。`round` 默认输出稳定 `deepcli.round.v1`，把 scorecard、benchmark status 和最近 goal readiness 聚合成本轮产品迭代报告，包含 ready 状态、门禁、gaps 和下一步命令；`scorecard` gate 只检查分数阈值是否达标，benchmark evidence 和 goal readiness 由专属 gate 呈现，其它未满足项继续留在 gaps 列表中，避免同一问题在多个 gate 中重复失败；benchmark gate 会列出缺失、weak、stale、失败或超时的 required preset，让用户在同一份 round 报告里直接看到证据缺口。`round.nextActions` 按失败 gate 的修复路径排序；当 scorecard 已达标且剩余 gaps 全部属于 benchmark evidence 时，首个动作是 `deepcli round --json --run-benchmark --fail-on-command`，并省略重复的 `deepcli scorecard --json`。存在未 ready 的 goal 时会输出 `goalStatus` 摘要、`goal_readiness` gate 和 `deepcli goal gate --json` 下一步动作，没有 goal 时保持只读报告且不创建 session。显式加 `--run-benchmark` 或 `--run-suite` 时会先执行 benchmark suite，再在同一份 round JSON 中写入 `benchmarkRun` 和更新后的 `benchmarkStatus`；`--fail-on-command` 适合阻断 benchmark 命令失败，`--fail-on-gaps` 适合在持续产品循环或 CI 中要求本轮 evidence、产品分数和 goal readiness 都 ready。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `presets/run-suite/run/record/status/gate/summary/trends/compare/list/show/clean`：`presets` 列出 cargo-test、preflight-quick、selftest、scorecard 和 smoke 等推荐 workload，`run-suite` 默认连续执行 cargo-test、preflight-quick、selftest 和 scorecard，并输出稳定 `deepcli.benchmark.suite.v1` 汇总报告，也可重复传入 `--preset` 只跑指定子集，`run --preset <name>` 显式执行对应本地命令、采集 exit code、耗时和输出摘要并写入 `.deepcli/benchmarks/*.json`，`record` 只记录声明证据，`status` 输出稳定 `deepcli.benchmark.status.v1` 并把证据判定为 missing、weak、incomplete、failing、stale 或 ready，同时展示 required preset 覆盖细节，避免单项通过被误判为完整 suite 证据，`gate` 在 status 不是 ready 时返回非零，`summary` 聚合历史 artifact 的通过率、失败数、耗时范围和最新 artifact，`trends` 输出稳定 `deepcli.benchmark.trends.v1`，按 suite/case 展示最近状态回归、恢复和耗时变化，`compare` 输出稳定 `deepcli.benchmark.compare.v1`，只读取本地 artifact 和 workspace 内 baseline JSON，按 suite/case 展示状态对比、缺失项和耗时差异，`list/show` 用于本地验收和持续产品循环，`clean` 输出稳定 `deepcli.benchmark.cleanup.v1`，默认 dry-run 预览旧 artifact，只有显式 `--force` 才删除。
+`scorecard` 是产品能力评分和 SOTA 差距入口，按命令发现、Agent 工作流、会话续跑、验收交付、安全隐私、Provider/模型、支持诊断和 benchmark 证据给出 0-100 分、tier、gaps、next actions 和稳定 `deepcli.scorecard.v1` JSON；`--fail-below` 可作为本地产品门禁，命令不创建 session、不调用 Provider。`scorecard.nextActions` 先列出当前 gaps 的直接修复动作，再保留通用探索命令；当只缺 benchmark evidence 时，首项直接指向 `/round --json --run-benchmark --fail-on-command` 修复动作。`round` 默认输出稳定 `deepcli.round.v1`，把 scorecard、benchmark status 和最近 goal readiness 聚合成本轮产品迭代报告，包含 ready 状态、门禁、gaps 和下一步命令；`scorecard` gate 只检查分数阈值是否达标，benchmark evidence 和 goal readiness 由专属 gate 呈现，其它未满足项继续留在 gaps 列表中，避免同一问题在多个 gate 中重复失败；benchmark gate 会列出缺失、weak、stale、失败或超时的 required preset，让用户在同一份 round 报告里直接看到证据缺口。`round.nextActions` 按失败 gate 的修复路径排序；当 scorecard 已达标且剩余 gaps 全部属于 benchmark evidence 时，首个动作是 `deepcli round --json --run-benchmark --fail-on-command`，并省略重复的 `deepcli scorecard --json`。存在未 ready 的 goal 时会输出 `goalStatus` 摘要、`goal_readiness` gate 和 `deepcli goal gate --json` 下一步动作，没有 goal 时保持只读报告且不创建 session。显式加 `--run-benchmark` 或 `--run-suite` 时会先执行 benchmark suite，再在同一份 round JSON 中写入 `benchmarkRun` 和更新后的 `benchmarkStatus`；`--fail-on-command` 适合阻断 benchmark 命令失败，`--fail-on-gaps` 适合在持续产品循环或 CI 中要求本轮 evidence、产品分数和 goal readiness 都 ready。`benchmark` 保留无子命令和 scorecard flags 的兼容行为，并增加 `presets/run-suite/run/record/status/gate/summary/trends/baseline-template/compare/list/show/clean`：`presets` 列出 cargo-test、preflight-quick、selftest、scorecard 和 smoke 等推荐 workload，`run-suite` 默认连续执行 cargo-test、preflight-quick、selftest 和 scorecard，并输出稳定 `deepcli.benchmark.suite.v1` 汇总报告，也可重复传入 `--preset` 只跑指定子集，`run --preset <name>` 显式执行对应本地命令、采集 exit code、耗时和输出摘要并写入 `.deepcli/benchmarks/*.json`，`record` 只记录声明证据，`status` 输出稳定 `deepcli.benchmark.status.v1` 并把证据判定为 missing、weak、incomplete、failing、stale 或 ready，同时展示 required preset 覆盖细节，避免单项通过被误判为完整 suite 证据，`gate` 在 status 不是 ready 时返回非零，`summary` 聚合历史 artifact 的通过率、失败数、耗时范围和最新 artifact，`trends` 输出稳定 `deepcli.benchmark.trends.v1`，按 suite/case 展示最近状态回归、恢复和耗时变化，`baseline-template` 输出可编辑的 `deepcli.benchmark.baseline.v1` JSON 并可写入 workspace 内 baseline 文件，`compare` 输出稳定 `deepcli.benchmark.compare.v1`，只读取本地 artifact 和 workspace 内 baseline JSON，按 suite/case 展示状态对比、缺失项和耗时差异，`list/show` 用于本地验收和持续产品循环，`clean` 输出稳定 `deepcli.benchmark.cleanup.v1`，默认 dry-run 预览旧 artifact，只有显式 `--force` 才删除。
 
 ## 诊断、日志与支持包
 
@@ -225,6 +226,7 @@ git diff --check
 ./scripts/deepcli benchmark run-suite --json --fail-on-command
 ./scripts/deepcli benchmark summary --json
 ./scripts/deepcli benchmark trends --json
+./scripts/deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json
 ./scripts/deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json
 ./scripts/deepcli benchmark clean --dry-run --json
 ./scripts/deepcli preflight --json

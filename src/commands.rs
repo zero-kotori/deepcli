@@ -750,7 +750,7 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/benchmark",
-            listing: "/benchmark [presets|run-suite|run|record|status|gate|summary|trends|compare|list|show|clean|scorecard] [--json] [--output path]",
+            listing: "/benchmark [presets|run-suite|run|record|status|gate|summary|trends|baseline-template|compare|list|show|clean|scorecard] [--json] [--output path]",
             summary: "Run, record, assess, summarize, and inspect local benchmark evidence artifacts.",
             usage: &[
                 "/benchmark",
@@ -766,6 +766,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark gate [--json] [--output path]",
                 "/benchmark summary [--json] [--limit n]",
                 "/benchmark trends [--json] [--limit n]",
+                "/benchmark baseline-template [--name name] [--json] [--output path]",
                 "/benchmark compare [--baseline path] [--json]",
                 "/benchmark list [--json] [--limit n]",
                 "/benchmark show [latest|artifact-name] [--json]",
@@ -781,6 +782,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark gate --json",
                 "/benchmark summary --json",
                 "/benchmark trends --json",
+                "/benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
                 "/benchmark compare --baseline .deepcli/baselines/competitor.json --json",
                 "/benchmark record --json --suite product --case scorecard",
                 "/benchmark list --json",
@@ -789,7 +791,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `baseline-template` emits a compare-ready `deepcli.benchmark.baseline.v1` JSON template and writes it to a workspace-contained path when `--output` is supplied; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
         },
         CommandHelp {
             name: "/round",
@@ -3889,6 +3891,23 @@ struct BenchmarkCompareOptions {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BenchmarkBaselineTemplateOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    name: String,
+}
+
+impl Default for BenchmarkBaselineTemplateOptions {
+    fn default() -> Self {
+        Self {
+            json_output: false,
+            output_path: None,
+            name: "competitor".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct BenchmarkCleanupOptions {
     json_output: bool,
@@ -4086,6 +4105,9 @@ fn handle_benchmark(
         }
         "summary" | "summarize" | "report" => handle_benchmark_summary(workspace, rest),
         "trend" | "trends" | "history" => handle_benchmark_trends(workspace, rest),
+        "baseline-template" | "template" | "baseline-init" => {
+            handle_benchmark_baseline_template(workspace, rest)
+        }
         "compare" | "comparison" | "baseline" => handle_benchmark_compare(workspace, rest),
         "list" | "ls" => handle_benchmark_list(workspace, rest),
         "show" | "view" => handle_benchmark_show(workspace, rest),
@@ -4096,7 +4118,7 @@ fn handle_benchmark(
             handle_benchmark_show(workspace, &show_args)
         }
         value => bail!(
-            "unknown /benchmark subcommand `{value}`; expected presets, run-suite, run, record, status, gate, summary, trends, compare, list, show, clean, or scorecard"
+            "unknown /benchmark subcommand `{value}`; expected presets, run-suite, run, record, status, gate, summary, trends, baseline-template, compare, list, show, clean, or scorecard"
         ),
     }
 }
@@ -6167,6 +6189,67 @@ fn set_benchmark_baseline_path(target: &mut Option<String>, raw: &str) -> Result
     Ok(())
 }
 
+fn handle_benchmark_baseline_template(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_benchmark_baseline_template_options(args)?;
+    let template = benchmark_baseline_template_value(&options.name);
+    let template_json = serde_json::to_string_pretty(&template)?;
+    let output = if options.json_output {
+        template_json.clone()
+    } else {
+        format_benchmark_baseline_template_text(workspace, &options, &template_json)
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &template_json)?;
+    }
+    Ok(output)
+}
+
+fn parse_benchmark_baseline_template_options(
+    args: &[String],
+) -> Result<BenchmarkBaselineTemplateOptions> {
+    let mut options = BenchmarkBaselineTemplateOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--name" => {
+                options.name =
+                    parse_benchmark_baseline_name(required_arg(args, index + 1, "baseline name")?)?;
+                index += 2;
+            }
+            value if value.starts_with("--name=") => {
+                options.name = parse_benchmark_baseline_name(value.trim_start_matches("--name="))?;
+                index += 1;
+            }
+            value => bail!("unsupported /benchmark baseline-template option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn parse_benchmark_baseline_name(raw: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        bail!("baseline name must not be empty");
+    }
+    Ok(redact_sensitive_text(trimmed))
+}
+
 fn parse_benchmark_list_options(args: &[String]) -> Result<BenchmarkListOptions> {
     let mut options = BenchmarkListOptions::default();
     let mut index = 0;
@@ -6890,6 +6973,63 @@ fn build_benchmark_case_trends(
         .collect()
 }
 
+fn benchmark_baseline_template_value(name: &str) -> Value {
+    let cases = MEANINGFUL_BENCHMARK_PRESETS
+        .iter()
+        .filter_map(|preset_name| benchmark_preset_by_name(preset_name).ok())
+        .map(|preset| {
+            json!({
+                "suite": preset.suite,
+                "case": preset.case_name,
+                "preset": preset.name,
+                "command": preset.command,
+                "status": Value::Null,
+                "durationMs": Value::Null,
+                "notes": "fill status with passed, failed, timeout, or recorded; fill durationMs when known",
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "schema": "deepcli.benchmark.baseline.v1",
+        "name": name,
+        "cases": cases,
+    })
+}
+
+fn format_benchmark_baseline_template_text(
+    workspace: &Path,
+    options: &BenchmarkBaselineTemplateOptions,
+    template_json: &str,
+) -> String {
+    let default_target_path = format!(
+        ".deepcli/baselines/{}.json",
+        benchmark_slug(&options.name, "competitor")
+    );
+    let target_path = options
+        .output_path
+        .as_deref()
+        .unwrap_or(default_target_path.as_str());
+    let mut lines = vec![
+        "deepcli benchmark baseline-template".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("name: {}", options.name),
+        format!("case count: {}", MEANINGFUL_BENCHMARK_PRESETS.len()),
+    ];
+    if let Some(output_path) = &options.output_path {
+        lines.push(format!("wrote baseline template: {output_path}"));
+    }
+    lines.push("template:".to_string());
+    lines.push(template_json.to_string());
+    lines.push("next actions:".to_string());
+    lines.push(format!(
+        "  - edit status and durationMs values in {target_path}"
+    ));
+    lines.push(format!(
+        "  - deepcli benchmark compare --baseline {target_path} --json"
+    ));
+    lines.join("\n")
+}
+
 fn load_benchmark_baseline(
     workspace: &Path,
     raw_path: Option<&str>,
@@ -6985,11 +7125,15 @@ fn build_benchmark_comparisons(
     cases
         .into_iter()
         .map(|((suite, case_name), (current, baseline))| {
-            let status_comparison = benchmark_status_comparison(
-                current.as_ref().map(|point| point.status.as_str()),
-                baseline.as_ref().and_then(|case| case.status.as_deref()),
-            )
-            .to_string();
+            let status_comparison = if baseline.as_ref().is_some_and(|case| case.status.is_none()) {
+                "missing_baseline_status".to_string()
+            } else {
+                benchmark_status_comparison(
+                    current.as_ref().map(|point| point.status.as_str()),
+                    baseline.as_ref().and_then(|case| case.status.as_deref()),
+                )
+                .to_string()
+            };
             let duration_delta_ms = benchmark_compare_duration_delta_ms(&current, &baseline);
             BenchmarkCaseComparison {
                 suite,
@@ -7173,7 +7317,7 @@ fn benchmark_compare_status(
     if comparisons.iter().any(|case| {
         matches!(
             case.status_comparison.as_str(),
-            "missing_current" | "missing_baseline"
+            "missing_current" | "missing_baseline" | "missing_baseline_status"
         )
     }) {
         return "incomplete";
@@ -7223,6 +7367,10 @@ fn benchmark_case_comparison_json(case: &BenchmarkCaseComparison) -> Value {
 fn benchmark_compare_next_actions(baseline_present: bool, empty: bool) -> Vec<String> {
     let mut actions = Vec::new();
     if !baseline_present {
+        actions.push(
+            "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+                .to_string(),
+        );
         actions.push(
             "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
                 .to_string(),
@@ -28164,6 +28312,7 @@ mod tests {
         assert!(bench_help.contains("deepcli.benchmark.status.v1"));
         assert!(bench_help.contains("deepcli.benchmark.summary.v1"));
         assert!(bench_help.contains("deepcli.benchmark.trends.v1"));
+        assert!(bench_help.contains("deepcli.benchmark.baseline.v1"));
         assert!(bench_help.contains("deepcli.benchmark.compare.v1"));
         assert!(bench_help.contains("deepcli.benchmark.cleanup.v1"));
         assert!(bench_help.contains("/benchmark presets"));
@@ -28176,6 +28325,7 @@ mod tests {
         assert!(bench_help.contains("non-zero exit"));
         assert!(bench_help.contains("/benchmark summary"));
         assert!(bench_help.contains("/benchmark trends"));
+        assert!(bench_help.contains("/benchmark baseline-template"));
         assert!(bench_help.contains("/benchmark compare"));
         assert!(bench_help.contains("/benchmark clean"));
         assert!(bench_help.contains("--keep n"));
@@ -30229,6 +30379,98 @@ mod tests {
                 "compare".into(),
                 "--baseline".into(),
                 "../competitor.json".into(),
+            ],
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(traversal.contains("path traversal is not allowed"));
+    }
+
+    #[test]
+    fn benchmark_baseline_template_writes_compare_ready_json() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "baseline-template".into(),
+                "--json".into(),
+                "--name".into(),
+                "deepcli-main".into(),
+                "--output".into(),
+                ".deepcli/baselines/deepcli-main.json".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.benchmark.baseline.v1");
+        assert_eq!(value["name"], "deepcli-main");
+
+        let cases = value["cases"].as_array().unwrap();
+        assert!(cases.iter().any(|case| {
+            case["preset"] == "cargo-test"
+                && case["suite"] == "product"
+                && case["case"] == "cargo-test"
+                && case["command"] == "cargo test"
+                && case["status"].is_null()
+                && case["durationMs"].is_null()
+        }));
+        assert!(cases.iter().any(|case| case["preset"] == "preflight-quick"));
+        assert!(cases.iter().any(|case| case["preset"] == "selftest"));
+        assert!(cases.iter().any(|case| case["preset"] == "scorecard"));
+
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/baselines/deepcli-main.json")).unwrap();
+        let written_value: Value = serde_json::from_str(&written).unwrap();
+        assert_eq!(written_value, value);
+
+        let compare = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--json".into(),
+                "--baseline".into(),
+                ".deepcli/baselines/deepcli-main.json".into(),
+            ],
+        )
+        .unwrap();
+        let compare_value: Value = serde_json::from_str(&compare).unwrap();
+        assert_eq!(compare_value["baseline"]["name"], "deepcli-main");
+        assert_eq!(compare_value["comparisonCount"], 4);
+        assert_eq!(compare_value["status"], "incomplete");
+
+        let no_baseline = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["compare".into(), "--json".into()],
+        )
+        .unwrap();
+        let no_baseline_value: Value = serde_json::from_str(&no_baseline).unwrap();
+        assert!(no_baseline_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("benchmark baseline-template --output")));
+
+        let traversal = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "baseline-template".into(),
+                "--json".into(),
+                "--output".into(),
+                "../baseline.json".into(),
             ],
         )
         .unwrap_err()
