@@ -813,7 +813,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
         },
         CommandHelp {
             name: "/selftest",
@@ -3419,10 +3419,7 @@ fn build_round_report(
             id: "benchmark_evidence",
             title: "Benchmark Evidence",
             status: if benchmark_ready { "passed" } else { "failed" },
-            summary: format!(
-                "benchmark status is {} with {} artifact(s)",
-                benchmark.status, benchmark.artifact_count
-            ),
+            summary: round_benchmark_gate_summary(&benchmark),
             next_action: if benchmark_ready {
                 Some("deepcli benchmark summary --json".to_string())
             } else {
@@ -3510,6 +3507,46 @@ fn build_round_report(
         gaps,
         next_actions,
     }
+}
+
+fn round_benchmark_gate_summary(benchmark: &BenchmarkStatusReport) -> String {
+    let mut parts = vec![format!(
+        "benchmark status is {} with {} artifact(s)",
+        benchmark.status, benchmark.artifact_count
+    )];
+    for (status, label) in [
+        ("missing", "missing presets"),
+        ("failed", "failed presets"),
+        ("timeout", "timeout presets"),
+        ("stale", "stale presets"),
+        ("weak", "weak presets"),
+    ] {
+        let presets = benchmark
+            .required_preset_statuses
+            .iter()
+            .filter(|preset| preset.status == status)
+            .map(|preset| preset.preset.as_str())
+            .collect::<Vec<_>>();
+        if !presets.is_empty() {
+            parts.push(format!(
+                "{label}: {}",
+                format_round_benchmark_preset_names(&presets, 4)
+            ));
+        }
+    }
+    parts.join("; ")
+}
+
+fn format_round_benchmark_preset_names(names: &[&str], limit: usize) -> String {
+    let shown = names.iter().take(limit).copied().collect::<Vec<_>>();
+    let mut text = shown.join(", ");
+    if names.len() > limit {
+        if !text.is_empty() {
+            text.push_str(", ");
+        }
+        text.push_str(&format!("+{} more", names.len() - limit));
+    }
+    text
 }
 
 fn build_round_goal_status(workspace: &Path) -> Option<RoundGoalStatus> {
@@ -28384,6 +28421,13 @@ mod tests {
             .unwrap()
             .iter()
             .any(|gate| gate["id"] == "benchmark_evidence" && gate["status"] == "failed"));
+        assert!(value["gates"].as_array().unwrap().iter().any(|gate| {
+            gate["id"] == "benchmark_evidence"
+                && gate["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("missing presets: cargo-test")
+        }));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
