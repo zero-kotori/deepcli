@@ -813,7 +813,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
         },
         CommandHelp {
             name: "/selftest",
@@ -3351,7 +3351,7 @@ fn build_round_report(
     let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
     let benchmark = build_benchmark_status_report(workspace, &benchmark_artifacts, Utc::now());
     let goal = build_round_goal_status(workspace);
-    let scorecard_ready = scorecard.status == "ok" && scorecard.percent >= score_threshold;
+    let scorecard_threshold_ready = scorecard.percent >= score_threshold;
     let benchmark_ready = benchmark.status == "ready";
     let goal_ready = goal.as_ref().is_none_or(|goal| goal.ready);
 
@@ -3382,12 +3382,25 @@ fn build_round_report(
         RoundGate {
             id: "scorecard",
             title: "Product Capability Scorecard",
-            status: if scorecard_ready { "passed" } else { "failed" },
-            summary: if scorecard_ready {
-                format!(
-                    "scorecard is {}% with no gaps against the {}% round threshold",
-                    scorecard.percent, score_threshold
-                )
+            status: if scorecard_threshold_ready {
+                "passed"
+            } else {
+                "failed"
+            },
+            summary: if scorecard_threshold_ready {
+                if scorecard.gaps.is_empty() {
+                    format!(
+                        "scorecard is {}% and meets the {}% round threshold with no gaps",
+                        scorecard.percent, score_threshold
+                    )
+                } else {
+                    format!(
+                        "scorecard is {}% and meets the {}% round threshold; {} gap(s) are reported separately",
+                        scorecard.percent,
+                        score_threshold,
+                        scorecard.gaps.len()
+                    )
+                }
             } else {
                 format!(
                     "scorecard is {}% with {} gap(s); threshold is {}%",
@@ -3396,7 +3409,7 @@ fn build_round_report(
                     score_threshold
                 )
             },
-            next_action: if scorecard_ready {
+            next_action: if scorecard_threshold_ready {
                 None
             } else {
                 Some("deepcli scorecard --json".to_string())
@@ -3442,14 +3455,14 @@ fn build_round_report(
         });
     }
 
-    let status = if scorecard_ready && benchmark_ready && goal_ready && gaps.is_empty() {
+    let status = if scorecard_threshold_ready && benchmark_ready && goal_ready && gaps.is_empty() {
         "ready"
     } else {
         "needs_attention"
     };
 
     let mut next_actions = Vec::new();
-    if !scorecard_ready {
+    if !scorecard_threshold_ready || !scorecard.gaps.is_empty() {
         next_actions.push("deepcli scorecard --json".to_string());
     }
     if !benchmark_ready {
@@ -28384,6 +28397,41 @@ mod tests {
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/round.json")).unwrap();
         assert_eq!(written, output);
+    }
+
+    #[test]
+    fn round_scorecard_gate_tracks_threshold_separately_from_gaps() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--json".into(), "--fail-below".into(), "0".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let gates = value["gates"].as_array().unwrap();
+
+        assert!(value["ready"].as_bool().is_some_and(|ready| !ready));
+        assert!(value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().starts_with("benchmark_evidence:")));
+        assert!(gates.iter().any(|gate| {
+            gate["id"] == "scorecard"
+                && gate["status"] == "passed"
+                && gate["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("meets the 0% round threshold")
+        }));
+        assert!(gates
+            .iter()
+            .any(|gate| gate["id"] == "benchmark_evidence" && gate["status"] == "failed"));
     }
 
     #[test]
