@@ -711,20 +711,24 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/recipes support",
                 "/recipes environment",
                 "/recipes shell",
+                "/recipes sota",
                 "/recipes --json",
-                "/recipes release --json --output <workspace-relative-path>",
+                "/recipes sota --json --output <workspace-relative-path>",
+                "deepcli recipes product-loop --json",
                 "deepcli recipes release --json",
                 "deepcli playbook support",
             ],
             examples: &[
                 "/recipes",
+                "/recipes sota",
                 "/recipes release",
                 "/recipes debug --json",
                 "/recipes --json --output .deepcli/exports/recipes.json",
+                "deepcli recipes product-loop --json",
                 "deepcli recipes release",
                 "deepcli playbook support",
             ],
-            notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, and shell. Use `--json` for the stable `deepcli.recipes.v1` schema."],
+            notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, shell, and sota. `product-loop`, `benchmark`, and `round` are aliases for `sota`. Use `--json` for the stable `deepcli.recipes.v1` schema."],
         },
         CommandHelp {
             name: "/scorecard",
@@ -2145,6 +2149,8 @@ fn normalize_recipe_topic(value: &str) -> Result<&'static str> {
         "support" | "issue" | "bundle" => Ok("support"),
         "environment" | "env" | "setup" | "install" => Ok("environment"),
         "shell" | "completion" | "completions" => Ok("shell"),
+        "sota" | "product" | "product-loop" | "loop" | "iterate" | "iteration" | "round"
+        | "benchmark" | "bench" => Ok("sota"),
         other => bail!(
             "unknown /recipes topic `{other}`; supported topics: {}",
             recipes_topic_names().join(", ")
@@ -2290,6 +2296,27 @@ fn recipes_catalog() -> Vec<Recipe> {
                 "Use the JSON command catalog for external launchers, docs generators, or TUI command palettes.",
             ],
         },
+        Recipe {
+            name: "sota",
+            title: "SOTA Product Loop",
+            summary: "Inspect product gaps, run local benchmark evidence, compare baselines, and gate the next iteration.",
+            commands: &[
+                "deepcli recipes sota --json",
+                "deepcli scorecard --json",
+                "deepcli round --json",
+                "deepcli round --json --run-benchmark --fail-on-command",
+                "deepcli benchmark status --json",
+                "deepcli benchmark trends --json",
+                "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
+                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
+                "deepcli benchmark gate --json",
+            ],
+            notes: &[
+                "Use this after each product iteration to decide the next highest-value gap before writing code.",
+                "Benchmark artifacts stay local under `.deepcli/benchmarks/`; commit docs and code, not local evidence files.",
+                "Use the baseline template when you want competitor, older-version, or hand-recorded comparison evidence.",
+            ],
+        },
     ]
 }
 
@@ -2323,7 +2350,13 @@ fn recipes_next_actions(topic: Option<&'static str>) -> Vec<String> {
             "check installation with `/doctor shell --json`",
             "install completion with `/completion install zsh --force` if needed",
         ],
+        Some("sota") => vec![
+            "run `/round --json` to inspect current product gates",
+            "run `/round --json --run-benchmark --fail-on-command` to refresh local benchmark evidence",
+            "run `/benchmark compare --baseline .deepcli/baselines/competitor.json --json` after filling a baseline",
+        ],
         _ => vec![
+            "run `/recipes sota` to drive the product improvement loop",
             "run `/recipes release` before commit or push",
             "export workflow recipes with `/recipes --json --output .deepcli/exports/recipes.json`",
         ],
@@ -28980,6 +29013,63 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../recipes.json").exists());
+    }
+
+    #[test]
+    fn recipes_sota_topic_guides_product_loop_and_benchmark_compare() {
+        let dir = tempdir().unwrap();
+
+        let output =
+            handle_recipes(dir.path(), vec!["product-loop".into(), "--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.recipes.v1");
+        assert_eq!(value["topic"], "sota");
+        assert_eq!(value["recipes"].as_array().unwrap().len(), 1);
+        assert_eq!(value["recipes"][0]["name"], "sota");
+        let commands = value["recipes"][0]["commands"].as_array().unwrap();
+        assert!(commands
+            .iter()
+            .any(|command| command.as_str().unwrap() == "deepcli round --json"));
+        assert!(commands.iter().any(|command| {
+            command
+                .as_str()
+                .unwrap()
+                .contains("round --json --run-benchmark --fail-on-command")
+        }));
+        assert!(commands.iter().any(|command| {
+            command
+                .as_str()
+                .unwrap()
+                .contains("benchmark baseline-template --output")
+        }));
+        assert!(commands.iter().any(|command| {
+            command
+                .as_str()
+                .unwrap()
+                .contains("benchmark compare --baseline")
+        }));
+        assert!(value["availableTopics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|topic| topic.as_str().unwrap() == "sota"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("/round --json --run-benchmark --fail-on-command")));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("sota - SOTA Product Loop"));
+
+        let help = CommandRouter::help_for(&["recipes".to_string()]).unwrap();
+        assert!(help.contains("/recipes sota"));
+        assert!(help.contains("product-loop"));
     }
 
     #[test]
