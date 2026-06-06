@@ -7847,6 +7847,10 @@ fn format_benchmark_trends_text(
             .as_ref()
             .map(|point| point.status.as_str())
             .unwrap_or("none");
+        let duration_delta = trend
+            .duration_delta_ms
+            .map(|delta| format!("{delta}ms"))
+            .unwrap_or_else(|| "n/a".to_string());
         lines.push(format!(
             "  - {}/{}: status_trend={} duration_trend={} pass_rate={}",
             trend.suite, trend.case_name, trend.status_trend, trend.duration_trend, pass_rate
@@ -7861,13 +7865,8 @@ fn format_benchmark_trends_text(
             trend.recorded
         ));
         lines.push(format!(
-            "    latest={} previous={} duration_delta={}ms",
-            latest,
-            previous,
-            trend
-                .duration_delta_ms
-                .map(|delta| delta.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
+            "    latest={} previous={} duration_delta={}",
+            latest, previous, duration_delta
         ));
         if !trend.recent.is_empty() {
             lines.push("    recent:".to_string());
@@ -30994,6 +30993,22 @@ mod tests {
         assert!(text.contains("deepcli benchmark trends"));
         assert!(text.contains("status_trend=regressed"));
         assert!(text.contains("duration_trend=slower"));
+        assert!(text.contains("duration_delta=60ms"));
+
+        let single_dir = tempdir().unwrap();
+        write_benchmark_status_test_artifact_with_duration(
+            single_dir.path(),
+            "20990104T000000Z-product-selftest.json",
+            now + chrono::Duration::seconds(4),
+            "selftest",
+            "selftest",
+            "passed",
+            25,
+        );
+        let single_text =
+            handle_benchmark(single_dir.path(), &config, &registry, vec!["trend".into()]).unwrap();
+        assert!(single_text.contains("duration_delta=n/a"));
+        assert!(!single_text.contains("duration_delta=n/ams"));
 
         let traversal = handle_benchmark(
             dir.path(),
