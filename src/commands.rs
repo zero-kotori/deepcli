@@ -2322,43 +2322,31 @@ fn recipes_catalog() -> Vec<Recipe> {
 
 fn recipes_next_actions(topic: Option<&'static str>) -> Vec<String> {
     let actions = match topic {
-        Some("start") => vec![
-            "run `deepcli` to open the TUI",
-            "run `/recipes code` after readiness is confirmed",
-        ],
-        Some("code") => vec![
-            "run `/status --json` while the task is active",
-            "run `/recipes release` before handing work back",
-        ],
-        Some("debug") => vec![
-            "run `/diagnose --json` for a compact health report",
-            "run `/support` if you need a redacted bundle",
-        ],
-        Some("release") => vec![
-            "preview checks with `/preflight --dry-run`",
-            "run the full gate with `/preflight --json` before pushing",
-        ],
+        Some("start") => vec!["deepcli", "deepcli recipes code"],
+        Some("code") => vec!["deepcli status --json", "deepcli recipes release"],
+        Some("debug") => vec!["deepcli diagnose --json", "deepcli support"],
+        Some("release") => vec!["deepcli preflight --dry-run", "deepcli preflight --json"],
         Some("support") => vec![
-            "create a bundle with `/support .deepcli/support/latest`",
-            "inspect the generated issue template before sharing",
+            "deepcli support .deepcli/support/latest",
+            "deepcli diagnose --bundle .deepcli/support/latest",
         ],
         Some("environment") => vec![
-            "preview setup with `/env plan compiler --smoke --json`",
-            "verify environment readiness with `/env test compiler --json`",
+            "deepcli env plan compiler --smoke --json",
+            "deepcli env test compiler --json",
         ],
         Some("shell") => vec![
-            "check installation with `/doctor shell --json`",
-            "install completion with `/completion install zsh --force` if needed",
+            "deepcli doctor shell --json",
+            "deepcli completion install zsh --force",
         ],
         Some("sota") => vec![
-            "run `/round --json` to inspect current product gates",
-            "run `/round --json --run-benchmark --fail-on-command` to refresh local benchmark evidence",
-            "run `/benchmark compare --baseline .deepcli/baselines/competitor.json --json` after filling a baseline",
+            "deepcli round --json",
+            "deepcli round --json --run-benchmark --fail-on-command",
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
         ],
         _ => vec![
-            "run `/recipes sota` to drive the product improvement loop",
-            "run `/recipes release` before commit or push",
-            "export workflow recipes with `/recipes --json --output .deepcli/exports/recipes.json`",
+            "deepcli recipes sota",
+            "deepcli recipes release",
+            "deepcli recipes --json --output .deepcli/exports/recipes.json",
         ],
     };
     dedup_preserve_order(actions.into_iter().map(str::to_string).collect())
@@ -29019,7 +29007,12 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+            .any(|action| action.as_str().unwrap() == "deepcli preflight --json"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action.as_str().unwrap().starts_with("deepcli")));
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -29092,14 +29085,20 @@ mod tests {
             .unwrap()
             .iter()
             .any(|topic| topic.as_str().unwrap() == "sota"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert_eq!(
+            next_actions.first().unwrap().as_str().unwrap(),
+            "deepcli round --json"
+        );
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli round --json --run-benchmark --fail-on-command"
+        }));
+        assert!(next_actions
             .iter()
-            .any(|action| action
-                .as_str()
-                .unwrap()
-                .contains("/round --json --run-benchmark --fail-on-command")));
+            .all(|action| action.as_str().unwrap().starts_with("deepcli")));
+        assert!(!next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("run `/")));
         assert!(value["report"]
             .as_str()
             .unwrap()
