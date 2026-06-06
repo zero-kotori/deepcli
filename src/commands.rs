@@ -750,7 +750,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli benchmark scorecard --json",
                 "deepcli deepseek scorecard --json",
             ],
-            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema. The global `nextActions` list starts with gap remediation actions before general discovery commands, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
+            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, and baseline compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -2929,33 +2929,7 @@ fn build_scorecard_report(
         "needs_attention"
     };
     let has_gaps = !gaps.is_empty();
-    let mut next_actions = categories
-        .iter()
-        .flat_map(|category| category.priority_next_actions.clone())
-        .collect::<Vec<_>>();
-    next_actions.extend(
-        categories
-            .iter()
-            .filter_map(|category| {
-                if has_gaps && category.gaps.is_empty() {
-                    None
-                } else {
-                    Some(category.next_actions.clone())
-                }
-            })
-            .flatten(),
-    );
-    next_actions.push(SCORECARD_BENCHMARK_REMEDIATION_ACTION.to_string());
-    next_actions.push("deepcli recipes sota --json".to_string());
-    next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
-    next_actions.push("deepcli benchmark status --json".to_string());
-    next_actions.push("deepcli benchmark trends --json".to_string());
-    next_actions.push("deepcli benchmark gate --json".to_string());
-    if !has_gaps {
-        next_actions.push(SCORECARD_ROUND_REPORT_ACTION.to_string());
-    }
-    next_actions.push("deepcli preflight --json".to_string());
-    next_actions = dedup_preserve_order(next_actions);
+    let next_actions = scorecard_global_next_actions(&categories, has_gaps);
     let report = format_scorecard_text(
         workspace,
         ScorecardTextInput {
@@ -3035,6 +3009,40 @@ fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &
     category.gaps.push(gap.to_string());
     category.priority_next_actions.push(next_action.to_string());
     category.next_actions.push(next_action.to_string());
+}
+
+fn scorecard_global_next_actions(categories: &[ScorecardCategory], has_gaps: bool) -> Vec<String> {
+    if !has_gaps {
+        return vec![
+            SCORECARD_ROUND_REPORT_ACTION.to_string(),
+            "deepcli preflight --json".to_string(),
+            "deepcli gate --json".to_string(),
+            "deepcli recipes sota --json".to_string(),
+            "deepcli benchmark trends --json".to_string(),
+            "deepcli benchmark status --json".to_string(),
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string(),
+        ];
+    }
+
+    let mut next_actions = categories
+        .iter()
+        .flat_map(|category| category.priority_next_actions.clone())
+        .collect::<Vec<_>>();
+    next_actions.extend(
+        categories
+            .iter()
+            .filter(|category| !category.gaps.is_empty())
+            .flat_map(|category| category.next_actions.clone()),
+    );
+    next_actions.push(SCORECARD_BENCHMARK_REMEDIATION_ACTION.to_string());
+    next_actions.push("deepcli recipes sota --json".to_string());
+    next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
+    next_actions.push("deepcli benchmark status --json".to_string());
+    next_actions.push("deepcli benchmark trends --json".to_string());
+    next_actions.push("deepcli benchmark gate --json".to_string());
+    next_actions.push("deepcli preflight --json".to_string());
+    dedup_preserve_order(next_actions)
 }
 
 fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) {
@@ -28494,7 +28502,8 @@ mod tests {
         assert!(scorecard_help.contains("/scorecard - "));
         assert!(scorecard_help.contains("running-safe: yes"));
         assert!(scorecard_help.contains("deepcli.scorecard.v1"));
-        assert!(scorecard_help.contains("starts with gap remediation actions"));
+        assert!(scorecard_help.contains("When gaps exist"));
+        assert!(scorecard_help.contains("sustained product loop"));
         assert!(scorecard_help.contains("deepcli benchmark --fail-below 85"));
 
         let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
@@ -29355,6 +29364,62 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli round --json"));
+
+        let command_discovery_category = value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["id"] == "command_discovery")
+            .unwrap();
+        assert!(command_discovery_category["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
+    }
+
+    #[test]
+    fn scorecard_ready_next_actions_focus_on_sustaining_product_loop() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let now = Utc::now();
+        for preset in MEANINGFUL_BENCHMARK_PRESETS {
+            write_benchmark_status_test_artifact(
+                dir.path(),
+                &format!("20990101T000000Z-product-{preset}.json"),
+                now,
+                preset,
+                preset,
+                "passed",
+            );
+        }
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action.as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(value["status"], "ok");
+        assert!(value["gaps"].as_array().unwrap().is_empty());
+        assert_eq!(
+            next_actions,
+            vec![
+                "deepcli round --json",
+                "deepcli preflight --json",
+                "deepcli gate --json",
+                "deepcli recipes sota --json",
+                "deepcli benchmark trends --json",
+                "deepcli benchmark status --json",
+                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
+            ]
+        );
 
         let command_discovery_category = value["categories"]
             .as_array()
