@@ -7328,7 +7328,7 @@ fn format_benchmark_compare_json(
             .iter()
             .map(benchmark_case_comparison_json)
             .collect::<Vec<_>>(),
-        "nextActions": benchmark_compare_next_actions(baseline.present, artifacts.is_empty()),
+        "nextActions": benchmark_compare_next_actions(baseline, artifacts.is_empty()),
         "report": format_benchmark_compare_text(workspace, artifacts.len(), baseline, comparisons),
     }))?)
 }
@@ -7356,6 +7356,9 @@ fn benchmark_compare_status(
             "missing_current" | "missing_baseline" | "missing_baseline_status"
         )
     }) {
+        return "incomplete";
+    }
+    if benchmark_baseline_needs_values(baseline) {
         return "incomplete";
     }
     "ok"
@@ -7400,9 +7403,9 @@ fn benchmark_case_comparison_json(case: &BenchmarkCaseComparison) -> Value {
     })
 }
 
-fn benchmark_compare_next_actions(baseline_present: bool, empty: bool) -> Vec<String> {
+fn benchmark_compare_next_actions(baseline: &BenchmarkBaselineReport, empty: bool) -> Vec<String> {
     let mut actions = Vec::new();
-    if !baseline_present {
+    if !baseline.present {
         actions.push(
             "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
                 .to_string(),
@@ -7411,6 +7414,15 @@ fn benchmark_compare_next_actions(baseline_present: bool, empty: bool) -> Vec<St
             "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
                 .to_string(),
         );
+    } else if benchmark_baseline_needs_values(baseline) {
+        let path = baseline
+            .path
+            .as_deref()
+            .unwrap_or(".deepcli/baselines/competitor.json");
+        actions.push(format!("edit status and durationMs values in {path}"));
+        actions.push(format!(
+            "deepcli benchmark compare --baseline {path} --json"
+        ));
     }
     if empty {
         actions.push("deepcli benchmark presets --json".to_string());
@@ -7425,6 +7437,13 @@ fn benchmark_compare_next_actions(baseline_present: bool, empty: bool) -> Vec<St
     }
     actions.push("deepcli scorecard --json".to_string());
     actions
+}
+
+fn benchmark_baseline_needs_values(baseline: &BenchmarkBaselineReport) -> bool {
+    baseline
+        .cases
+        .iter()
+        .any(|case| case.status.is_none() || case.duration_ms.is_none())
 }
 
 fn format_benchmark_summary_json(
@@ -7710,7 +7729,7 @@ fn format_benchmark_compare_text(
         lines.push("comparisons: none".to_string());
         lines.push("next actions:".to_string());
         lines.extend(
-            benchmark_compare_next_actions(baseline.present, artifact_count == 0)
+            benchmark_compare_next_actions(baseline, artifact_count == 0)
                 .into_iter()
                 .map(|action| format!("  - {action}")),
         );
@@ -7765,7 +7784,7 @@ fn format_benchmark_compare_text(
     }
     lines.push("next actions:".to_string());
     lines.extend(
-        benchmark_compare_next_actions(baseline.present, artifact_count == 0)
+        benchmark_compare_next_actions(baseline, artifact_count == 0)
             .into_iter()
             .map(|action| format!("  - {action}")),
     );
@@ -30575,6 +30594,27 @@ mod tests {
         assert_eq!(compare_value["baseline"]["name"], "deepcli-main");
         assert_eq!(compare_value["comparisonCount"], 4);
         assert_eq!(compare_value["status"], "incomplete");
+        assert!(compare_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains(
+                "edit status and durationMs values in .deepcli/baselines/deepcli-main.json"
+            )));
+
+        let compare_text = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--baseline".into(),
+                ".deepcli/baselines/deepcli-main.json".into(),
+            ],
+        )
+        .unwrap();
+        assert!(compare_text
+            .contains("edit status and durationMs values in .deepcli/baselines/deepcli-main.json"));
 
         let no_baseline = handle_benchmark(
             dir.path(),
