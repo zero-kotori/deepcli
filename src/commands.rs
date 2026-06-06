@@ -2457,6 +2457,9 @@ struct ScorecardReport {
     next_actions: Vec<String>,
 }
 
+const SCORECARD_BENCHMARK_REMEDIATION_ACTION: &str =
+    "deepcli round --json --run-benchmark --fail-on-command";
+
 fn handle_scorecard(
     workspace: &Path,
     config: &AppConfig,
@@ -2852,7 +2855,7 @@ fn build_scorecard_report(
                 scorecard_add_gap(
                     &mut categories[7],
                     gap,
-                    "run `/round --json --run-benchmark --fail-on-command`",
+                    SCORECARD_BENCHMARK_REMEDIATION_ACTION,
                 );
             }
         }
@@ -2870,7 +2873,7 @@ fn build_scorecard_report(
                 scorecard_add_gap(
                     &mut categories[7],
                     gap,
-                    "run `/round --json --run-benchmark --fail-on-command`",
+                    SCORECARD_BENCHMARK_REMEDIATION_ACTION,
                 );
             }
         }
@@ -2891,7 +2894,7 @@ fn build_scorecard_report(
             scorecard_add_gap(
                 &mut categories[7],
                 gap,
-                "run `/round --json --run-benchmark --fail-on-command`",
+                SCORECARD_BENCHMARK_REMEDIATION_ACTION,
             );
         }
     }
@@ -2950,23 +2953,14 @@ fn build_scorecard_report(
             })
             .flatten(),
     );
-    next_actions.push(
-        "run `/round --json --run-benchmark --fail-on-command` after each product round"
-            .to_string(),
-    );
+    next_actions.push(SCORECARD_BENCHMARK_REMEDIATION_ACTION.to_string());
     next_actions.push("deepcli recipes sota --json".to_string());
-    next_actions.push(
-        "run `/benchmark run-suite --json --fail-on-command` after each product round".to_string(),
-    );
-    next_actions
-        .push("run `/benchmark status --json` to inspect benchmark evidence quality".to_string());
-    next_actions
-        .push("run `/benchmark trends --json` to inspect benchmark regressions".to_string());
-    next_actions.push(
-        "run `/benchmark gate --json` before release to enforce benchmark evidence".to_string(),
-    );
-    next_actions.push("run `/round --json` after each product iteration".to_string());
-    next_actions.push("run `/preflight --json` before commit or push".to_string());
+    next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
+    next_actions.push("deepcli benchmark status --json".to_string());
+    next_actions.push("deepcli benchmark trends --json".to_string());
+    next_actions.push("deepcli benchmark gate --json".to_string());
+    next_actions.push("deepcli round --json".to_string());
+    next_actions.push("deepcli preflight --json".to_string());
     next_actions = dedup_preserve_order(next_actions);
     let report = format_scorecard_text(
         workspace,
@@ -29146,7 +29140,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+            .any(|action| action.as_str().unwrap() == "deepcli preflight --json"));
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -29177,8 +29171,11 @@ mod tests {
             .all(|gap| gap.as_str().unwrap().starts_with("benchmark_evidence:")));
         assert_eq!(
             next_actions.first().unwrap().as_str().unwrap(),
-            "run `/round --json --run-benchmark --fail-on-command`"
+            "deepcli round --json --run-benchmark --fail-on-command"
         );
+        assert!(!next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap().starts_with("run `/")));
         assert!(!next_actions
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
@@ -29197,8 +29194,13 @@ mod tests {
                 .unwrap()
                 .as_str()
                 .unwrap(),
-            "run `/round --json --run-benchmark --fail-on-command`"
+            "deepcli round --json --run-benchmark --fail-on-command"
         );
+        assert!(!benchmark_category["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().starts_with("run `/")));
 
         let command_discovery_category = value["categories"]
             .as_array()
@@ -29339,7 +29341,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             benchmark_category["nextActions"][0].as_str(),
-            Some("run `/round --json --run-benchmark --fail-on-command`")
+            Some("deepcli round --json --run-benchmark --fail-on-command")
         );
         assert!(value["nextActions"]
             .as_array()

@@ -65,7 +65,7 @@
 
 10. scorecard nextActions gap 修复优先
    - 结果：`deepcli scorecard --json` 会把当前 gaps 的直接修复动作排在通用探索命令之前。
-   - 当唯一剩余缺口属于 `benchmark_evidence:` 时，首个 `nextActions` 是 ``run `/round --json --run-benchmark --fail-on-command` ``，不再先展示 `deepcli quickstart --json`。
+   - 当唯一剩余缺口属于 `benchmark_evidence:` 时，首个 `nextActions` 是 `deepcli round --json --run-benchmark --fail-on-command`，不再先展示 `deepcli quickstart --json`。
    - 目的：让产品评分报告也能直接指向本轮最该执行的修复命令，和 `round` 的失败 gate 优先语义保持一致。
 
 11. benchmark baseline 对比入口
@@ -94,18 +94,23 @@
 
 16. scorecard 分类级 nextActions 修复优先
    - 结果：`deepcli scorecard --json` 不仅全局 `nextActions` 会把 gap remediation 放在前面，每个 category 自己的 `nextActions` 也会先展示本分类 gap 的修复动作。
-   - 当前 benchmark evidence 缺失时，`benchmark_evidence.nextActions[0]` 是 ``run `/round --json --run-benchmark --fail-on-command` ``，不再先展示 `deepcli scorecard --json`。
+   - 当前 benchmark evidence 缺失时，`benchmark_evidence.nextActions[0]` 是 `deepcli round --json --run-benchmark --fail-on-command`，不再先展示 `deepcli scorecard --json`。
    - 目的：让 TUI、外部 UI 或脚本按分类展示 scorecard 动作时，也能直接指向当前失败项的修复路径。
 
 17. round scorecard 摘要保留分类级 nextActions
    - 结果：`deepcli round --json` 内嵌的 `scorecard.categories[]` 摘要现在会保留每个分类的 `nextActions`。
-   - 当前 benchmark evidence 缺失时，round 报告里的 `scorecard.categories[] | select(.id=="benchmark_evidence") | .nextActions[0]` 也是 ``run `/round --json --run-benchmark --fail-on-command` ``。
+   - 当前 benchmark evidence 缺失时，round 报告里的 `scorecard.categories[] | select(.id=="benchmark_evidence") | .nextActions[0]` 也是 `deepcli round --json --run-benchmark --fail-on-command`。
    - 目的：让 TUI、外部 UI 或脚本只读取一份 `deepcli.round.v1` 报告，也能按分类展示修复动作，不必再额外调用 `deepcli scorecard --json`。
 
 18. scorecard 全局 nextActions 按 gap 聚焦
    - 结果：`deepcli scorecard --json` 在存在 gaps 时，全局 `nextActions` 不再混入所有 strong category 的通用探索命令，而是聚焦 priority 修复动作、有 gap 分类动作和 SOTA 产品循环动作。
-   - 当前 benchmark evidence 缺失时，`scorecard.nextActions[0]` 仍是 ``run `/round --json --run-benchmark --fail-on-command` ``，但 `deepcli quickstart --json` 这类 strong category 导航只保留在对应 category 的 `nextActions` 中。
+   - 当前 benchmark evidence 缺失时，`scorecard.nextActions[0]` 仍是 `deepcli round --json --run-benchmark --fail-on-command`，但 `deepcli quickstart --json` 这类 strong category 导航只保留在对应 category 的 `nextActions` 中。
    - 目的：让 scorecard 全局动作更像本轮修复队列，同时保留分类级完整导航，减少用户在高分但有单一缺口时被大量无关动作干扰。
+
+19. scorecard nextActions 统一为可执行 CLI 命令
+   - 结果：`deepcli scorecard --json` 和 round 内嵌 scorecard 摘要中的 benchmark 修复动作不再输出 ``run `/round ...` `` 这类说明性 slash 文本，而是统一输出 `deepcli round --json --run-benchmark --fail-on-command`。
+   - 当前全局 `scorecard.nextActions` 和 `benchmark_evidence.nextActions` 均不包含以 ``run `/`` 开头的动作，脚本和用户可以直接复制执行。
+   - 目的：让 one-shot JSON 的 nextActions 成为可执行命令清单，减少 TUI slash 命令、shell 命令和说明性文本混用带来的集成成本。
 
 ## 当前产品自评
 
@@ -113,7 +118,7 @@
 
 本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传，以及 scorecard 全局 nextActions 的 gap-aware 聚焦，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦，以及 scorecard nextActions 的可执行 CLI 命令格式，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 
