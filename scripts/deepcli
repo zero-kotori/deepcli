@@ -108,6 +108,17 @@ has_yes_arg() {
   return 1
 }
 
+is_help_flag() {
+  case "${1:-}" in
+    --help|-h )
+      return 0
+      ;;
+    * )
+      return 1
+      ;;
+  esac
+}
+
 is_top_level_slash_command() {
   case "$1" in
     help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|benchmark|bench|sota|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
@@ -117,6 +128,26 @@ is_top_level_slash_command() {
       return 1
       ;;
   esac
+}
+
+help_topic_for_top_level_command() {
+  case "${1:-}" in
+    sessions|history )
+      printf '%s\n' session
+      return 0
+      ;;
+    models|providers )
+      printf '%s\n' model
+      return 0
+      ;;
+    * )
+      if is_top_level_slash_command "${1:-}"; then
+        printf '%s\n' "$1"
+        return 0
+      fi
+      ;;
+  esac
+  return 1
 }
 
 usage() {
@@ -348,6 +379,10 @@ run_provider_command() {
   local model="$2"
   shift 2
 
+  if [[ -n "${1:-}" ]] && help_topic="$(help_topic_for_top_level_command "$1")" && is_help_flag "${2:-}"; then
+    run_deepcli --provider "$provider" --model "$model" /help "$help_topic"
+  fi
+
   case "${1:-}" in
     "" )
       run_deepcli --provider "$provider" --model "$model" --tui
@@ -437,6 +472,17 @@ case "${1:-}" in
   "" )
     run_deepcli --tui
     ;;
+  * )
+    if [[ -n "${1:-}" ]] && help_topic="$(help_topic_for_top_level_command "$1")" && is_help_flag "${2:-}"; then
+      run_deepcli /help "$help_topic"
+    fi
+    ;;
+esac
+
+case "${1:-}" in
+  "" )
+    run_deepcli --tui
+    ;;
   help )
     shift
     if [[ "${1:-}" == "" ]]; then
@@ -518,7 +564,12 @@ case "${1:-}" in
   version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|benchmark|bench|sota|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
-    run_deepcli "/$slash_command" "$@"
+    if is_help_flag "${1:-}"; then
+      help_topic="$(help_topic_for_top_level_command "$slash_command")"
+      run_deepcli /help "$help_topic"
+    else
+      run_deepcli "/$slash_command" "$@"
+    fi
     ;;
   * )
     run_deepcli "$@"

@@ -394,7 +394,9 @@ fn top_level_entries() -> &'static [&'static str] {
         "switch",
         "models",
         "providers",
+        "goal",
         "plan",
+        "fork",
         "diff",
         "review",
         "accept",
@@ -474,6 +476,11 @@ fn parse_one_shot_command(task: &[String]) -> Result<Option<SlashCommand>> {
 
 fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
     let first = task.first()?.as_str();
+    if task.get(1).is_some_and(|arg| is_cli_help_flag(arg)) {
+        if let Some(topic) = top_level_help_topic(first) {
+            return Some(vec!["/help".to_string(), topic]);
+        }
+    }
     match first {
         "sessions" => {
             let mut parts = vec!["/session".to_string(), "list".to_string()];
@@ -544,6 +551,19 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
         }
+        _ => None,
+    }
+}
+
+fn is_cli_help_flag(value: &str) -> bool {
+    matches!(value, "--help" | "-h")
+}
+
+fn top_level_help_topic(value: &str) -> Option<String> {
+    match value {
+        "sessions" | "history" => Some("session".to_string()),
+        "models" | "providers" => Some("model".to_string()),
+        alias if is_top_level_slash_alias(alias) => Some(alias.to_string()),
         _ => None,
     }
 }
@@ -718,6 +738,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
                 None | Some("show" | "list" | "set")
             )
         }
+        SlashCommand::Goal { .. } => true,
         SlashCommand::Plan { .. } => true,
         SlashCommand::Fork { .. } => true,
         SlashCommand::Prompt { args } => {
@@ -1015,6 +1036,18 @@ mod tests {
         let original = vec!["fix".to_string(), "the".to_string(), "bug".to_string()];
         let cli = normalize_cli_aliases(test_cli(&["fix", "the", "bug"])).unwrap();
         reject_likely_unknown_cli_command(&original, &cli.task).unwrap();
+
+        let original = vec!["fork".to_string(), "--help".to_string()];
+        let cli = normalize_cli_aliases(test_cli(&["fork", "--help"])).unwrap();
+        reject_likely_unknown_cli_command(&original, &cli.task).unwrap();
+
+        let original = vec![
+            "goal".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ];
+        let cli = normalize_cli_aliases(test_cli(&["goal", "status", "--json"])).unwrap();
+        reject_likely_unknown_cli_command(&original, &cli.task).unwrap();
     }
 
     #[test]
@@ -1255,6 +1288,18 @@ mod tests {
             parse_one_shot_command(&["round".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Round {
                 args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["fork".into(), "--help".into()]).unwrap(),
+            Some(SlashCommand::Help {
+                args: vec!["fork".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["sessions".into(), "-h".into()]).unwrap(),
+            Some(SlashCommand::Help {
+                args: vec!["session".to_string()]
             })
         );
         assert_eq!(
@@ -2004,6 +2049,37 @@ mod tests {
         assert!(
             !dir.path().join(".deepcli/sessions").exists(),
             "failed one-shot /fork should not create an empty session"
+        );
+    }
+
+    #[tokio::test]
+    async fn one_shot_goal_status_alias_fails_locally_without_creating_empty_session() {
+        let dir = tempdir().unwrap();
+        let error = run_cli(Cli {
+            task: vec![
+                "goal".to_string(),
+                "status".to_string(),
+                "--json".to_string(),
+            ],
+            cwd: Some(dir.path().to_path_buf()),
+            config: None,
+            provider: None,
+            model: None,
+            resume: None,
+            resume_picker: false,
+            stream: false,
+            tui: false,
+            repl: false,
+            yes: true,
+        })
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("no active goal"));
+        assert!(
+            !dir.path().join(".deepcli/sessions").exists(),
+            "one-shot goal status should not create an empty session"
         );
     }
 

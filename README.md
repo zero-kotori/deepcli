@@ -176,6 +176,8 @@ git diff --check
 ./scripts/deepcli help goal
 ./scripts/deepcli help plan
 ./scripts/deepcli help fork
+./scripts/deepcli fork --help
+./scripts/deepcli sessions -h
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json
 ./scripts/deepcli round --json --run-benchmark --fail-on-command

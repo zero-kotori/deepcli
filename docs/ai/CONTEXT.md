@@ -170,13 +170,19 @@
    - 结果：`benchmark_trends` gate 的单样本历史不足修复动作使用 `deepcli round --json --run-benchmark --fail-on-command`。
    - 目的：让用户执行一个命令即可生成第二组本地 benchmark 样本并立即看到更新后的 `deepcli.round.v1`，不需要先跑 `benchmark run-suite` 再手动回到 `round`。
 
+32. 顶层命令帮助旗标转发
+   - 结果：`deepcli fork --help`、`deepcli sessions -h` 和 provider 前缀下的 `deepcli deepseek fork --help` 会在 wrapper 与 Rust 二进制本体中转成对应 `/help` 主题。
+   - 特殊别名会归一化到真实主题：`sessions/history` -> `session`，`models/providers` -> `model`。
+   - Rust 直连入口同步把 `goal` 和 `fork` 登记为已知顶层命令；`goal` 命令族由本地 handler 返回结果或 active session 错误，不会因带参数而误发给 provider。
+   - 目的：让用户按常规 CLI 习惯探索顶层命令，不必记住只能使用 `deepcli help fork` 这类入口。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate，以及 round benchmark trends 修复动作闭环，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环，以及顶层命令帮助旗标转发，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 
@@ -189,6 +195,8 @@ cargo test
 ./scripts/deepcli help goal
 ./scripts/deepcli help plan
 ./scripts/deepcli help fork
+./scripts/deepcli fork --help
+./scripts/deepcli sessions -h
 ./scripts/deepcli preflight --json
 ./scripts/deepcli review
 ```

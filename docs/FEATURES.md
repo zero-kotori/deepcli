@@ -53,6 +53,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `deepcli resume <session_id>` 恢复指定会话。
 - `deepcli sessions --all --limit 20` 查看历史。
 - `deepcli history` 是历史列表快捷入口。
+- 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
 - `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；当前运行中的 Agent 任务分叉暂不宣称支持，建议等待或先 `/stop`。
@@ -216,6 +217,8 @@ git diff --check
 ./scripts/deepcli help goal
 ./scripts/deepcli help plan
 ./scripts/deepcli help fork
+./scripts/deepcli fork --help
+./scripts/deepcli sessions -h
 ./scripts/deepcli recipes release --json
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json

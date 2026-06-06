@@ -983,6 +983,35 @@ fn wrapper_help_topic_forwards_to_slash_help() {
 }
 
 #[test]
+fn wrapper_top_level_command_help_flags_forward_to_slash_help_topics() {
+    let fork = run_wrapper(&["fork", "--help"]);
+    assert!(ends_with_args(&fork.args, &["/help", "fork"]));
+
+    let sessions = run_wrapper(&["sessions", "-h"]);
+    assert!(ends_with_args(&sessions.args, &["/help", "session"]));
+
+    let provider_fork = run_wrapper(&["deepseek", "fork", "--help"]);
+    assert!(has_adjacent(&provider_fork.args, "--provider", "deepseek"));
+    assert!(has_adjacent(
+        &provider_fork.args,
+        "--model",
+        "deepseek-v4-pro"
+    ));
+    assert!(ends_with_args(&provider_fork.args, &["/help", "fork"]));
+
+    let provider_sessions = run_wrapper(&["deepseek", "sessions", "--help"]);
+    assert!(has_adjacent(
+        &provider_sessions.args,
+        "--provider",
+        "deepseek"
+    ));
+    assert!(ends_with_args(
+        &provider_sessions.args,
+        &["/help", "session"]
+    ));
+}
+
+#[test]
 fn wrapper_quickstart_forwards_to_slash_quickstart() {
     let run = run_wrapper(&["quickstart"]);
 
