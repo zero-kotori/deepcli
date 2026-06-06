@@ -5257,6 +5257,7 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
             "maxScore": category.max_score,
             "percent": scorecard_percent(category.score, category.max_score),
             "gaps": category.gaps,
+            "nextActions": category.next_actions,
         })).collect::<Vec<_>>(),
     })
 }
@@ -29307,6 +29308,16 @@ mod tests {
                     .unwrap()
                     .contains("missing presets: cargo-test")
         }));
+        let benchmark_category = value["scorecard"]["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["id"] == "benchmark_evidence")
+            .unwrap();
+        assert_eq!(
+            benchmark_category["nextActions"][0].as_str(),
+            Some("run `/round --json --run-benchmark --fail-on-command`")
+        );
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
