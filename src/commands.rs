@@ -2671,7 +2671,6 @@ fn build_scorecard_report(
                 "/handoff",
             ],
             &[
-                "deepcli scorecard --json",
                 "deepcli round --json",
                 "deepcli preflight --json",
                 "deepcli benchmark presets --json",
@@ -29183,6 +29182,9 @@ mod tests {
             .any(|action| action.as_str().unwrap().starts_with("run `/")));
         assert!(!next_actions
             .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
+        assert!(!next_actions
+            .iter()
             .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
 
         let benchmark_category = value["categories"]
@@ -29206,6 +29208,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().starts_with("run `/")));
+        assert!(!benchmark_category["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
 
         let command_discovery_category = value["categories"]
             .as_array()
