@@ -3413,9 +3413,14 @@ fn build_round_report(
     let scorecard = build_scorecard_report(workspace, config, registry);
     let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
     let benchmark = build_benchmark_status_report(workspace, &benchmark_artifacts, Utc::now());
+    let benchmark_trends = build_benchmark_case_trends(&benchmark_artifacts, 2);
+    let benchmark_trends_status =
+        benchmark_trends_status(benchmark_artifacts.len(), &benchmark_trends);
     let goal = build_round_goal_status(workspace);
     let scorecard_threshold_ready = scorecard.percent >= score_threshold;
     let benchmark_ready = benchmark.status == "ready";
+    let benchmark_trends_ready =
+        !benchmark_ready || !round_benchmark_trends_needs_attention(benchmark_trends_status);
     let goal_ready = goal.as_ref().is_none_or(|goal| goal.ready);
 
     let mut gaps = Vec::new();
@@ -3432,6 +3437,11 @@ fn build_round_report(
             .iter()
             .map(|gap| format!("benchmark_evidence: {gap}")),
     );
+    if benchmark_ready {
+        if let Some(gap) = round_benchmark_trends_gap(benchmark_trends_status) {
+            gaps.push(gap);
+        }
+    }
     if let Some(goal) = &goal {
         gaps.extend(
             goal.blockers
@@ -3490,6 +3500,23 @@ fn build_round_report(
             },
         },
     ];
+    if benchmark_ready {
+        let trend_needs_attention = round_benchmark_trends_needs_attention(benchmark_trends_status);
+        gates.push(RoundGate {
+            id: "benchmark_trends",
+            title: "Benchmark Trend History",
+            status: if trend_needs_attention {
+                "failed"
+            } else {
+                "passed"
+            },
+            summary: round_benchmark_trends_gate_summary(
+                benchmark_trends_status,
+                benchmark_trends.len(),
+            ),
+            next_action: Some(round_benchmark_trends_next_action(benchmark_trends_status)),
+        });
+    }
     if let Some(goal) = &goal {
         gates.push(RoundGate {
             id: "goal_readiness",
@@ -3515,7 +3542,12 @@ fn build_round_report(
         });
     }
 
-    let status = if scorecard_threshold_ready && benchmark_ready && goal_ready && gaps.is_empty() {
+    let status = if scorecard_threshold_ready
+        && benchmark_ready
+        && benchmark_trends_ready
+        && goal_ready
+        && gaps.is_empty()
+    {
         "ready"
     } else {
         "needs_attention"
@@ -3535,6 +3567,17 @@ fn build_round_report(
         next_actions.push("deepcli benchmark status --json".to_string());
         next_actions.push("deepcli benchmark gate --json".to_string());
         next_actions.push("deepcli benchmark trends --json".to_string());
+    }
+    if benchmark_ready && round_benchmark_trends_needs_attention(benchmark_trends_status) {
+        next_actions.push(round_benchmark_trends_next_action(benchmark_trends_status));
+        next_actions.push("deepcli benchmark trends --json".to_string());
+        next_actions.push("deepcli benchmark status --json".to_string());
+        if benchmark_trends_status == "regression" {
+            next_actions.push(
+                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                    .to_string(),
+            );
+        }
     }
     if goal.as_ref().is_some_and(|goal| !goal.ready) {
         next_actions.push("deepcli goal status --json".to_string());
@@ -3577,6 +3620,46 @@ fn scorecard_has_standalone_round_gaps(scorecard: &ScorecardReport) -> bool {
         .gaps
         .iter()
         .any(|gap| !gap.starts_with("benchmark_evidence:"))
+}
+
+fn round_benchmark_trends_needs_attention(status: &str) -> bool {
+    matches!(status, "insufficient_history" | "regression")
+}
+
+fn round_benchmark_trends_gate_summary(status: &str, case_count: usize) -> String {
+    match status {
+        "ok" => format!("benchmark trends status is ok with {case_count} case(s)"),
+        "insufficient_history" => format!(
+            "benchmark trends status is insufficient_history with {case_count} case(s); run the benchmark suite again to create comparable history"
+        ),
+        "regression" => format!(
+            "benchmark trends status is regression with {case_count} case(s); inspect benchmark trends before marking the round ready"
+        ),
+        other => format!("benchmark trends status is {other} with {case_count} case(s)"),
+    }
+}
+
+fn round_benchmark_trends_gap(status: &str) -> Option<String> {
+    match status {
+        "insufficient_history" => Some(
+            "benchmark_trends: benchmark trends have insufficient history; run `deepcli benchmark run-suite --json --fail-on-command` to create a comparable sample"
+                .to_string(),
+        ),
+        "regression" => Some(
+            "benchmark_trends: benchmark trends report a regression; inspect `deepcli benchmark trends --json` before marking the round ready"
+                .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn round_benchmark_trends_next_action(status: &str) -> String {
+    match status {
+        "insufficient_history" => {
+            "deepcli benchmark run-suite --json --fail-on-command".to_string()
+        }
+        _ => "deepcli benchmark trends --json".to_string(),
+    }
 }
 
 fn round_benchmark_gate_summary(benchmark: &BenchmarkStatusReport) -> String {
@@ -29658,6 +29741,54 @@ mod tests {
         assert!(!next_actions
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli round --json"));
+    }
+
+    #[test]
+    fn round_surfaces_insufficient_benchmark_trend_history() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let now = Utc::now();
+        for preset in MEANINGFUL_BENCHMARK_PRESETS {
+            write_benchmark_status_test_artifact(
+                dir.path(),
+                &format!("20990101T000000Z-product-{preset}.json"),
+                now,
+                preset,
+                preset,
+                "passed",
+            );
+        }
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"].as_array().unwrap();
+
+        assert_eq!(value["status"], "needs_attention");
+        assert_eq!(value["ready"], false);
+        assert!(value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gap| gap.as_str().unwrap().starts_with("benchmark_trends:")));
+        assert!(value["gates"].as_array().unwrap().iter().any(|gate| {
+            gate["id"] == "benchmark_trends"
+                && gate["status"] == "failed"
+                && gate["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("insufficient_history")
+                && gate["nextAction"] == "deepcli benchmark run-suite --json --fail-on-command"
+        }));
+        assert_eq!(
+            next_actions.first().unwrap().as_str().unwrap(),
+            "deepcli benchmark run-suite --json --fail-on-command"
+        );
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("benchmark_trends"));
     }
 
     #[test]
