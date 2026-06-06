@@ -2573,6 +2573,9 @@ fn build_scorecard_report(
     let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
     let benchmark_status =
         build_benchmark_status_report(workspace, &benchmark_artifacts, Utc::now());
+    let benchmark_trends = build_benchmark_case_trends(&benchmark_artifacts, 2);
+    let benchmark_trends_status =
+        benchmark_trends_status(benchmark_artifacts.len(), &benchmark_trends);
 
     let mut categories = vec![
         scorecard_command_category(
@@ -2951,7 +2954,12 @@ fn build_scorecard_report(
         "needs_attention"
     };
     let has_gaps = !gaps.is_empty();
-    let next_actions = scorecard_global_next_actions(&categories, has_gaps);
+    let next_actions = scorecard_global_next_actions(
+        &categories,
+        has_gaps,
+        &benchmark_status,
+        benchmark_trends_status,
+    );
     let report = format_scorecard_text(
         workspace,
         ScorecardTextInput {
@@ -3033,8 +3041,27 @@ fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &
     category.next_actions.push(next_action.to_string());
 }
 
-fn scorecard_global_next_actions(categories: &[ScorecardCategory], has_gaps: bool) -> Vec<String> {
+fn scorecard_global_next_actions(
+    categories: &[ScorecardCategory],
+    has_gaps: bool,
+    benchmark_status: &BenchmarkStatusReport,
+    benchmark_trends_status: &str,
+) -> Vec<String> {
     if !has_gaps {
+        if benchmark_status.status == "ready"
+            && round_benchmark_trends_needs_attention(benchmark_trends_status)
+        {
+            return dedup_preserve_order(vec![
+                round_benchmark_trends_next_action(benchmark_trends_status),
+                "deepcli recipes sota --json".to_string(),
+                "deepcli benchmark trends --json".to_string(),
+                "deepcli benchmark status --json".to_string(),
+                "deepcli preflight --json".to_string(),
+                "deepcli gate --json".to_string(),
+                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                    .to_string(),
+            ]);
+        }
         return vec![
             SCORECARD_ROUND_REPORT_ACTION.to_string(),
             "deepcli preflight --json".to_string(),
@@ -29578,12 +29605,12 @@ mod tests {
         assert_eq!(
             next_actions,
             vec![
-                "deepcli round --json",
-                "deepcli preflight --json",
-                "deepcli gate --json",
+                "deepcli round --json --run-benchmark --fail-on-command",
                 "deepcli recipes sota --json",
                 "deepcli benchmark trends --json",
                 "deepcli benchmark status --json",
+                "deepcli preflight --json",
+                "deepcli gate --json",
                 "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
             ]
         );

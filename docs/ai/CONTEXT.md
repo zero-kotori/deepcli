@@ -153,6 +153,7 @@
 
 28. scorecard ready 状态下一步动作聚焦
    - 结果：当 `deepcli scorecard --json` 没有 gaps 且状态为 ok 时，顶层 `nextActions` 会切换为持续验收动作：`deepcli round --json`、`deepcli preflight --json`、`deepcli gate --json`、`deepcli recipes sota --json`、`deepcli benchmark trends --json`、`deepcli benchmark status --json` 和 baseline compare。
+   - 如果 benchmark evidence 已 ready 但 trends 仍是 `insufficient_history` 或 `regression`，顶层首项会改为 `deepcli round --json --run-benchmark --fail-on-command`，和当前 round gate 的修复路径保持一致。
    - 分类级 `categories[].nextActions` 仍保留对应分类的探索和诊断命令，TUI 或外部 UI 仍可展开查看，但顶层列表不再把 `quickstart`、`completion`、`status` 等所有强分类 discovery 命令混成一组。
    - 目的：ready 报告应该指导用户继续验收、观察趋势和做横向对比，而不是给出像命令大全一样的下一步列表。
 
@@ -184,13 +185,17 @@
    - 结果：`deepcli recipes sota --json` 复用当前 `round` 的状态感知 `nextActions`，再补充 baseline compare。
    - 目的：当当前 round 已知需要 benchmark 修复或 trend 补样本时，产品循环 recipe 不再先推荐只读 `deepcli round --json`，而是直接给出能推进闭环的修复命令。
 
+35. scorecard ready 状态感知 trend 修复动作
+   - 结果：`deepcli scorecard --json` 在自身无 gaps 但 benchmark trends 仍需处理时，顶层 `nextActions[0]` 会使用 `deepcli round --json --run-benchmark --fail-on-command`。
+   - 目的：让用户从 scorecard、round 或 SOTA recipe 进入产品循环时，都能看到同一个当前失败 gate 的直接修复命令。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作，以及 SOTA recipe 状态感知 nextActions，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions，以及 scorecard ready 状态感知 trend 修复动作，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 
