@@ -2945,6 +2945,7 @@ fn build_scorecard_report(
         "run `/round --json --run-benchmark --fail-on-command` after each product round"
             .to_string(),
     );
+    next_actions.push("deepcli recipes sota --json".to_string());
     next_actions.push(
         "run `/benchmark run-suite --json --fail-on-command` after each product round".to_string(),
     );
@@ -3509,6 +3510,7 @@ fn build_round_report(
     }
     if !benchmark_ready {
         next_actions.push("deepcli round --json --run-benchmark --fail-on-command".to_string());
+        next_actions.push("deepcli recipes sota --json".to_string());
         next_actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
         next_actions.push("deepcli benchmark presets --json".to_string());
         next_actions
@@ -5564,6 +5566,7 @@ fn build_benchmark_status_report(
 
 fn benchmark_status_next_actions() -> Vec<String> {
     vec![
+        "deepcli recipes sota --json".to_string(),
         "deepcli benchmark presets --json".to_string(),
         "deepcli benchmark run-suite --json --fail-on-command".to_string(),
         "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
@@ -29141,6 +29144,44 @@ mod tests {
             next_actions.first().unwrap().as_str().unwrap(),
             "run `/round --json --run-benchmark --fail-on-command`"
         );
+    }
+
+    #[test]
+    fn product_loop_reports_surface_sota_recipe_next_action() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let scorecard =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let scorecard_value: Value = serde_json::from_str(&scorecard).unwrap();
+        assert!(scorecard_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli recipes sota --json"));
+
+        let round = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let round_value: Value = serde_json::from_str(&round).unwrap();
+        assert!(round_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli recipes sota --json"));
+
+        let benchmark_status = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let benchmark_status_value: Value = serde_json::from_str(&benchmark_status).unwrap();
+        assert!(benchmark_status_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli recipes sota --json"));
     }
 
     #[test]
