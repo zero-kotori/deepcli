@@ -1337,7 +1337,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["The idle-session path copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--no-open` for CI or when you only need the forked id. Forking a currently running agent task is intentionally not claimed as supported yet; stop or wait for the task before forking."],
+            notes: &["The idle-session path copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--no-open` for CI or when you only need the forked id. The JSON report includes `contextCopy` and `nextActions` so UIs can explain whether the source was idle or running. Forking a currently running agent task is intentionally not claimed as supported yet; stop or wait for the task before forking."],
         },
         CommandHelp {
             name: "/diff",
@@ -17846,7 +17846,17 @@ struct ForkReport {
     fork: SessionMetadata,
     terminal_opened: bool,
     terminal_error: Option<String>,
+    context_copy: ForkContextCopy,
+    next_actions: Vec<String>,
     report: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkContextCopy {
+    source_state: String,
+    running_agent_state: bool,
+    complete_for_idle_session: bool,
+    warning: Option<String>,
 }
 
 fn handle_fork(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
@@ -17876,18 +17886,24 @@ fn handle_fork(workspace: &Path, current: Option<String>, args: Vec<String>) -> 
             "terminal_error": terminal_error,
         }),
     )?;
+    let context_copy = fork_context_copy(&source.metadata.state);
+    let next_actions = fork_next_actions(&fork_id, &context_copy);
     let report = format_fork_report(
         &source,
         &fork,
         note.as_deref(),
         terminal_opened,
         terminal_error.as_deref(),
+        &context_copy,
+        &next_actions,
     );
     let fork_report = ForkReport {
         source: source.metadata,
         fork: fork.metadata,
         terminal_opened,
         terminal_error,
+        context_copy,
+        next_actions,
         report,
     };
     let output = if options.json_output {
@@ -18035,6 +18051,46 @@ fn copy_path_recursively(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn fork_context_copy(source_state: &SessionState) -> ForkContextCopy {
+    let running_agent_state = matches!(
+        source_state,
+        SessionState::ContextLoading
+            | SessionState::Planning
+            | SessionState::Executing
+            | SessionState::Testing
+            | SessionState::Reviewing
+    );
+    let warning = running_agent_state.then(|| {
+        "fork copies persisted session files only and does not copy the in-memory running agent task"
+            .to_string()
+    });
+    ForkContextCopy {
+        source_state: session_state_name(source_state),
+        running_agent_state,
+        complete_for_idle_session: !running_agent_state,
+        warning,
+    }
+}
+
+fn session_state_name(state: &SessionState) -> String {
+    serde_json::to_value(state)
+        .ok()
+        .and_then(|value| value.as_str().map(ToOwned::to_owned))
+        .unwrap_or_else(|| format!("{state:?}").to_ascii_lowercase())
+}
+
+fn fork_next_actions(fork_id: &str, context_copy: &ForkContextCopy) -> Vec<String> {
+    let mut actions = vec![format!("deepcli resume {fork_id}")];
+    if context_copy.running_agent_state {
+        actions.push("deepcli stop".to_string());
+        actions.push(
+            "wait for the current task to finish, then run `deepcli fork --current` again"
+                .to_string(),
+        );
+    }
+    actions
+}
+
 fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
     let command = format!(
         "cd {} && deepcli resume {}",
@@ -18075,6 +18131,8 @@ fn format_fork_report(
     note: Option<&str>,
     terminal_opened: bool,
     terminal_error: Option<&str>,
+    context_copy: &ForkContextCopy,
+    next_actions: &[String],
 ) -> String {
     let mut lines = vec![
         format!(
@@ -18084,8 +18142,13 @@ fn format_fork_report(
             short_id(&source.id()),
             source.id()
         ),
+        format!("source state: {}", context_copy.source_state),
+        "context copy: persisted session files only".to_string(),
         format!("resume command: deepcli resume {}", fork.id()),
     ];
+    if let Some(warning) = &context_copy.warning {
+        lines.push(format!("warning: {warning}"));
+    }
     if let Some(note) = note {
         lines.push(format!("note: {note}"));
     }
@@ -18104,6 +18167,10 @@ fn format_fork_report(
         "running-agent fork is not supported yet; stop or wait for the task before forking"
             .to_string(),
     );
+    lines.push("next actions:".to_string());
+    for action in next_actions {
+        lines.push(format!("  - {action}"));
+    }
     lines.join("\n")
 }
 
@@ -18119,6 +18186,15 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
             "error": report.terminal_error.as_deref().map(redact_sensitive_text),
             "resumeCommand": format!("deepcli resume {}", report.fork.id),
         },
+        "contextCopy": {
+            "mode": "persisted_session_files",
+            "hotForkSupported": false,
+            "sourceState": report.context_copy.source_state,
+            "runningAgentState": report.context_copy.running_agent_state,
+            "completeForIdleSession": report.context_copy.complete_for_idle_session,
+            "warning": report.context_copy.warning.as_deref().map(redact_sensitive_text),
+        },
+        "nextActions": report.next_actions,
         "limitations": [
             "forking a currently running agent task is not supported yet"
         ],
@@ -28270,6 +28346,7 @@ mod tests {
         session.rename("original task").unwrap();
         session.append_message("user", "hello").unwrap();
         session.append_message("assistant", "world").unwrap();
+        session.set_state(SessionState::WaitingUser).unwrap();
 
         let output = handle_fork(
             dir.path(),
@@ -28284,6 +28361,10 @@ mod tests {
         let value: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["schema"], "deepcli.session.fork.v1");
         assert_eq!(value["terminal"]["opened"], false);
+        assert_eq!(value["contextCopy"]["mode"], "persisted_session_files");
+        assert_eq!(value["contextCopy"]["hotForkSupported"], false);
+        assert_eq!(value["contextCopy"]["sourceState"], "waiting_user");
+        assert_eq!(value["contextCopy"]["completeForIdleSession"], true);
         let fork_id = value["fork"]["id"].as_str().unwrap();
         assert_ne!(fork_id, session.id().to_string());
 
@@ -28291,6 +28372,49 @@ mod tests {
         assert_eq!(fork.load_messages().unwrap().len(), 2);
         assert!(fork.metadata.title.as_deref().unwrap().contains("Fork of"));
         assert_eq!(fork.metadata.state, SessionState::WaitingUser);
+    }
+
+    #[test]
+    fn fork_report_warns_when_source_session_is_running() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        session.append_message("user", "long running task").unwrap();
+        session.set_state(SessionState::Executing).unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--no-open".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["contextCopy"]["sourceState"], "executing");
+        assert_eq!(value["contextCopy"]["completeForIdleSession"], false);
+        assert_eq!(value["contextCopy"]["runningAgentState"], true);
+        assert!(value["contextCopy"]["warning"]
+            .as_str()
+            .unwrap()
+            .contains("does not copy the in-memory running agent"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli stop")));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("source state: executing"));
     }
 
     #[test]
