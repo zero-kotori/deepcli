@@ -272,7 +272,9 @@ impl CommandRouter {
             SlashCommand::Quickstart { args } => {
                 handle_quickstart(context.workspace, context.config, context.executor, args)
             }
-            SlashCommand::Recipes { args } => handle_recipes(context.workspace, args),
+            SlashCommand::Recipes { args } => {
+                handle_recipes(context.workspace, context.config, context.registry, args)
+            }
             SlashCommand::Scorecard { args } => {
                 handle_scorecard(context.workspace, context.config, context.registry, args)
             }
@@ -2086,10 +2088,15 @@ struct Recipe {
     notes: &'static [&'static str],
 }
 
-fn handle_recipes(workspace: &Path, args: Vec<String>) -> Result<String> {
+fn handle_recipes(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+    args: Vec<String>,
+) -> Result<String> {
     let options = parse_recipes_options(&args)?;
     let recipes = selected_recipes(options.topic)?;
-    let next_actions = recipes_next_actions(options.topic);
+    let next_actions = recipes_next_actions(workspace, config, registry, options.topic);
     let report = format_recipes_text(workspace, options.topic, &recipes, &next_actions);
     let output = if options.json_output {
         format_recipes_json(workspace, options.topic, &recipes, &next_actions, &report)?
@@ -2320,7 +2327,12 @@ fn recipes_catalog() -> Vec<Recipe> {
     ]
 }
 
-fn recipes_next_actions(topic: Option<&'static str>) -> Vec<String> {
+fn recipes_next_actions(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+    topic: Option<&'static str>,
+) -> Vec<String> {
     let actions = match topic {
         Some("start") => vec!["deepcli", "deepcli recipes code"],
         Some("code") => vec!["deepcli status --json", "deepcli recipes release"],
@@ -2338,11 +2350,21 @@ fn recipes_next_actions(topic: Option<&'static str>) -> Vec<String> {
             "deepcli doctor shell --json",
             "deepcli completion install zsh --force",
         ],
-        Some("sota") => vec![
-            "deepcli round --json",
-            "deepcli round --json --run-benchmark --fail-on-command",
-            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
-        ],
+        Some("sota") => {
+            let mut actions = build_round_report(
+                workspace,
+                config,
+                registry,
+                DEFAULT_ROUND_SCORE_THRESHOLD,
+                None,
+            )
+            .next_actions;
+            actions.push(
+                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                    .to_string(),
+            );
+            return dedup_preserve_order(actions);
+        }
         _ => vec![
             "deepcli recipes sota",
             "deepcli recipes release",
@@ -29212,9 +29234,13 @@ mod tests {
     #[test]
     fn recipes_json_output_is_structured_and_written() {
         let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
 
         let output = handle_recipes(
             dir.path(),
+            &config,
+            &registry,
             vec![
                 "release".into(),
                 "--json".into(),
@@ -29263,18 +29289,28 @@ mod tests {
     #[test]
     fn recipes_aliases_topics_and_output_safety_are_enforced() {
         let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
 
-        let output = handle_recipes(dir.path(), vec!["ship".into(), "--json".into()]).unwrap();
+        let output = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["ship".into(), "--json".into()],
+        )
+        .unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["topic"], "release");
 
-        let unknown = handle_recipes(dir.path(), vec!["unknown".into()])
+        let unknown = handle_recipes(dir.path(), &config, &registry, vec!["unknown".into()])
             .unwrap_err()
             .to_string();
         assert!(unknown.contains("unknown /recipes topic `unknown`"));
 
         let traversal = handle_recipes(
             dir.path(),
+            &config,
+            &registry,
             vec!["--output".into(), "../recipes.json".into()],
         )
         .unwrap_err()
@@ -29286,9 +29322,17 @@ mod tests {
     #[test]
     fn recipes_sota_topic_guides_product_loop_and_benchmark_compare() {
         let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
 
-        let output =
-            handle_recipes(dir.path(), vec!["product-loop".into(), "--json".into()]).unwrap();
+        let output = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["product-loop".into(), "--json".into()],
+        )
+        .unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(value["schema"], "deepcli.recipes.v1");
@@ -29325,10 +29369,11 @@ mod tests {
         let next_actions = value["nextActions"].as_array().unwrap();
         assert_eq!(
             next_actions.first().unwrap().as_str().unwrap(),
-            "deepcli round --json"
+            "deepcli round --json --run-benchmark --fail-on-command"
         );
         assert!(next_actions.iter().any(|action| {
-            action.as_str().unwrap() == "deepcli round --json --run-benchmark --fail-on-command"
+            action.as_str().unwrap()
+                == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
         }));
         assert!(next_actions
             .iter()
@@ -29340,6 +29385,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("sota - SOTA Product Loop"));
+
+        let trend_dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(trend_dir.path());
+        let now = Utc::now();
+        for preset in MEANINGFUL_BENCHMARK_PRESETS {
+            write_benchmark_status_test_artifact(
+                trend_dir.path(),
+                &format!("20990101T000000Z-product-{preset}.json"),
+                now,
+                preset,
+                preset,
+                "passed",
+            );
+        }
+        let trend_output = handle_recipes(
+            trend_dir.path(),
+            &config,
+            &registry,
+            vec!["sota".into(), "--json".into()],
+        )
+        .unwrap();
+        let trend_value: Value = serde_json::from_str(&trend_output).unwrap();
+        let trend_next_actions = trend_value["nextActions"].as_array().unwrap();
+        assert_eq!(
+            trend_next_actions.first().unwrap().as_str().unwrap(),
+            "deepcli round --json --run-benchmark --fail-on-command"
+        );
 
         let help = CommandRouter::help_for(&["recipes".to_string()]).unwrap();
         assert!(help.contains("/recipes sota"));
