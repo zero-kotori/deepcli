@@ -813,7 +813,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard` and `/benchmark status` into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard and benchmark evidence are both ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
         },
         CommandHelp {
             name: "/selftest",
@@ -3139,6 +3139,7 @@ struct RoundReport {
     scorecard: ScorecardReport,
     benchmark: BenchmarkStatusReport,
     benchmark_run: Option<RoundBenchmarkRun>,
+    goal: Option<RoundGoalStatus>,
     gates: Vec<RoundGate>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
@@ -3153,12 +3154,24 @@ struct RoundBenchmarkRun {
     fail_on_command: bool,
 }
 
+#[derive(Debug, Clone)]
+struct RoundGoalStatus {
+    session: SessionMetadata,
+    source: GoalSessionSource,
+    ready: bool,
+    blockers: Vec<String>,
+    plan: GoalPlanReadiness,
+    acceptance: Vec<GoalAcceptanceEvidence>,
+    report: String,
+}
+
 struct RoundTextInput<'a> {
     status: &'a str,
     score_threshold: u8,
     scorecard: &'a ScorecardReport,
     benchmark: &'a BenchmarkStatusReport,
     benchmark_run: Option<&'a RoundBenchmarkRun>,
+    goal: Option<&'a RoundGoalStatus>,
     gates: &'a [RoundGate],
     gaps: &'a [String],
     next_actions: &'a [String],
@@ -3337,8 +3350,10 @@ fn build_round_report(
     let scorecard = build_scorecard_report(workspace, config, registry);
     let benchmark_artifacts = load_benchmark_artifacts(workspace).unwrap_or_default();
     let benchmark = build_benchmark_status_report(workspace, &benchmark_artifacts, Utc::now());
+    let goal = build_round_goal_status(workspace);
     let scorecard_ready = scorecard.status == "ok" && scorecard.percent >= score_threshold;
     let benchmark_ready = benchmark.status == "ready";
+    let goal_ready = goal.as_ref().is_none_or(|goal| goal.ready);
 
     let mut gaps = Vec::new();
     if scorecard.percent < score_threshold {
@@ -3354,9 +3369,16 @@ fn build_round_report(
             .iter()
             .map(|gap| format!("benchmark_evidence: {gap}")),
     );
+    if let Some(goal) = &goal {
+        gaps.extend(
+            goal.blockers
+                .iter()
+                .map(|blocker| format!("goal_readiness: {blocker}")),
+        );
+    }
     let gaps = dedup_preserve_order(gaps);
 
-    let gates = vec![
+    let mut gates = vec![
         RoundGate {
             id: "scorecard",
             title: "Product Capability Scorecard",
@@ -3395,8 +3417,32 @@ fn build_round_report(
             },
         },
     ];
+    if let Some(goal) = &goal {
+        gates.push(RoundGate {
+            id: "goal_readiness",
+            title: "Goal Readiness",
+            status: if goal.ready { "passed" } else { "failed" },
+            summary: if goal.ready {
+                format!(
+                    "goal session {} is ready with no blocker(s)",
+                    short_id(&goal.session.id)
+                )
+            } else {
+                format!(
+                    "goal session {} has {} blocker(s)",
+                    short_id(&goal.session.id),
+                    goal.blockers.len()
+                )
+            },
+            next_action: if goal.ready {
+                Some("deepcli goal status --json".to_string())
+            } else {
+                Some("deepcli goal gate --json".to_string())
+            },
+        });
+    }
 
-    let status = if scorecard_ready && benchmark_ready && gaps.is_empty() {
+    let status = if scorecard_ready && benchmark_ready && goal_ready && gaps.is_empty() {
         "ready"
     } else {
         "needs_attention"
@@ -3416,6 +3462,10 @@ fn build_round_report(
         next_actions.push("deepcli benchmark gate --json".to_string());
         next_actions.push("deepcli benchmark trends --json".to_string());
     }
+    if goal.as_ref().is_some_and(|goal| !goal.ready) {
+        next_actions.push("deepcli goal status --json".to_string());
+        next_actions.push("deepcli goal gate --json".to_string());
+    }
     next_actions.push("deepcli preflight --json".to_string());
     next_actions.push("deepcli gate --json".to_string());
     next_actions.push("deepcli round --json".to_string());
@@ -3428,6 +3478,7 @@ fn build_round_report(
             scorecard: &scorecard,
             benchmark: &benchmark,
             benchmark_run: benchmark_run.as_ref(),
+            goal: goal.as_ref(),
             gates: &gates,
             gaps: &gaps,
             next_actions: &next_actions,
@@ -3441,10 +3492,26 @@ fn build_round_report(
         scorecard,
         benchmark,
         benchmark_run,
+        goal,
         gates,
         gaps,
         next_actions,
     }
+}
+
+fn build_round_goal_status(workspace: &Path) -> Option<RoundGoalStatus> {
+    let store = SessionStore::new(workspace);
+    let selection = select_goal_session(&store, None).ok().flatten()?;
+    let report = collect_goal_readiness(workspace, &selection.session, &selection.goal).ok()?;
+    Some(RoundGoalStatus {
+        session: selection.session.metadata.clone(),
+        source: selection.source,
+        ready: report.ready,
+        blockers: report.blockers,
+        plan: report.plan,
+        acceptance: report.acceptance,
+        report: report.report,
+    })
 }
 
 fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
@@ -3468,6 +3535,17 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
             input.benchmark.artifact_count
         ),
     ];
+    if let Some(goal) = input.goal {
+        lines.push(format!(
+            "goal: ready={} session={} source={} blockers={}",
+            goal.ready,
+            short_id(&goal.session.id),
+            goal.source.as_str(),
+            goal.blockers.len()
+        ));
+    } else {
+        lines.push("goal: none".to_string());
+    }
     if let Some(run) = input.benchmark_run {
         lines.push(format!(
             "benchmark run: status={} presets={} passed={} failed={} timeout={} stoppedEarly={}",
@@ -3540,6 +3618,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "scorecard": scorecard_summary_json(&report.scorecard),
         "benchmarkStatus": round_benchmark_status_json(&report.benchmark),
         "benchmarkRun": report.benchmark_run.as_ref().map(round_benchmark_run_json),
+        "goalStatus": report.goal.as_ref().map(round_goal_status_json),
         "gates": report.gates.iter().map(|gate| json!({
             "id": gate.id,
             "title": gate.title,
@@ -3551,6 +3630,33 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "nextActions": &report.next_actions,
         "report": &report.report,
     }))?)
+}
+
+fn round_goal_status_json(goal: &RoundGoalStatus) -> Value {
+    json!({
+        "schema": "deepcli.goal.status.summary.v1",
+        "status": if goal.ready { "ready" } else { "blocked" },
+        "ready": goal.ready,
+        "sessionSource": goal.source.as_str(),
+        "session": session_metadata_json(&goal.session),
+        "blockerCount": goal.blockers.len(),
+        "blockers": &goal.blockers,
+        "plan": {
+            "present": goal.plan.present,
+            "total": goal.plan.total,
+            "completed": goal.plan.completed,
+            "pending": goal.plan.pending,
+            "inProgress": goal.plan.in_progress,
+            "failed": goal.plan.failed,
+        },
+        "acceptance": goal.acceptance.iter().map(|item| json!({
+            "command": redact_sensitive_text(&item.command),
+            "status": item.status,
+            "exitCode": item.exit_code,
+            "createdAt": item.created_at,
+        })).collect::<Vec<_>>(),
+        "report": &goal.report,
+    })
 }
 
 fn round_benchmark_run_json(run: &RoundBenchmarkRun) -> Value {
@@ -27501,6 +27607,7 @@ mod tests {
         assert!(round_help.contains("--fail-on-gaps"));
         assert!(round_help.contains("--run-benchmark"));
         assert!(round_help.contains("--fail-on-command"));
+        assert!(round_help.contains("goalStatus"));
         assert!(round_help.contains("deepcli round --json"));
 
         let selftest_help = CommandRouter::help_for(&["selftest".to_string()]).unwrap();
@@ -28315,6 +28422,60 @@ mod tests {
         assert!(dir.path().join(".deepcli/benchmarks").exists());
         assert!(dir.path().join(".deepcli/exports/round-run.json").exists());
         assert!(!dir.path().join(".deepcli/sessions").exists());
+    }
+
+    #[test]
+    fn round_surfaces_latest_goal_readiness_when_goal_exists() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        handle_goal(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "实现全部需求".to_string(),
+                "--acceptance-cmd".to_string(),
+                "cargo test".to_string(),
+            ],
+        )
+        .unwrap();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.round.v1");
+        assert_eq!(
+            value["goalStatus"]["schema"],
+            "deepcli.goal.status.summary.v1"
+        );
+        assert_eq!(value["goalStatus"]["ready"], false);
+        assert_eq!(value["goalStatus"]["sessionSource"], "latest_with_goal");
+        assert_eq!(
+            value["goalStatus"]["session"]["id"],
+            session.id().to_string()
+        );
+        assert!(value["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|gate| gate["id"] == "goal_readiness" && gate["status"] == "failed"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action
+                .as_str()
+                .unwrap()
+                .contains("deepcli goal gate --json")));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("goal: ready=false"));
     }
 
     #[test]
