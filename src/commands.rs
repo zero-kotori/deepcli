@@ -746,7 +746,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli benchmark scorecard --json",
                 "deepcli deepseek scorecard --json",
             ],
-            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
+            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema. The global `nextActions` list starts with gap remediation actions before general discovery commands, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -2404,6 +2404,7 @@ struct ScorecardCategory {
     evidence: Vec<String>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
+    priority_next_actions: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2896,8 +2897,13 @@ fn build_scorecard_report(
     };
     let mut next_actions = categories
         .iter()
-        .flat_map(|category| category.next_actions.clone())
+        .flat_map(|category| category.priority_next_actions.clone())
         .collect::<Vec<_>>();
+    next_actions.extend(
+        categories
+            .iter()
+            .flat_map(|category| category.next_actions.clone()),
+    );
     next_actions.push(
         "run `/round --json --run-benchmark --fail-on-command` after each product round"
             .to_string(),
@@ -2972,6 +2978,7 @@ fn scorecard_command_category(
         )],
         gaps: Vec::new(),
         next_actions: Vec::new(),
+        priority_next_actions: Vec::new(),
     };
     if !missing.is_empty() {
         category
@@ -2991,6 +2998,7 @@ fn scorecard_add_evidence(category: &mut ScorecardCategory, points: u16, evidenc
 
 fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &str) {
     category.gaps.push(gap.to_string());
+    category.priority_next_actions.push(next_action.to_string());
     category.next_actions.push(next_action.to_string());
 }
 
@@ -27655,6 +27663,7 @@ mod tests {
         assert!(scorecard_help.contains("/scorecard - "));
         assert!(scorecard_help.contains("running-safe: yes"));
         assert!(scorecard_help.contains("deepcli.scorecard.v1"));
+        assert!(scorecard_help.contains("starts with gap remediation actions"));
         assert!(scorecard_help.contains("deepcli benchmark --fail-below 85"));
 
         let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
@@ -28376,6 +28385,29 @@ mod tests {
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/scorecard.json")).unwrap();
         assert_eq!(written, output);
+    }
+
+    #[test]
+    fn scorecard_next_actions_prioritize_benchmark_gap_remediation() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"].as_array().unwrap();
+
+        assert!(value["gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|gap| gap.as_str().unwrap().starts_with("benchmark_evidence:")));
+        assert_eq!(
+            next_actions.first().unwrap().as_str().unwrap(),
+            "run `/round --json --run-benchmark --fail-on-command`"
+        );
     }
 
     #[test]
