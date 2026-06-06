@@ -102,13 +102,18 @@
    - 当前 benchmark evidence 缺失时，round 报告里的 `scorecard.categories[] | select(.id=="benchmark_evidence") | .nextActions[0]` 也是 ``run `/round --json --run-benchmark --fail-on-command` ``。
    - 目的：让 TUI、外部 UI 或脚本只读取一份 `deepcli.round.v1` 报告，也能按分类展示修复动作，不必再额外调用 `deepcli scorecard --json`。
 
+18. scorecard 全局 nextActions 按 gap 聚焦
+   - 结果：`deepcli scorecard --json` 在存在 gaps 时，全局 `nextActions` 不再混入所有 strong category 的通用探索命令，而是聚焦 priority 修复动作、有 gap 分类动作和 SOTA 产品循环动作。
+   - 当前 benchmark evidence 缺失时，`scorecard.nextActions[0]` 仍是 ``run `/round --json --run-benchmark --fail-on-command` ``，但 `deepcli quickstart --json` 这类 strong category 导航只保留在对应 category 的 `nextActions` 中。
+   - 目的：让 scorecard 全局动作更像本轮修复队列，同时保留分类级完整导航，减少用户在高分但有单一缺口时被大量无关动作干扰。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
 
 本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序，以及 round 摘要中的分类级 nextActions 透传，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传，以及 scorecard 全局 nextActions 的 gap-aware 聚焦，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 

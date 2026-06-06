@@ -2933,6 +2933,7 @@ fn build_scorecard_report(
     } else {
         "needs_attention"
     };
+    let has_gaps = !gaps.is_empty();
     let mut next_actions = categories
         .iter()
         .flat_map(|category| category.priority_next_actions.clone())
@@ -2940,7 +2941,14 @@ fn build_scorecard_report(
     next_actions.extend(
         categories
             .iter()
-            .flat_map(|category| category.next_actions.clone()),
+            .filter_map(|category| {
+                if has_gaps && category.gaps.is_empty() {
+                    None
+                } else {
+                    Some(category.next_actions.clone())
+                }
+            })
+            .flatten(),
     );
     next_actions.push(
         "run `/round --json --run-benchmark --fail-on-command` after each product round"
@@ -29171,6 +29179,9 @@ mod tests {
             next_actions.first().unwrap().as_str().unwrap(),
             "run `/round --json --run-benchmark --fail-on-command`"
         );
+        assert!(!next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
 
         let benchmark_category = value["categories"]
             .as_array()
@@ -29188,6 +29199,18 @@ mod tests {
                 .unwrap(),
             "run `/round --json --run-benchmark --fail-on-command`"
         );
+
+        let command_discovery_category = value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["id"] == "command_discovery")
+            .unwrap();
+        assert!(command_discovery_category["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
     }
 
     #[test]
