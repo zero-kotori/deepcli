@@ -137,13 +137,18 @@
    - 已有本地 artifact 的 weak、incomplete、failing、stale 或 ready 状态仍会展示 dry-run clean，作为证据维护动作。
    - 目的：让 missing 状态优先引导用户生成 benchmark evidence，而不是推荐一个不会产生价值的空目录清理步骤。
 
+25. scorecard benchmark 修复队列去除 round 只读跳转
+   - 结果：当当前唯一 gap 属于 benchmark evidence 时，`deepcli scorecard --json` 的全局 `nextActions` 和 `benchmark_evidence.nextActions` 都不会包含 `deepcli round --json`。
+   - 首个动作仍是可执行修复命令 `deepcli round --json --run-benchmark --fail-on-command`，后续保留 recipes、benchmark suite、gate、trends、status 和 preflight 等动作。
+   - 目的：让 scorecard 的修复队列只包含直接修复或有上下文增益的动作，避免用户在 scorecard 和只读 round 报告之间循环。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
 
 本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理，以及 benchmark status 空证据状态的 clean action 隐藏，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏，以及 scorecard benchmark 修复队列的 round 只读跳转回归测试，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 

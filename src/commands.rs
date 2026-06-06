@@ -2447,6 +2447,7 @@ struct ScorecardReport {
 
 const SCORECARD_BENCHMARK_REMEDIATION_ACTION: &str =
     "deepcli round --json --run-benchmark --fail-on-command";
+const SCORECARD_ROUND_REPORT_ACTION: &str = "deepcli round --json";
 const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
     "deepcli benchmark run-suite --json --fail-on-command";
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
@@ -2671,7 +2672,7 @@ fn build_scorecard_report(
                 "/handoff",
             ],
             &[
-                "deepcli round --json",
+                SCORECARD_ROUND_REPORT_ACTION,
                 "deepcli preflight --json",
                 "deepcli benchmark presets --json",
                 "deepcli round --json --run-benchmark --fail-on-command",
@@ -2950,7 +2951,9 @@ fn build_scorecard_report(
     next_actions.push("deepcli benchmark status --json".to_string());
     next_actions.push("deepcli benchmark trends --json".to_string());
     next_actions.push("deepcli benchmark gate --json".to_string());
-    next_actions.push("deepcli round --json".to_string());
+    if !has_gaps {
+        next_actions.push(SCORECARD_ROUND_REPORT_ACTION.to_string());
+    }
     next_actions.push("deepcli preflight --json".to_string());
     next_actions = dedup_preserve_order(next_actions);
     let report = format_scorecard_text(
@@ -3036,7 +3039,13 @@ fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &
 
 fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) {
     let mut actions = category.priority_next_actions.clone();
-    actions.extend(category.next_actions.clone());
+    actions.extend(
+        category
+            .next_actions
+            .clone()
+            .into_iter()
+            .filter(|action| category.gaps.is_empty() || action != SCORECARD_ROUND_REPORT_ACTION),
+    );
     category.next_actions = dedup_preserve_order(actions);
 }
 
@@ -29187,6 +29196,9 @@ mod tests {
             .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
         assert!(!next_actions
             .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli round --json"));
+        assert!(!next_actions
+            .iter()
             .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
 
         let benchmark_category = value["categories"]
@@ -29215,6 +29227,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
+        assert!(!benchmark_category["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli round --json"));
 
         let command_discovery_category = value["categories"]
             .as_array()
