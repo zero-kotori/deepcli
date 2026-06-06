@@ -5492,7 +5492,7 @@ fn build_benchmark_status_report(
         missing_meaningful_presets: Vec::new(),
         required_preset_statuses: Vec::new(),
         gaps: Vec::new(),
-        next_actions: benchmark_status_next_actions(),
+        next_actions: benchmark_status_next_actions(artifacts.len()),
     };
     report.missing_meaningful_presets = MEANINGFUL_BENCHMARK_PRESETS
         .iter()
@@ -5564,8 +5564,8 @@ fn build_benchmark_status_report(
     report
 }
 
-fn benchmark_status_next_actions() -> Vec<String> {
-    vec![
+fn benchmark_status_next_actions(artifact_count: usize) -> Vec<String> {
+    let mut actions = vec![
         "deepcli recipes sota --json".to_string(),
         "deepcli benchmark presets --json".to_string(),
         "deepcli benchmark run-suite --json --fail-on-command".to_string(),
@@ -5573,9 +5573,12 @@ fn benchmark_status_next_actions() -> Vec<String> {
         "deepcli benchmark gate --json".to_string(),
         "deepcli benchmark summary --json".to_string(),
         "deepcli benchmark trends --json".to_string(),
-        "deepcli benchmark clean --dry-run --json".to_string(),
-        "deepcli scorecard --json".to_string(),
-    ]
+    ];
+    if artifact_count > 0 {
+        actions.push("deepcli benchmark clean --dry-run --json".to_string());
+    }
+    actions.push("deepcli scorecard --json".to_string());
+    actions
 }
 
 fn classify_benchmark_status(report: &BenchmarkStatusReport) -> &'static str {
@@ -29918,6 +29921,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().contains("run --preset cargo-test")));
+        assert!(!missing_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli benchmark clean --dry-run --json"));
 
         let missing_gate = handle_benchmark(
             dir.path(),
@@ -29972,6 +29980,11 @@ mod tests {
             .unwrap()
             .iter()
             .any(|gap| gap.as_str().unwrap().contains("only smoke")));
+        assert!(weak_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli benchmark clean --dry-run --json"));
 
         let scorecard =
             handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
