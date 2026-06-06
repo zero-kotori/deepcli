@@ -1,8 +1,9 @@
 use crate::agents::AgentStore;
 use crate::commands::{
-    handle_approval, handle_completion_local, handle_logs, handle_selftest_local, handle_session,
-    handle_trace, handle_usage, list_resumable_sessions, CommandHelpSummary, CommandRouter,
-    SlashCommand,
+    handle_approval, handle_benchmark, handle_completion_local, handle_logs, handle_preflight,
+    handle_privacy_scan, handle_recipes, handle_round, handle_scorecard, handle_selftest_local,
+    handle_session, handle_trace, handle_usage, list_resumable_sessions, CommandHelpSummary,
+    CommandRouter, SlashCommand,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::permissions::PermissionEngine;
@@ -18,7 +19,7 @@ use crate::session::{
     SessionMetadata, SessionState, SessionStore, SideQuestion, SideQuestionStatus, ToolCallStatus,
 };
 use crate::skills::SkillStore;
-use crate::tools::ToolExecutor;
+use crate::tools::{ToolExecutor, ToolRegistry};
 use anyhow::{anyhow, Result};
 use crossterm::{
     event::{
@@ -2568,9 +2569,53 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             push_running_command_result(state, |active| handle_logs(&active.workspace, args));
             true
         }
+        SlashCommand::Privacy { args } => {
+            push_running_command_result(state, |active| {
+                let config = AppConfig::load_effective(&active.workspace, None)?;
+                handle_privacy_scan(&active.workspace, &config, args)
+            });
+            true
+        }
+        SlashCommand::Recipes { args } => {
+            push_running_command_result(state, |active| {
+                let (config, registry) = running_local_product_context(&active.workspace)?;
+                handle_recipes(&active.workspace, &config, &registry, args)
+            });
+            true
+        }
+        SlashCommand::Scorecard { args } => {
+            push_running_command_result(state, |active| {
+                let (config, registry) = running_local_product_context(&active.workspace)?;
+                handle_scorecard(&active.workspace, &config, &registry, args)
+            });
+            true
+        }
+        SlashCommand::Round { args } => {
+            push_running_command_result(state, |active| {
+                ensure_running_round_is_read_only(&args)?;
+                let (config, registry) = running_local_product_context(&active.workspace)?;
+                handle_round(&active.workspace, &config, &registry, args)
+            });
+            true
+        }
+        SlashCommand::Benchmark { args } => {
+            push_running_command_result(state, |active| {
+                ensure_running_benchmark_is_read_only(&args)?;
+                let (config, registry) = running_local_product_context(&active.workspace)?;
+                handle_benchmark(&active.workspace, &config, &registry, args)
+            });
+            true
+        }
         SlashCommand::Selftest { args } => {
             push_running_command_result(state, |active| {
                 handle_selftest_local(&active.workspace, args)
+            });
+            true
+        }
+        SlashCommand::Preflight { args } => {
+            push_running_command_result(state, |active| {
+                ensure_running_preflight_is_planned(&args)?;
+                handle_preflight(&active.workspace, args)
             });
             true
         }
@@ -2616,13 +2661,93 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/selftest`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
             true
         }
     }
+}
+
+fn running_local_product_context(workspace: &Path) -> Result<(AppConfig, ToolRegistry)> {
+    Ok((
+        AppConfig::load_effective(workspace, None)?,
+        ToolRegistry::mvp(),
+    ))
+}
+
+fn ensure_running_round_is_read_only(args: &[String]) -> Result<()> {
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--run-benchmark"
+                | "--run-benchmarks"
+                | "--run-suite"
+                | "--preset"
+                | "--presets"
+                | "--fail-on-command"
+                | "--fail-fast"
+        ) || arg.starts_with("--preset=")
+            || arg.starts_with("--presets=")
+    }) {
+        anyhow::bail!(
+            "stop or wait for the running task before executing benchmark-producing `/round` options"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_running_benchmark_is_read_only(args: &[String]) -> Result<()> {
+    let Some(first) = args.first().map(String::as_str) else {
+        return Ok(());
+    };
+    if first.starts_with('-') {
+        return Ok(());
+    }
+    let read_only = matches!(
+        first,
+        "scorecard"
+            | "rubric"
+            | "presets"
+            | "preset"
+            | "catalog"
+            | "status"
+            | "health"
+            | "doctor"
+            | "gate"
+            | "summary"
+            | "summarize"
+            | "report"
+            | "trend"
+            | "trends"
+            | "history"
+            | "compare"
+            | "comparison"
+            | "baseline"
+            | "list"
+            | "ls"
+            | "show"
+            | "view"
+    );
+    if !read_only {
+        anyhow::bail!(
+            "stop or wait for the running task before executing benchmark-producing `/benchmark` options"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_running_preflight_is_planned(args: &[String]) -> Result<()> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--dry-run" | "--list" | "--plan"))
+    {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "stop or wait for the running task before executing `/preflight`; use `/preflight --dry-run --json` while the agent is running"
+    );
 }
 
 fn push_running_command_result<F>(state: &mut TuiState, action: F)
@@ -2937,7 +3062,7 @@ fn submit_tui_input(
         state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content:
-                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/selftest`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
+                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
                     .to_string(),
         });
         state.last_event = "input deferred while running".to_string();
@@ -8346,6 +8471,87 @@ mod tests {
             loaded.load_approval_requests().unwrap()[0].status,
             ApprovalStatus::Approved
         );
+    }
+
+    #[test]
+    fn running_tui_handles_product_loop_reports_without_runtime() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        for (command, expected_schema) in [
+            ("/recipes sota --json", "deepcli.recipes.v1"),
+            ("/scorecard --json", "deepcli.scorecard.v1"),
+            ("/round --json", "deepcli.round.v1"),
+            ("/benchmark status --json", "deepcli.benchmark.status.v1"),
+            ("/preflight --dry-run --json", "deepcli.preflight.v1"),
+            ("/privacy --json --no-history", "deepcli.privacy.scan.v1"),
+        ] {
+            assert!(handle_running_tui_local_command(&mut state, command));
+            assert!(
+                state
+                    .chat
+                    .last()
+                    .is_some_and(|line| line.content.contains(expected_schema)),
+                "{command} should render {expected_schema}"
+            );
+            assert!(state.last_event.starts_with("running command ok"));
+        }
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/round --json --run-benchmark"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line
+                    .content
+                    .contains("stop or wait for the running task before executing")
+        }));
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/benchmark run-suite --json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line
+                    .content
+                    .contains("stop or wait for the running task before executing")
+        }));
     }
 
     #[test]

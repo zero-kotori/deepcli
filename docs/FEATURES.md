@@ -42,7 +42,8 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - message box 支持编辑、粘贴、多行输入和历史输入。
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
-- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/benchmark`、`/selftest`、`/preflight`、`/completion`、`/session`、`/approval`、`/stop` 和 `/quit`。
+- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、`/round`、`/benchmark status|summary|trends|compare|list|show|presets`、`/selftest`、`/preflight --dry-run`、`/completion`、`/session`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
+- 会执行本地 shell 或维护 artifact 的 `/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean` 和完整 `/preflight` 需要等当前 Agent 任务结束或先 `/stop`。
 - 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情。
 
 ## 会话管理

@@ -109,6 +109,8 @@ deepcli handoff --pr
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
+TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令和 `/preflight --dry-run`；会执行 benchmark、完整 preflight 或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
+
 查看任务型工作流清单：
 
 ```bash

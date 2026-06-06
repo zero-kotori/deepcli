@@ -797,7 +797,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits a compare-ready `deepcli.benchmark.baseline.v1` JSON template and writes it to a workspace-contained path when `--output` is supplied; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits a compare-ready `deepcli.benchmark.baseline.v1` JSON template and writes it to a workspace-contained path when `--output` is supplied; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied. While an agent task is running in the TUI, read-only benchmark reports such as `status`, `summary`, `trends`, `compare`, `list`, `show`, `presets`, and scorecard compatibility are allowed; benchmark-producing `run`, `run-suite`, `record`, `baseline-template`, and cleanup actions should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/round",
@@ -823,7 +823,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. The `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. The `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready. While an agent task is running in the TUI, read-only `/round` reports are allowed; benchmark-producing `--run-benchmark`, `--run-suite`, `--preset`, `--presets`, `--fail-on-command`, and `--fail-fast` options should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/selftest",
@@ -864,7 +864,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli release-check --dry-run",
                 "deepcli preflight --quick --json",
             ],
-            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Use `--json` for the stable `deepcli.preflight.v1` schema."],
+            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Use `--json` for the stable `deepcli.preflight.v1` schema. While an agent task is running in the TUI, use `/preflight --dry-run --json` for a non-executing plan; full preflight should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/completion",
@@ -2088,7 +2088,7 @@ struct Recipe {
     notes: &'static [&'static str],
 }
 
-fn handle_recipes(
+pub(crate) fn handle_recipes(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
@@ -2475,7 +2475,7 @@ const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
     "deepcli benchmark run --preset cargo-test --json --fail-on-command";
 
-fn handle_scorecard(
+pub(crate) fn handle_scorecard(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
@@ -3289,7 +3289,7 @@ struct RoundTextInput<'a> {
     next_actions: &'a [String],
 }
 
-fn handle_round(
+pub(crate) fn handle_round(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
@@ -4258,7 +4258,7 @@ const BENCHMARK_PRESETS: &[BenchmarkPreset] = &[
     },
 ];
 
-fn handle_benchmark(
+pub(crate) fn handle_benchmark(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
@@ -9152,7 +9152,7 @@ struct PreflightReport {
     next_actions: Vec<String>,
 }
 
-fn handle_preflight(workspace: &Path, args: Vec<String>) -> Result<String> {
+pub(crate) fn handle_preflight(workspace: &Path, args: Vec<String>) -> Result<String> {
     let options = parse_preflight_options(&args)?;
     let report = build_preflight_report(workspace, &options)?;
     let output = if options.json_output {
@@ -11900,7 +11900,11 @@ fn log_file_summary_json(file: &LogFileSummary) -> Value {
     })
 }
 
-fn handle_privacy_scan(workspace: &Path, config: &AppConfig, args: Vec<String>) -> Result<String> {
+pub(crate) fn handle_privacy_scan(
+    workspace: &Path,
+    config: &AppConfig,
+    args: Vec<String>,
+) -> Result<String> {
     let options = parse_privacy_scan_options(&args)?;
     let report = build_privacy_scan_report(workspace, &options, &config.privacy)?;
     let output = if options.json_output {

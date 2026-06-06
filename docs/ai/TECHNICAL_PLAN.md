@@ -480,7 +480,7 @@ MVP 可使用本地 JSONL：
 - `/stop`，TUI 运行中中断后台 Agent task，记录 `task_stopped` audit，标记当前 session 为 `paused`，并重建可继续交互的 runtime；`/cancel` 和 `/abort` 作为别名。
 - `/terminal`
 
-所有指令都应能在 Agent 运行期间安全执行；当前 TUI 运行中至少需要保留本地 `/status`、`/usage`、`/trace`、`/logs`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 与 `/btw ask/list/answer/clear`，通过当前 session 文件直接读写或按工具权限策略执行，不依赖正在后台执行的 `AgentRuntime`。by-the-way 小问题应进入旁路队列，不破坏主任务状态。
+所有 running-safe 指令都应能在 Agent 运行期间安全执行；当前 TUI 运行中至少需要保留本地 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 与 `/btw ask/list/answer/clear`，通过当前 session 文件直接读写或按工具权限策略执行，不依赖正在后台执行的 `AgentRuntime`。`/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean` 和完整 `/preflight` 这类会执行 shell、写入 benchmark 证据或维护 artifact 的动作，应在 running handler 中给出明确错误，要求用户等待任务结束或先 `/stop`。by-the-way 小问题应进入旁路队列，不破坏主任务状态。
 
 ## 14. Prompt 和 Skill 设计
 

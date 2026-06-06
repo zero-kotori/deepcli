@@ -88,7 +88,7 @@
 - 支持多行输入、历史输入、bracketed paste 粘贴大段文本；粘贴内容应插入当前光标位置并规范化 CRLF/CR 换行。
 - 输入 `/` 时展示可筛选的命令帮助面板，支持上下选择、Tab 补全，并显示 usage、examples、注意事项和运行中可安全执行标记；Agent 运行中应优先展示 running-safe 命令。
 - 对 `1`、`ok`、`继续` 等低信息输入应先本地追问并给出 `/help`、`/status`、`/session history` 等可执行提示；追问后会话进入 `waiting_user`，用户的短回复不应再次触发同一追问循环。
-- 支持 Agent 运行期间执行本地 `/status`、`/usage`、`/trace`、`/logs`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 与 by-the-way 问题记录、查看、回答和清理；`/stop` 应中断当前任务并保留可恢复会话，`/quit` 在运行中应先停止任务再退出。
+- 支持 Agent 运行期间执行本地 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 与 by-the-way 问题记录、查看、回答和清理；`/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean` 和完整 `/preflight` 这类会执行 shell、写入 benchmark 证据或维护 artifact 的动作，应提示用户等待当前任务结束或先 `/stop`；`/stop` 应中断当前任务并保留可恢复会话，`/quit` 在运行中应先停止任务再退出。
 - 支持从 message box 打开相同目录的新终端；Agent 正在运行时也应作为 running-safe 本地命令立即执行。
 - 消息区应支持 PageUp/PageDown 或鼠标/触控板滚轮回看历史消息，Ctrl-Home/Ctrl-End 跳转到最早/最新消息，长任务中不应只能看到最后几条输出。
 
