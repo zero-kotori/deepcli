@@ -2900,6 +2900,7 @@ fn build_scorecard_report(
         if category.score > category.max_score {
             category.score = category.max_score;
         }
+        scorecard_prioritize_category_next_actions(category);
     }
 
     let score = categories
@@ -3038,6 +3039,12 @@ fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &
     category.gaps.push(gap.to_string());
     category.priority_next_actions.push(next_action.to_string());
     category.next_actions.push(next_action.to_string());
+}
+
+fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) {
+    let mut actions = category.priority_next_actions.clone();
+    actions.extend(category.next_actions.clone());
+    category.next_actions = dedup_preserve_order(actions);
 }
 
 fn scorecard_percent(score: u16, max_score: u16) -> u8 {
@@ -29161,6 +29168,23 @@ mod tests {
             .all(|gap| gap.as_str().unwrap().starts_with("benchmark_evidence:")));
         assert_eq!(
             next_actions.first().unwrap().as_str().unwrap(),
+            "run `/round --json --run-benchmark --fail-on-command`"
+        );
+
+        let benchmark_category = value["categories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|category| category["id"] == "benchmark_evidence")
+            .unwrap();
+        assert_eq!(
+            benchmark_category["nextActions"]
+                .as_array()
+                .unwrap()
+                .first()
+                .unwrap()
+                .as_str()
+                .unwrap(),
             "run `/round --json --run-benchmark --fail-on-command`"
         );
     }
