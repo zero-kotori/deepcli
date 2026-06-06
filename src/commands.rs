@@ -795,7 +795,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`; `baseline-template` emits a compare-ready `deepcli.benchmark.baseline.v1` JSON template and writes it to a workspace-contained path when `--output` is supplied; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; `baseline-template` emits a compare-ready `deepcli.benchmark.baseline.v1` JSON template and writes it to a workspace-contained path when `--output` is supplied; `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied."],
         },
         CommandHelp {
             name: "/round",
@@ -7510,7 +7510,7 @@ fn format_benchmark_trends_json(
         "caseCount": trends.len(),
         "recentLimit": recent_limit,
         "trends": trends.iter().map(benchmark_case_trend_json).collect::<Vec<_>>(),
-        "nextActions": benchmark_trends_next_actions(artifacts.is_empty()),
+        "nextActions": benchmark_trends_next_actions(benchmark_trends_status(artifacts.len(), trends)),
         "report": format_benchmark_trends_text(workspace, artifacts.len(), trends, recent_limit),
     }))?)
 }
@@ -7526,7 +7526,10 @@ fn benchmark_trends_status(artifact_count: usize, trends: &[BenchmarkCaseTrend])
                 .as_ref()
                 .is_some_and(|latest| benchmark_problem_status(&latest.status))
     }) {
-        "regression"
+        return "regression";
+    }
+    if !trends.iter().any(|trend| trend.previous.is_some()) {
+        "insufficient_history"
     } else {
         "ok"
     }
@@ -7574,16 +7577,16 @@ fn benchmark_trend_point_value(point: &BenchmarkTrendPoint) -> Value {
     })
 }
 
-fn benchmark_trends_next_actions(empty: bool) -> Vec<String> {
-    if empty {
-        vec![
+fn benchmark_trends_next_actions(status: &str) -> Vec<String> {
+    match status {
+        "empty" => vec![
             "deepcli benchmark presets --json".to_string(),
             "deepcli benchmark run-suite --json --fail-on-command".to_string(),
             "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
             "deepcli benchmark status --json".to_string(),
-        ]
-    } else {
-        vec![
+        ],
+        "insufficient_history" => vec![
+            "deepcli benchmark run-suite --json --fail-on-command".to_string(),
             "deepcli benchmark status --json".to_string(),
             "deepcli benchmark summary --json".to_string(),
             "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
@@ -7591,7 +7594,16 @@ fn benchmark_trends_next_actions(empty: bool) -> Vec<String> {
             "deepcli benchmark list --json".to_string(),
             "deepcli benchmark clean --dry-run --json".to_string(),
             "deepcli round --json".to_string(),
-        ]
+        ],
+        _ => vec![
+            "deepcli benchmark status --json".to_string(),
+            "deepcli benchmark summary --json".to_string(),
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string(),
+            "deepcli benchmark list --json".to_string(),
+            "deepcli benchmark clean --dry-run --json".to_string(),
+            "deepcli round --json".to_string(),
+        ],
     }
 }
 
@@ -7832,7 +7844,7 @@ fn format_benchmark_trends_text(
         lines.push("trends: none".to_string());
         lines.push("next actions:".to_string());
         lines.extend(
-            benchmark_trends_next_actions(true)
+            benchmark_trends_next_actions(status)
                 .into_iter()
                 .map(|action| format!("  - {action}")),
         );
@@ -7894,7 +7906,7 @@ fn format_benchmark_trends_text(
     }
     lines.push("next actions:".to_string());
     lines.extend(
-        benchmark_trends_next_actions(false)
+        benchmark_trends_next_actions(status)
             .into_iter()
             .map(|action| format!("  - {action}")),
     );
@@ -31074,6 +31086,26 @@ mod tests {
             handle_benchmark(single_dir.path(), &config, &registry, vec!["trend".into()]).unwrap();
         assert!(single_text.contains("duration_delta=n/a"));
         assert!(!single_text.contains("duration_delta=n/ams"));
+
+        let single_json = handle_benchmark(
+            single_dir.path(),
+            &config,
+            &registry,
+            vec!["trends".into(), "--json".into()],
+        )
+        .unwrap();
+        let single_value: Value = serde_json::from_str(&single_json).unwrap();
+        assert_eq!(single_value["status"], "insufficient_history");
+        assert!(single_value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap()
+                == "deepcli benchmark run-suite --json --fail-on-command"));
+        assert!(single_value["report"]
+            .as_str()
+            .unwrap()
+            .contains("status: insufficient_history"));
 
         let traversal = handle_benchmark(
             dir.path(),
