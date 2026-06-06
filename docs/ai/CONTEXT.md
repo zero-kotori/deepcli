@@ -127,13 +127,18 @@
    - 当前首个动作仍是 `deepcli round --json --run-benchmark --fail-on-command`，并保留 `deepcli recipes sota --json`、benchmark suite、gate、trends 和 preflight 等后续动作。
    - 目的：让 scorecard 报告输出的动作队列更像本轮修复队列，避免用户、TUI 或脚本刚读完 scorecard 又被引导回同一份报告。
 
+23. round nextActions 去除自引用跳转
+   - 结果：`deepcli round --json` 的外层 `nextActions` 不再包含 `deepcli round --json`。
+   - 当前 scorecard gate 通过且只剩 benchmark evidence 缺口时，首个动作仍是 `deepcli round --json --run-benchmark --fail-on-command`，后续保留 `deepcli recipes sota --json`、benchmark suite、status、gate、trends、preflight 和 gate。
+   - 目的：让 round 报告成为下一步执行队列，而不是让 TUI、外部 UI 或用户在同一个只读产品报告里循环。
+
 ## 当前产品自评
 
 最近自评中，`scorecard` 为 77/80，主要缺口是当前仓库没有保留本地 benchmark evidence artifact。这个缺口是有意保留的，因为 benchmark evidence 是本地忽略产物，不应推送到远程仓库。
 
 本轮本地验收可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成 benchmark evidence，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式，以及 scorecard nextActions 的自引用跳转清理，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理，以及 round nextActions 的自引用跳转清理，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 

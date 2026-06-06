@@ -3525,7 +3525,6 @@ fn build_round_report(
     }
     next_actions.push("deepcli preflight --json".to_string());
     next_actions.push("deepcli gate --json".to_string());
-    next_actions.push("deepcli round --json".to_string());
     let next_actions = dedup_preserve_order(next_actions);
     let report = format_round_text(
         workspace,
@@ -29436,6 +29435,9 @@ mod tests {
         assert!(!next_actions
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli scorecard --json"));
+        assert!(!next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli round --json"));
     }
 
     #[test]
