@@ -5526,21 +5526,24 @@ fn prioritize_running_safe_suggestions(
 fn running_safe_palette_priority(name: &str) -> usize {
     match name {
         "/help" => 0,
-        "/version" => 1,
-        "/status" => 2,
-        "/usage" => 3,
-        "/health" => 4,
-        "/logs" => 5,
-        "/trace" => 6,
-        "/stop" => 7,
-        "/quit" => 8,
-        "/selftest" => 9,
-        "/preflight" => 10,
-        "/completion" => 11,
-        "/round" => 12,
-        "/scorecard" => 13,
-        "/benchmark" => 14,
-        "/recipes" => 15,
+        "/status" => 1,
+        "/usage" => 2,
+        "/logs" => 3,
+        "/trace" => 4,
+        "/stop" => 5,
+        "/quit" => 6,
+        "/selftest" => 7,
+        "/preflight" => 8,
+        "/completion" => 9,
+        "/round" => 10,
+        "/scorecard" => 11,
+        "/benchmark" => 12,
+        "/recipes" => 13,
+        "/privacy" => 14,
+        "/approval" => 15,
+        "/session" => 16,
+        "/terminal" => 17,
+        "/btw" => 18,
         _ => 100,
     }
 }
@@ -6591,6 +6594,70 @@ mod tests {
     }
 
     #[test]
+    fn slash_command_palette_marks_only_supported_running_commands() {
+        for command in [
+            "/version",
+            "/quickstart",
+            "/health",
+            "/check",
+            "/docker",
+            "/compiler",
+            "/models",
+            "/providers",
+            "/accept",
+            "/gate",
+            "/verify",
+            "/handoff",
+        ] {
+            let query = &command[..command.len().min(4)];
+            let suggestions = slash_command_suggestions_for_state(query, true).unwrap();
+            let summary = suggestions
+                .iter()
+                .find(|summary| summary.name == command)
+                .unwrap_or_else(|| panic!("{command} should stay discoverable in running mode"));
+            assert!(
+                !summary.running_safe,
+                "{command} is not handled by the running TUI command dispatcher"
+            );
+        }
+
+        for command in [
+            "/help",
+            "/recipes",
+            "/scorecard",
+            "/benchmark",
+            "/round",
+            "/selftest",
+            "/preflight",
+            "/completion",
+            "/status",
+            "/usage",
+            "/trace",
+            "/logs",
+            "/privacy",
+            "/approval",
+            "/session",
+            "/history",
+            "/cleanup",
+            "/btw",
+            "/stop",
+            "/quit",
+            "/terminal",
+        ] {
+            let query = &command[..command.len().min(4)];
+            let suggestions = slash_command_suggestions_for_state(query, true).unwrap();
+            let summary = suggestions
+                .iter()
+                .find(|summary| summary.name == command)
+                .unwrap_or_else(|| panic!("{command} should be discoverable in running mode"));
+            assert!(
+                summary.running_safe,
+                "{command} should be marked as supported by the running TUI command dispatcher"
+            );
+        }
+    }
+
+    #[test]
     fn slash_command_palette_filters_formats_and_completes() {
         let suggestions = slash_command_suggestions_for_state("/en", false).unwrap();
         assert_eq!(suggestions.len(), 1);
@@ -6614,9 +6681,6 @@ mod tests {
         assert_eq!(running_suggestions[0].name, "/help");
         assert!(running_suggestions
             .iter()
-            .any(|summary| summary.name == "/version" && summary.running_safe));
-        assert!(running_suggestions
-            .iter()
             .any(|summary| summary.name == "/status" && summary.running_safe));
         assert!(running_suggestions
             .iter()
@@ -6633,7 +6697,7 @@ mod tests {
             .all(|summary| summary.running_safe));
         assert!(running_suggestions
             .iter()
-            .any(|summary| summary.name == "/health"));
+            .any(|summary| summary.name == "/privacy" && summary.running_safe));
         assert!(running_suggestions
             .iter()
             .any(|summary| summary.name == "/logs" && summary.running_safe));
@@ -6650,7 +6714,7 @@ mod tests {
         assert!(running_text.contains("running mode: (run) commands execute now"));
         let version_suggestions = slash_command_suggestions_for_state("/ver", true).unwrap();
         assert_eq!(version_suggestions[0].name, "/version");
-        assert!(version_suggestions[0].running_safe);
+        assert!(!version_suggestions[0].running_safe);
         let approval_suggestions = slash_command_suggestions_for_state("/app", true).unwrap();
         assert!(approval_suggestions
             .iter()
@@ -6658,20 +6722,20 @@ mod tests {
         let check_suggestions = slash_command_suggestions_for_state("/che", true).unwrap();
         assert!(check_suggestions
             .iter()
-            .any(|summary| summary.name == "/check" && summary.running_safe));
+            .any(|summary| summary.name == "/check" && !summary.running_safe));
         let handoff_suggestions = slash_command_suggestions_for_state("/han", true).unwrap();
         assert!(handoff_suggestions
             .iter()
-            .any(|summary| summary.name == "/handoff" && summary.running_safe));
+            .any(|summary| summary.name == "/handoff" && !summary.running_safe));
 
         let docker_suggestions = slash_command_suggestions_for_state("/do", true).unwrap();
         assert!(docker_suggestions
             .iter()
-            .any(|summary| summary.name == "/docker" && summary.running_safe));
+            .any(|summary| summary.name == "/docker" && !summary.running_safe));
         let compiler_suggestions = slash_command_suggestions_for_state("/com", true).unwrap();
         assert!(compiler_suggestions
             .iter()
-            .any(|summary| summary.name == "/compiler" && summary.running_safe));
+            .any(|summary| summary.name == "/compiler" && !summary.running_safe));
         let model_suggestions = slash_command_suggestions_for_state("/mo", false).unwrap();
         assert!(model_suggestions
             .iter()

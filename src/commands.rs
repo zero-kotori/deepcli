@@ -10522,9 +10522,6 @@ fn is_running_safe_command_name(name: &str) -> bool {
     matches!(
         name,
         "/help"
-            | "/version"
-            | "/about"
-            | "/quickstart"
             | "/recipes"
             | "/scorecard"
             | "/benchmark"
@@ -10534,17 +10531,6 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/completion"
             | "/status"
             | "/usage"
-            | "/health"
-            | "/next"
-            | "/check"
-            | "/docker"
-            | "/compiler"
-            | "/models"
-            | "/providers"
-            | "/accept"
-            | "/gate"
-            | "/verify"
-            | "/handoff"
             | "/trace"
             | "/logs"
             | "/privacy"
@@ -28622,7 +28608,7 @@ mod tests {
     fn command_specific_help_explains_usage_examples_and_notes() {
         let quickstart_help = CommandRouter::help_for(&["quickstart".to_string()]).unwrap();
         assert!(quickstart_help.contains("/quickstart - "));
-        assert!(quickstart_help.contains("running-safe: yes"));
+        assert!(quickstart_help.contains("running-safe: no"));
         assert!(quickstart_help.contains("/quickstart --check"));
         assert!(quickstart_help.contains("/quickstart --json"));
         assert!(quickstart_help.contains("/quickstart --json --fail-on-missing"));
@@ -28719,7 +28705,7 @@ mod tests {
 
         let version_help = CommandRouter::help_for(&["version".to_string()]).unwrap();
         assert!(version_help.contains("/version - "));
-        assert!(version_help.contains("running-safe: yes"));
+        assert!(version_help.contains("running-safe: no"));
         assert!(version_help.contains("deepcli.version.v1"));
         assert!(version_help.contains("project config presence"));
         assert!(version_help.contains("without creating a session or calling a provider"));
@@ -28750,13 +28736,13 @@ mod tests {
         assert!(docker_help.contains("/docker - "));
         assert!(docker_help.contains("/env check docker"));
         assert!(docker_help.contains("/docker setup --smoke"));
-        assert!(docker_help.contains("running-safe: yes"));
+        assert!(docker_help.contains("running-safe: no"));
 
         let compiler_help = CommandRouter::help_for(&["compiler".to_string()]).unwrap();
         assert!(compiler_help.contains("/compiler - "));
         assert!(compiler_help.contains("/env check compiler"));
         assert!(compiler_help.contains("/compiler setup --smoke"));
-        assert!(compiler_help.contains("running-safe: yes"));
+        assert!(compiler_help.contains("running-safe: no"));
 
         let setup_help = CommandRouter::help_for(&["setup".to_string()]).unwrap();
         assert!(setup_help.contains("/setup - "));
@@ -28778,7 +28764,7 @@ mod tests {
 
         let health_help = CommandRouter::help_for(&["health".to_string()]).unwrap();
         assert!(health_help.contains("/health - "));
-        assert!(health_help.contains("running-safe: yes"));
+        assert!(health_help.contains("running-safe: no"));
         assert!(health_help.contains("/doctor --quick"));
         assert!(health_help.contains("/health shell --json"));
         assert!(health_help.contains("/health docker --json"));
@@ -29037,14 +29023,14 @@ mod tests {
 
         let accept_help = CommandRouter::help_for(&["accept".to_string()]).unwrap();
         assert!(accept_help.contains("/accept - "));
-        assert!(accept_help.contains("running-safe: yes"));
+        assert!(accept_help.contains("running-safe: no"));
         assert!(accept_help.contains("/verify --run-tests"));
         assert!(accept_help.contains("deepcli.verify.v1"));
         assert!(accept_help.contains("/gate"));
 
         let gate_help = CommandRouter::help_for(&["gate".to_string()]).unwrap();
         assert!(gate_help.contains("/gate - "));
-        assert!(gate_help.contains("running-safe: yes"));
+        assert!(gate_help.contains("running-safe: no"));
         assert!(gate_help.contains("/verify --run-tests --fail-on-blockers"));
         assert!(gate_help.contains("non-zero exit"));
 
