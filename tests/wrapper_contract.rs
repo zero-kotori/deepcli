@@ -802,6 +802,34 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
 }
 
 #[test]
+fn wrapper_resume_preview_forwards_to_local_slash_command() {
+    let preview = run_wrapper(&[
+        "resume",
+        "6155c14e",
+        "--dry-run",
+        "--json",
+        "--output",
+        ".deepcli/exports/resume.json",
+    ]);
+    assert!(ends_with_args(
+        &preview.args,
+        &[
+            "/resume",
+            "6155c14e",
+            "--dry-run",
+            "--json",
+            "--output",
+            ".deepcli/exports/resume.json",
+        ]
+    ));
+    assert!(!preview.args.iter().any(|arg| arg == "--resume"));
+
+    let direct_resume = run_wrapper(&["resume", "6155c14e"]);
+    assert!(has_adjacent(&direct_resume.args, "--resume", "6155c14e"));
+    assert!(direct_resume.args.iter().any(|arg| arg == "--tui"));
+}
+
+#[test]
 fn wrapper_preserves_explicit_cwd_config_and_yes() {
     let home = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();

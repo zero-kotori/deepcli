@@ -218,13 +218,18 @@
    - 行为：`--verify` 只读取源和副本的持久化 session 文件，不调用 Provider、不实际启动 `deepcli resume`；`--dry-run --verify` 只说明 dry-run 不会创建 fork，因此不运行 resume 健康检查。
    - 目的：用户在“重新开一个一样的终端并使用同样上下文交互”之前，可以用 `deepcli fork --current --no-open --verify --json` 脚本化验收副本是否可恢复，而不是只依赖肉眼观察新 Terminal。
 
+42. Resume dry-run 预览
+   - 结果：`/resume` 和 `deepcli resume` 支持 `--dry-run|--preview`、`--json` 与 `--output path`，输出稳定 `deepcli.resume.preview.v1`，包含 selected session、activity、summary、recentMessages、resumeCommand 和 nextActions。
+   - 行为：preview 只读取持久化 session 文件，不创建 session、不进入 TUI、不调用 Provider；无显式 id 时回退到最近有记录活动的会话，显式 id 支持唯一短前缀，`--output` 限制在 workspace 内。
+   - 目的：用户或外部 UI 可以在执行 `deepcli resume <id>` 之前确认将恢复的是哪段上下文，也能接在 fork verify 的 `resumeCommand` 后继续做非交互式验收。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览，以及 fork resume 健康检查，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查，以及 resume dry-run 预览，下一轮可继续关注 benchmark evidence 运行体验、TUI 可观测性或恢复历史的真实交互阻力。
 
 ## 常用检查命令
 
@@ -238,6 +243,7 @@ cargo test
 ./scripts/deepcli help plan
 ./scripts/deepcli help fork
 ./scripts/deepcli fork --help
+./scripts/deepcli resume --dry-run --json
 ./scripts/deepcli fork --current --dry-run --json
 ./scripts/deepcli fork --current --no-open --verify --json
 ./scripts/deepcli terminal --dry-run --json

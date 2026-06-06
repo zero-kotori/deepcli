@@ -448,8 +448,8 @@ impl AgentRuntime {
     pub async fn handle_input(&mut self, input: &str) -> Result<String> {
         if let Some(command) = CommandRouter::parse(input)? {
             match command {
-                SlashCommand::Resume { id } => {
-                    return self.handle_resume_command(id);
+                SlashCommand::Resume { args } => {
+                    return self.handle_resume_command(Self::resume_runtime_id_arg(&args));
                 }
                 SlashCommand::Rename { args } => {
                     return self.handle_rename_command(args);
@@ -688,6 +688,10 @@ impl AgentRuntime {
         } else {
             Ok(format_session_list(&self.list_sessions()?))
         }
+    }
+
+    fn resume_runtime_id_arg(args: &[String]) -> Option<String> {
+        args.iter().find(|arg| !arg.starts_with('-')).cloned()
     }
 
     fn handle_rename_command(&mut self, args: Vec<String>) -> Result<String> {

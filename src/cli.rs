@@ -458,12 +458,26 @@ fn normalize_resume_alias(cli: &mut Cli) -> Result<()> {
         return Ok(());
     }
 
+    if cli.task.iter().any(|arg| is_resume_preview_flag(arg)) {
+        let mut parts = vec!["/resume".to_string()];
+        parts.append(&mut cli.task);
+        cli.task = parts;
+        return Ok(());
+    }
+
     cli.resume = Some(cli.task.remove(0));
     cli.tui = true;
     if !cli.task.is_empty() {
         bail!("resume accepts at most one session id");
     }
     Ok(())
+}
+
+fn is_resume_preview_flag(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--dry-run" | "--preview" | "--json" | "--output" | "-o"
+    ) || arg.starts_with("--output=")
 }
 
 fn parse_one_shot_command(task: &[String]) -> Result<Option<SlashCommand>> {
@@ -791,9 +805,13 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
                 )
             )
         }
-        SlashCommand::Resume { id } => id.is_none(),
+        SlashCommand::Resume { args } => resume_can_run_without_session(args),
         _ => false,
     }
+}
+
+fn resume_can_run_without_session(args: &[String]) -> bool {
+    args.is_empty() || args.iter().any(|arg| is_resume_preview_flag(arg))
 }
 
 fn ensure_first_use_authorization(workspace: &PathBuf, assume_yes: bool) -> Result<()> {
@@ -932,6 +950,42 @@ mod tests {
         assert_eq!(cli.resume.as_deref(), Some("abc123"));
         assert!(cli.tui);
         assert!(cli.task.is_empty());
+
+        let cli = normalize_cli_aliases(test_cli(&[
+            "resume",
+            "abc123",
+            "--dry-run",
+            "--json",
+            "--output",
+            ".deepcli/exports/resume.json",
+        ]))
+        .unwrap();
+        assert_eq!(
+            cli.task,
+            vec![
+                "/resume",
+                "abc123",
+                "--dry-run",
+                "--json",
+                "--output",
+                ".deepcli/exports/resume.json"
+            ]
+        );
+        assert!(!cli.tui);
+        assert!(cli.resume.is_none());
+        assert_eq!(
+            parse_one_shot_command(&cli.task).unwrap(),
+            Some(SlashCommand::Resume {
+                args: vec![
+                    "abc123".to_string(),
+                    "--dry-run".to_string(),
+                    "--json".to_string(),
+                    "--output".to_string(),
+                    ".deepcli/exports/resume.json".to_string()
+                ]
+            })
+        );
+
         assert!(normalize_cli_aliases(test_cli(&["resume", "a", "b"])).is_err());
     }
 

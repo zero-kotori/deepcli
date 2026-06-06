@@ -94,7 +94,7 @@ pub enum SlashCommand {
     Btw { args: Vec<String> },
     Approval { args: Vec<String> },
     Session { args: Vec<String> },
-    Resume { id: Option<String> },
+    Resume { args: Vec<String> },
     Rename { args: Vec<String> },
     Stop,
     Quit,
@@ -252,9 +252,7 @@ impl CommandRouter {
                 session_args.extend(args);
                 SlashCommand::Session { args: session_args }
             }
-            "/resume" => SlashCommand::Resume {
-                id: args.first().cloned(),
-            },
+            "/resume" => SlashCommand::Resume { args },
             "/rename" => SlashCommand::Rename { args },
             "/stop" | "/cancel" | "/abort" => SlashCommand::Stop,
             "/quit" | "/exit" => SlashCommand::Quit,
@@ -414,14 +412,8 @@ impl CommandRouter {
                 )
                 .await
             }
-            SlashCommand::Resume { id } => {
-                let store = SessionStore::new(context.workspace);
-                if let Some(id) = id {
-                    let session = store.load(&id)?;
-                    Ok(serde_json::to_string_pretty(&session.metadata)?)
-                } else {
-                    format_resumable_session_list(&store)
-                }
+            SlashCommand::Resume { args } => {
+                handle_resume(context.workspace, context.session_id, args)
             }
             SlashCommand::Rename { .. } => {
                 Ok("/rename is handled by the active runtime".to_string())
@@ -1756,11 +1748,20 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/resume",
-            listing: "/resume [session_id]",
+            listing: "/resume [session_id] [--dry-run] [--json] [--output path]",
             summary: "Resume a saved session, or list resumable sessions when no id is provided.",
-            usage: &["/resume", "/resume <session_id>"],
-            examples: &["/resume", "/resume 6155c14e-85e5-4600-a081-29359cc232f2"],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview."],
+            usage: &[
+                "/resume",
+                "/resume <session_id>",
+                "/resume <session_id> --dry-run --json",
+                "/resume --dry-run --json --output .deepcli/exports/resume.json",
+            ],
+            examples: &[
+                "/resume",
+                "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
+                "deepcli resume 6155c14e --dry-run --json",
+            ],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
         },
         CommandHelp {
             name: "/rename",
@@ -10592,6 +10593,229 @@ pub fn format_session_list(sessions: &[SessionMetadata]) -> String {
 pub(crate) fn list_resumable_sessions(workspace: &Path) -> Result<Vec<SessionMetadata>> {
     let store = SessionStore::new(workspace);
     sessions_with_recorded_activity(&store)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResumeOptions {
+    session_id: Option<String>,
+    explicit_session: bool,
+    dry_run: bool,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+pub(crate) fn handle_resume(
+    workspace: &Path,
+    current: Option<String>,
+    args: Vec<String>,
+) -> Result<String> {
+    let options = parse_resume_options(&args, current)?;
+    let store = SessionStore::new(workspace);
+    if !options.dry_run && !options.json_output && options.output_path.is_none() {
+        if let Some(id) = options.session_id {
+            let session = store.load(&id)?;
+            return Ok(serde_json::to_string_pretty(&session.metadata)?);
+        }
+        return format_resumable_session_list(&store);
+    }
+
+    let (session, note) = resolve_session_for_optional_inspection(
+        &store,
+        options.session_id.as_deref(),
+        options.explicit_session,
+        SessionFallbackKind::RecordedActivity,
+    )?;
+    let report = format_resume_preview_report(&session, note.as_deref())?;
+    let output = if options.json_output {
+        format_resume_preview_json(workspace, &session, note.as_deref(), &report)?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_resume_options(args: &[String], current: Option<String>) -> Result<ResumeOptions> {
+    let mut session_id = None;
+    let mut explicit_session = false;
+    let mut dry_run = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--current" => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(
+                    current
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("no active session is available"))?,
+                );
+                explicit_session = true;
+                index += 1;
+            }
+            "--session" => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(required_arg(args, index + 1, "session id")?.to_string());
+                explicit_session = true;
+                index += 2;
+            }
+            "--dry-run" | "--preview" => {
+                dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported /resume option `{value}`"),
+            value => {
+                if session_id.is_some() {
+                    bail!("multiple session ids were provided");
+                }
+                session_id = Some(value.to_string());
+                explicit_session = true;
+                index += 1;
+            }
+        }
+    }
+    Ok(ResumeOptions {
+        session_id,
+        explicit_session,
+        dry_run,
+        json_output,
+        output_path,
+    })
+}
+
+fn format_resume_preview_report(session: &Session, note: Option<&str>) -> Result<String> {
+    let activity = session.activity_summary()?;
+    let title = session
+        .metadata
+        .title
+        .as_deref()
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| "<untitled>".to_string());
+    let mut lines = vec![
+        format!(
+            "resume preview id={} full={} title={}",
+            short_id(&session.id()),
+            session.id(),
+            title
+        ),
+        format!("workspace: {}", session.metadata.workspace.display()),
+        format!(
+            "provider: {} model: {}",
+            session.metadata.provider,
+            session
+                .metadata
+                .model
+                .as_deref()
+                .map(redact_sensitive_text)
+                .unwrap_or("<unset>".to_string())
+        ),
+        format!("state: {}", session_state_name(&session.metadata.state)),
+        format!(
+            "activity: messages={} tools={} tests={} diffs={} backups={} approvals={} btw={} summary={}",
+            activity.message_count,
+            activity.tool_call_count,
+            activity.test_run_count,
+            activity.diff_count,
+            activity.backup_count,
+            activity.approval_request_count,
+            activity.side_question_count,
+            activity.has_summary
+        ),
+        format!("resume command: deepcli resume {}", session.id()),
+    ];
+    if let Some(summary) = session.load_summary()? {
+        lines.push(format!(
+            "summary: {}",
+            compact_text_line(&redact_sensitive_text(&summary), 240)
+        ));
+    }
+    let recent_messages = session.load_recent_messages(3)?;
+    if !recent_messages.is_empty() {
+        lines.push("recent messages:".to_string());
+        for message in recent_messages {
+            lines.push(format!(
+                "  - {}: {}",
+                message.role,
+                compact_text_line(&redact_sensitive_text(&message.content), 160)
+            ));
+        }
+    }
+    if let Some(note) = note {
+        lines.push(format!("note: {note}"));
+    }
+    lines.push("next actions:".to_string());
+    for action in resume_preview_next_actions(session) {
+        lines.push(format!("  - {action}"));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn format_resume_preview_json(
+    workspace: &Path,
+    session: &Session,
+    note: Option<&str>,
+    report: &str,
+) -> Result<String> {
+    let activity = session.activity_summary()?;
+    let recent_messages = session.load_recent_messages(5)?;
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.resume.preview.v1",
+        "status": "preview",
+        "dryRun": true,
+        "workspace": workspace.display().to_string(),
+        "selected": {
+            "id": session.id().to_string(),
+            "shortId": short_id(&session.id()),
+            "title": session.metadata.title.as_deref().map(redact_sensitive_text),
+            "workspace": session.metadata.workspace.display().to_string(),
+            "provider": session.metadata.provider,
+            "model": session.metadata.model.as_deref().map(redact_sensitive_text),
+            "state": session_state_name(&session.metadata.state),
+            "createdAt": session.metadata.created_at.to_rfc3339(),
+            "updatedAt": session.metadata.updated_at.to_rfc3339(),
+            "activity": session_activity_json(&activity),
+            "hasSummary": activity.has_summary,
+            "summary": session
+                .load_summary()?
+                .map(|summary| compact_text_line(&redact_sensitive_text(&summary), 1_000)),
+        },
+        "recentMessages": recent_messages
+            .iter()
+            .map(session_message_json)
+            .collect::<Vec<_>>(),
+        "resumeCommand": format!("deepcli resume {}", session.id()),
+        "note": note,
+        "nextActions": resume_preview_next_actions(session),
+        "report": report,
+    }))?)
+}
+
+fn resume_preview_next_actions(session: &Session) -> Vec<String> {
+    vec![
+        format!("deepcli resume {}", session.id()),
+        format!("deepcli session next {} --json", session.id()),
+        format!("deepcli session diagnose {} --json", session.id()),
+    ]
 }
 
 fn handle_context(workspace: &Path) -> Result<String> {
@@ -28247,7 +28471,17 @@ mod tests {
         assert_eq!(
             CommandRouter::parse("/resume abc").unwrap(),
             Some(SlashCommand::Resume {
-                id: Some("abc".to_string())
+                args: vec!["abc".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/resume abc --dry-run --json").unwrap(),
+            Some(SlashCommand::Resume {
+                args: vec![
+                    "abc".to_string(),
+                    "--dry-run".to_string(),
+                    "--json".to_string()
+                ]
             })
         );
         assert_eq!(
@@ -29210,6 +29444,87 @@ mod tests {
         assert_eq!(store.list().unwrap().len(), before);
     }
 
+    #[tokio::test]
+    async fn resume_dry_run_json_previews_session_without_starting_runtime() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session.rename("compiler recovery").unwrap();
+        session.append_message("user", "repair compiler").unwrap();
+        session
+            .append_message("assistant", "plan next step")
+            .unwrap();
+        session.write_summary("resume summary").unwrap();
+        session
+            .append_tool_call(&ToolCallRecord {
+                tool: "read_file".to_string(),
+                input: json!({"path": "src/main.rs"}),
+                output: json!({"ok": true}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        let before = store.list().unwrap().len();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let executor = test_executor(dir.path());
+        let command = CommandRouter::parse(&format!(
+            "/resume {} --dry-run --json --output .deepcli/exports/resume.json",
+            session.id()
+        ))
+        .unwrap()
+        .unwrap();
+
+        let output = CommandRouter::handle(
+            command,
+            CommandContext {
+                workspace: dir.path(),
+                config: &config,
+                registry: &registry,
+                executor: &executor,
+                session_id: None,
+                provider_override: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.resume.preview.v1");
+        assert_eq!(value["status"], "preview");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["selected"]["id"], session.id().to_string());
+        assert_eq!(value["selected"]["title"], "compiler recovery");
+        assert_eq!(value["selected"]["activity"]["messages"], 2);
+        assert_eq!(value["selected"]["activity"]["tools"], 1);
+        assert_eq!(value["selected"]["hasSummary"], true);
+        assert!(value["resumeCommand"]
+            .as_str()
+            .unwrap()
+            .starts_with("deepcli resume "));
+        assert!(value["recentMessages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|message| message["content"] == "repair compiler"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().starts_with("deepcli resume ")));
+        assert!(value["report"].as_str().unwrap().contains("resume preview"));
+        let written = fs::read_to_string(dir.path().join(".deepcli/exports/resume.json")).unwrap();
+        assert_eq!(written, output);
+        assert_eq!(store.list().unwrap().len(), before);
+    }
+
     #[test]
     fn terminal_dry_run_json_reports_command_without_opening_terminal() {
         let dir = tempdir().unwrap();
@@ -29573,6 +29888,12 @@ mod tests {
         assert!(fork_help.contains("without creating a session"));
         assert!(fork_help.contains("skip Terminal launch"));
         assert!(fork_help.contains("running-safe: yes"));
+
+        let resume_help = CommandRouter::help_for(&["resume".to_string()]).unwrap();
+        assert!(resume_help.contains("/resume <session_id> --dry-run --json"));
+        assert!(resume_help.contains("deepcli.resume.preview.v1"));
+        assert!(resume_help.contains("does not start the TUI"));
+        assert!(resume_help.contains("workspace-contained output"));
 
         let stop_help = CommandRouter::help_for(&["cancel".to_string()]).unwrap();
         assert!(stop_help.contains("/stop - "));

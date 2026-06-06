@@ -108,6 +108,18 @@ has_yes_arg() {
   return 1
 }
 
+has_resume_preview_arg() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --dry-run|--preview|--json|--output|-o|--output=* )
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 is_help_flag() {
   case "${1:-}" in
     --help|-h )
@@ -155,7 +167,8 @@ usage() {
 Usage:
   deepcli                         Start the terminal UI in the current directory
   deepcli repl                    Start the legacy line-based REPL
-  deepcli resume [session_id]     Open the session picker; with id, resume that session
+  deepcli resume [session_id] [--dry-run] [--json]
+                                   Open the session picker, resume by id, or preview resume context
   deepcli quickstart [--check|--json|--fail-on-missing]
                                    Show start/configure/code/resume/verify recipes
   deepcli recipes [topic|all] [--json]
@@ -250,6 +263,7 @@ Examples:
   deepcli repl
   deepcli tui
   deepcli resume
+  deepcli resume 6155c14e --dry-run --json
   deepcli quickstart
   deepcli quickstart --json --output .deepcli/exports/quickstart.json
   deepcli quickstart --json --fail-on-missing
@@ -403,10 +417,12 @@ run_provider_command() {
       ;;
     resume )
       shift
-      local session_id="${1:-}"
-      if [[ -z "$session_id" ]]; then
+      if has_resume_preview_arg "$@"; then
+        run_deepcli --provider "$provider" --model "$model" /resume "$@"
+      elif [[ -z "${1:-}" ]]; then
         run_deepcli --provider "$provider" --model "$model" --resume-picker "$@"
       else
+        local session_id="${1:-}"
         shift
         run_deepcli --provider "$provider" --model "$model" --tui --resume "$session_id" "$@"
       fi
@@ -496,10 +512,12 @@ case "${1:-}" in
     ;;
   resume )
     shift
-    session_id="${1:-}"
-    if [[ -z "$session_id" ]]; then
+    if has_resume_preview_arg "$@"; then
+      run_deepcli /resume "$@"
+    elif [[ -z "${1:-}" ]]; then
       run_deepcli --resume-picker "$@"
     else
+      session_id="${1:-}"
       shift
       run_deepcli --tui --resume "$session_id" "$@"
     fi
