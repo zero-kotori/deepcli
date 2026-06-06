@@ -2,8 +2,8 @@ use crate::agents::AgentStore;
 use crate::commands::{
     handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_logs,
     handle_preflight, handle_privacy_scan, handle_recipes, handle_round, handle_scorecard,
-    handle_selftest_local, handle_session, handle_trace, handle_usage, list_resumable_sessions,
-    CommandHelpSummary, CommandRouter, SlashCommand,
+    handle_selftest_local, handle_session, handle_terminal, handle_trace, handle_usage,
+    list_resumable_sessions, CommandHelpSummary, CommandRouter, SlashCommand,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::permissions::PermissionEngine;
@@ -2651,8 +2651,8 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             });
             true
         }
-        SlashCommand::Terminal => {
-            push_running_command_result(state, handle_tui_running_terminal);
+        SlashCommand::Terminal { args } => {
+            push_running_command_result(state, |active| handle_tui_running_terminal(active, args));
             true
         }
         SlashCommand::Stop => {
@@ -2893,7 +2893,7 @@ fn handle_tui_running_btw(active: &ActiveSessionRef, args: Vec<String>) -> Resul
     }
 }
 
-fn handle_tui_running_terminal(active: &ActiveSessionRef) -> Result<String> {
+fn handle_tui_running_terminal(active: &ActiveSessionRef, args: Vec<String>) -> Result<String> {
     let config = AppConfig::load_effective(&active.workspace, None)?;
     let session = SessionStore::new(&active.workspace).load(&active.session_id)?;
     let permissions = PermissionEngine::new(
@@ -2907,17 +2907,7 @@ fn handle_tui_running_terminal(active: &ActiveSessionRef) -> Result<String> {
         Some(session),
         config.agent.max_subagent_depth,
     );
-    let output = executor.execute_open_terminal_now()?;
-    let detail = output.content.trim();
-    if detail.is_empty() {
-        Ok(format!("opened terminal in {}", active.workspace.display()))
-    } else {
-        Ok(format!(
-            "opened terminal in {}\n{}",
-            active.workspace.display(),
-            detail
-        ))
-    }
+    handle_terminal(&active.workspace, &executor, args)
 }
 
 fn stop_running_task(state: &mut TuiState, exit_after: bool, source: &str) {
@@ -8517,6 +8507,15 @@ mod tests {
             .chat
             .last()
             .is_some_and(|line| line.content.contains("running-safe: yes")));
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/terminal --dry-run --json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.content.contains("deepcli.terminal.v1")
+                && line.content.contains("\"opened\": false")
+        }));
 
         assert!(handle_running_tui_local_command(
             &mut state,

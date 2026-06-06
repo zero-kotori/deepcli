@@ -67,6 +67,7 @@ deepcli goal status --json
 deepcli goal gate --json
 deepcli plan "做一个可以交互式澄清需求的功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md
 deepcli fork --current --no-open --json
+deepcli terminal --dry-run --json
 ```
 
 ## 常用工作流
@@ -105,11 +106,11 @@ deepcli gate --json
 deepcli handoff --pr
 ```
 
-`goal` 会在当前会话中写入目标契约和守护计划，后续 Agent 上下文会持续看到验收条件，只有目标达成、要求验收通过且测试通过后才可结束；`goal status` 会检查文档来源、计划步骤和 acceptance command 的测试证据，`goal gate` 在仍有 blocker 时返回非零。无 active session 时，`goal show/status/gate` 会回退到最近一个带 goal 的会话；创建或清理 goal 仍要求 active session，避免误写历史会话。`plan` 面向不成熟需求，生成带推荐选项的澄清问题、假设、功能要求和验收标准，并可写成需求草稿。`fork` 会复制已持久化的会话上下文，默认在新 macOS Terminal 中执行 `deepcli resume <new_id>`；`--no-open` 可用于脚本或验收；JSON 会输出 `contextCopy` 和 `nextActions`，明确说明复制的是会话文件而不是运行中 Agent 的内存状态。Agent 运行中也可执行 `/fork --current` 来分支当前已落盘上下文，但不会热复制正在执行的模型任务。
+`goal` 会在当前会话中写入目标契约和守护计划，后续 Agent 上下文会持续看到验收条件，只有目标达成、要求验收通过且测试通过后才可结束；`goal status` 会检查文档来源、计划步骤和 acceptance command 的测试证据，`goal gate` 在仍有 blocker 时返回非零。无 active session 时，`goal show/status/gate` 会回退到最近一个带 goal 的会话；创建或清理 goal 仍要求 active session，避免误写历史会话。`plan` 面向不成熟需求，生成带推荐选项的澄清问题、假设、功能要求和验收标准，并可写成需求草稿。`fork` 会复制已持久化的会话上下文，默认在新 macOS Terminal 中执行 `deepcli resume <new_id>`；`--no-open` 可用于脚本或验收；JSON 会输出 `contextCopy` 和 `nextActions`，明确说明复制的是会话文件而不是运行中 Agent 的内存状态。Agent 运行中也可执行 `/fork --current` 来分支当前已落盘上下文，但不会热复制正在执行的模型任务。`terminal` 会打开当前 workspace 的新终端；`--dry-run --json` 输出 `deepcli.terminal.v1`，用于不创建进程的验收或外部 UI 预览。
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
-TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令和 `/preflight --dry-run`；会执行 benchmark、完整 preflight 或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
+TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令和 `/preflight --dry-run`；会执行 benchmark、完整 preflight 或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
 
 查看任务型工作流清单：
 
@@ -179,6 +180,7 @@ git diff --check
 ./scripts/deepcli help plan
 ./scripts/deepcli help fork
 ./scripts/deepcli fork --help
+./scripts/deepcli terminal --dry-run --json
 ./scripts/deepcli sessions -h
 ./scripts/deepcli scorecard --json
 ./scripts/deepcli round --json

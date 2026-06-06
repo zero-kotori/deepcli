@@ -98,7 +98,7 @@ pub enum SlashCommand {
     Rename { args: Vec<String> },
     Stop,
     Quit,
-    Terminal,
+    Terminal { args: Vec<String> },
 }
 
 pub struct CommandRouter;
@@ -258,7 +258,7 @@ impl CommandRouter {
             "/rename" => SlashCommand::Rename { args },
             "/stop" | "/cancel" | "/abort" => SlashCommand::Stop,
             "/quit" | "/exit" => SlashCommand::Quit,
-            "/terminal" => SlashCommand::Terminal,
+            "/terminal" => SlashCommand::Terminal { args },
             other => bail!("unknown slash command `{other}`"),
         }))
     }
@@ -428,9 +428,8 @@ impl CommandRouter {
             }
             SlashCommand::Stop => Ok("/stop is handled by the interactive runtime".to_string()),
             SlashCommand::Quit => Ok("bye".to_string()),
-            SlashCommand::Terminal => {
-                let output = context.executor.execute("open_terminal", json!({})).await?;
-                Ok(output.content)
+            SlashCommand::Terminal { args } => {
+                handle_terminal(context.workspace, context.executor, args)
             }
         }
     }
@@ -1785,11 +1784,20 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/terminal",
-            listing: "/terminal",
+            listing: "/terminal [--dry-run|--no-open] [--json] [--output path]",
             summary: "Open a terminal in the current workspace directory.",
-            usage: &["/terminal"],
-            examples: &["/terminal"],
-            notes: &[],
+            usage: &[
+                "/terminal",
+                "/terminal --dry-run",
+                "/terminal --dry-run --json",
+                "/terminal --dry-run --json --output .deepcli/exports/terminal.json",
+            ],
+            examples: &[
+                "/terminal",
+                "/terminal --dry-run --json",
+                "deepcli terminal --dry-run --json",
+            ],
+            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--dry-run` or `--no-open` to inspect the workspace and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, and `--output` writes the selected format to a workspace-contained file."],
         },
     ]
 }
@@ -17973,6 +17981,147 @@ fn planning_question_json(question: &PlanningQuestion) -> Value {
     })
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TerminalOptions {
+    dry_run: bool,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+pub(crate) fn handle_terminal(
+    workspace: &Path,
+    executor: &ToolExecutor,
+    args: Vec<String>,
+) -> Result<String> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--help" | "-h"))
+    {
+        return CommandRouter::help_for(&["terminal".to_string()]);
+    }
+    let options = parse_terminal_options(&args)?;
+    let command = terminal_open_command();
+    let (status, opened, detail) = if options.dry_run {
+        ("dry_run", false, None)
+    } else {
+        let output = executor.execute_open_terminal_now()?;
+        let exit_code = output.raw.get("exit_code").and_then(Value::as_i64);
+        let opened = exit_code == Some(0);
+        let status = if opened { "opened" } else { "error" };
+        (status, opened, Some(output.content))
+    };
+    let report = format_terminal_report(workspace, status, opened, command, detail.as_deref());
+    let output = if options.json_output {
+        format_terminal_json(
+            workspace,
+            status,
+            opened,
+            command,
+            detail.as_deref(),
+            &report,
+        )?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_terminal_options(args: &[String]) -> Result<TerminalOptions> {
+    let mut options = TerminalOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" | "--no-open" | "--preview" => {
+                options.dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            other => bail!("unsupported /terminal option `{other}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn terminal_open_command() -> &'static str {
+    "open -a Terminal ."
+}
+
+fn terminal_supported() -> bool {
+    cfg!(target_os = "macos")
+}
+
+fn format_terminal_report(
+    workspace: &Path,
+    status: &str,
+    opened: bool,
+    command: &str,
+    detail: Option<&str>,
+) -> String {
+    let mut lines = vec![
+        format!("terminal status: {status}"),
+        format!("workspace: {}", workspace.display()),
+        format!("command: {command}"),
+        format!("opened: {opened}"),
+    ];
+    if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
+        lines.push("detail:".to_string());
+        lines.push(redact_sensitive_text(detail));
+    }
+    lines.push("next actions:".to_string());
+    for action in terminal_next_actions(opened) {
+        lines.push(format!("  - {action}"));
+    }
+    lines.join("\n")
+}
+
+fn format_terminal_json(
+    workspace: &Path,
+    status: &str,
+    opened: bool,
+    command: &str,
+    detail: Option<&str>,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.terminal.v1",
+        "status": status,
+        "workspace": workspace.display().to_string(),
+        "platform": std::env::consts::OS,
+        "supported": terminal_supported(),
+        "command": command,
+        "opened": opened,
+        "detail": detail.map(redact_sensitive_text),
+        "nextActions": terminal_next_actions(opened),
+        "report": report,
+    }))?)
+}
+
+fn terminal_next_actions(opened: bool) -> Vec<&'static str> {
+    if opened {
+        vec!["use the opened terminal for parallel local work"]
+    } else {
+        vec!["deepcli terminal", "deepcli terminal --dry-run --json"]
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ForkOptions {
     session_id: Option<String>,
@@ -27994,6 +28143,12 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/terminal --dry-run --json").unwrap(),
+            Some(SlashCommand::Terminal {
+                args: vec!["--dry-run".to_string(), "--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/model set deepseek deepseek-v4-pro").unwrap(),
             Some(SlashCommand::Model {
                 args: vec![
@@ -28598,6 +28753,39 @@ mod tests {
     }
 
     #[test]
+    fn terminal_dry_run_json_reports_command_without_opening_terminal() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            config.permissions.clone(),
+            config.sandbox.clone(),
+        );
+        let executor = ToolExecutor::new(
+            dir.path(),
+            permissions,
+            None,
+            config.agent.max_subagent_depth,
+        );
+        let output = handle_terminal(
+            dir.path(),
+            &executor,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.terminal.v1");
+        assert_eq!(value["status"], "dry_run");
+        assert_eq!(value["workspace"], dir.path().display().to_string());
+        assert_eq!(value["command"], "open -a Terminal .");
+        assert_eq!(value["opened"], false);
+        assert!(value["nextActions"][0]
+            .as_str()
+            .unwrap()
+            .contains("deepcli terminal"));
+    }
+
+    #[test]
     fn help_contains_mvp_commands() {
         let help = CommandRouter::help_text();
         for command in CommandRouter::command_names() {
@@ -28842,6 +29030,7 @@ mod tests {
 
         let terminal_help = CommandRouter::help_for(&["terminal".to_string()]).unwrap();
         assert!(terminal_help.contains("running-safe: yes"));
+        assert!(terminal_help.contains("/terminal --dry-run --json"));
 
         let permissions_help = CommandRouter::help_for(&["permissions".to_string()]).unwrap();
         assert!(permissions_help.contains("/permissions [show] [--json] [--output path]"));
