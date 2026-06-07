@@ -207,8 +207,9 @@ deepcli 默认强调本地安全边界：
 - 工作区写入和危险 shell 命令走权限策略。
 - Docker、安装包、系统写入等操作需要更严格审批。
 - 凭据、日志、trace、support bundle 输出会脱敏。
-- `deepcli privacy` 可在开源或共享前扫描 git history、提交邮箱、本机绝对路径、敏感路径和疑似密钥，并支持 JSON artifact 与 `--fail-on-findings`。
+- `deepcli privacy` 可在开源或共享前扫描 git history、提交邮箱、本机绝对路径、敏感路径、配置的禁用词和疑似密钥，并支持 JSON artifact 与 `--fail-on-findings`。
 - `privacy.allowedEmails` / `privacy.allowedEmailDomains` 可把确认公开或允许的邮箱从 `/privacy` findings 中折叠到 suppressed findings，`privacy.allowedCommitEmails` / `privacy.allowedCommitDomains` 可只允许提交元数据邮箱，降低开源前检查噪声。
+- `privacy.blockedTerms` 可把旧产品名、公司邮箱、作者姓名或内部代号纳入本地隐私门禁；`privacy.allowedTerms` 可折叠确认保留的迁移说明或测试夹具，报告中只展示 `<blocked-term>` 占位符。
 - `privacy.allowedUserPaths` 可把确认可接受的历史本机用户路径折叠到 suppressed findings，避免迁移旧路径长期阻断发布检查。
 - `project.gitIdentity` 可把仓库预期提交身份写入 `.deepcli/config.json`，由 `doctor` / `selftest` 作为正式健康检查项持续验证。
 - 只读 one-shot 命令不应创建空会话或污染项目授权状态。

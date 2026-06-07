@@ -66,6 +66,10 @@ pub struct PrivacyConfig {
     pub allowed_commit_emails: Vec<String>,
     #[serde(rename = "allowedCommitDomains", default)]
     pub allowed_commit_domains: Vec<String>,
+    #[serde(rename = "blockedTerms", default)]
+    pub blocked_terms: Vec<String>,
+    #[serde(rename = "allowedTerms", default)]
+    pub allowed_terms: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -590,7 +594,9 @@ mod tests {
                 "allowedEmailDomains": ["public.test"],
                 "allowedUserPaths": ["redacted/project-root"],
                 "allowedCommitEmails": ["zero-kotori@example.com"],
-                "allowedCommitDomains": ["public.example"]
+                "allowedCommitDomains": ["public.example"],
+                "blockedTerms": ["legacy_product_name"],
+                "allowedTerms": ["legacy_product_name_test_fixture"]
               },
               "defaultProvider": "deepseek",
               "providers": {
@@ -635,6 +641,11 @@ mod tests {
         assert_eq!(
             config.privacy.allowed_commit_domains,
             vec!["public.example"]
+        );
+        assert_eq!(config.privacy.blocked_terms, vec!["legacy_product_name"]);
+        assert_eq!(
+            config.privacy.allowed_terms,
+            vec!["legacy_product_name_test_fixture"]
         );
         let runtime = config.redacted_provider_runtime(dir.path(), None).unwrap();
         assert_eq!(runtime.model.as_deref(), Some("runtime-model"));

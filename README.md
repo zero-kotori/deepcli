@@ -209,6 +209,7 @@ git diff --check
 `preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查，`--quick` 可跳过较慢的 clippy/gate；文本和 JSON 报告会汇总总耗时、最慢检查、最大输出检查和失败的 required check，便于快速定位发布前检查慢或噪声大的原因。
 
 `privacy.allowedEmails` / `privacy.allowedEmailDomains` 可声明公开或允许的邮箱，让 `deepcli privacy` 将这些命中记录为 suppressed findings，而不是阻断开源前检查；只想允许提交元数据时可使用 `privacy.allowedCommitEmails` / `privacy.allowedCommitDomains`。
+`privacy.blockedTerms` 可声明项目特定的禁用词，例如旧产品名、公司邮箱、作者姓名或内部代号；`privacy.allowedTerms` 可把确认保留的迁移说明或测试夹具折叠为 suppressed findings。blocked term 的样例输出会显示为 `<blocked-term>`，避免报告再次泄漏原词。
 `privacy.allowedUserPaths` 可声明脱敏后的历史本机用户路径，用于折叠已知迁移遗留路径。
 
 ## 仓库

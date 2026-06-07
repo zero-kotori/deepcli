@@ -1047,7 +1047,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/privacy --fail-on-findings",
                 "deepcli privacy --json",
             ],
-            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, and high-confidence token/private-key patterns. Configure `privacy.allowedEmails` or `privacy.allowedEmailDomains` for public/approved email metadata and content that should be suppressed rather than reported; `privacy.allowedCommitEmails` and `privacy.allowedCommitDomains` apply only to commit metadata. Configure `privacy.allowedUserPaths` with redacted local user-home paths when known historical project roots should be suppressed. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
+            notes: &["`/privacy` is local and does not create a session or call a provider. It checks commit author emails, remote URLs, tracked sensitive file paths, historical sensitive file paths, absolute local user-home paths, configured blocked terms, and high-confidence token/private-key patterns. Configure `privacy.allowedEmails` or `privacy.allowedEmailDomains` for public/approved email metadata and content that should be suppressed rather than reported; `privacy.allowedCommitEmails` and `privacy.allowedCommitDomains` apply only to commit metadata. Configure `privacy.blockedTerms` for project-specific terms that must not appear before sharing, and `privacy.allowedTerms` for accepted migration fixtures that should be suppressed. Configure `privacy.allowedUserPaths` with redacted local user-home paths when known historical project roots should be suppressed. Samples are redacted before display. Use `--json` for the stable `deepcli.privacy.scan.v1` schema, and `--fail-on-findings` when an export or release script should stop on high or medium risk findings."],
         },
         CommandHelp {
             name: "/context",
@@ -12548,6 +12548,18 @@ fn scan_commit_metadata(
                 },
             );
         }
+        scan_blocked_terms_in_text(
+            findings,
+            suppressed_findings,
+            privacy,
+            PrivacyScanLocation {
+                source: "git_metadata",
+                revision: Some(&revision),
+                path: None,
+                line: None,
+            },
+            row,
+        );
     }
     Ok(())
 }
@@ -12695,6 +12707,19 @@ fn scan_privacy_line(
     line_number: usize,
     line: &str,
 ) {
+    scan_blocked_terms_in_text(
+        findings,
+        suppressed_findings,
+        privacy,
+        PrivacyScanLocation {
+            source: "git_history_content",
+            revision: Some(revision),
+            path: Some(path),
+            line: Some(line_number),
+        },
+        line,
+    );
+
     if line.contains(USER_HOME_PREFIX) {
         let detail = first_redacted_user_path(line).unwrap_or_else(redacted_user_home);
         if privacy_user_path_is_allowed(&detail, privacy) {
@@ -12801,6 +12826,104 @@ fn scan_privacy_line(
             },
         );
     }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PrivacyScanLocation<'a> {
+    source: &'a str,
+    revision: Option<&'a str>,
+    path: Option<&'a str>,
+    line: Option<usize>,
+}
+
+fn scan_blocked_terms_in_text(
+    findings: &mut Vec<PrivacyFinding>,
+    suppressed_findings: &mut Vec<PrivacySuppressedFinding>,
+    privacy: &PrivacyConfig,
+    location: PrivacyScanLocation<'_>,
+    text: &str,
+) {
+    if privacy
+        .blocked_terms
+        .iter()
+        .all(|term| term.trim().is_empty())
+    {
+        return;
+    }
+    if location
+        .path
+        .is_some_and(|path| path.replace('\\', "/") == ".deepcli/config.json")
+    {
+        return;
+    }
+    for term in privacy_blocked_terms(privacy) {
+        let occurrences = blocked_term_occurrences(text, &term);
+        if occurrences == 0 {
+            continue;
+        }
+        if privacy_term_is_allowed(&term, privacy) {
+            push_privacy_suppressed_finding(
+                suppressed_findings,
+                PrivacySuppressedFinding {
+                    category: "blocked_term".to_string(),
+                    source: location.source.to_string(),
+                    detail: "allowed configured blocked term match <blocked-term>".to_string(),
+                    occurrences,
+                },
+            );
+            continue;
+        }
+        push_privacy_finding(
+            findings,
+            PrivacyFinding {
+                severity: "medium".to_string(),
+                category: "blocked_term".to_string(),
+                source: location.source.to_string(),
+                revision: location.revision.map(ToString::to_string),
+                path: location.path.map(ToString::to_string),
+                line: location.line,
+                detail: "configured blocked term appears in repository history".to_string(),
+                sample: Some("<blocked-term>".to_string()),
+                occurrences,
+            },
+        );
+    }
+}
+
+fn privacy_blocked_terms(privacy: &PrivacyConfig) -> Vec<String> {
+    let mut terms = privacy
+        .blocked_terms
+        .iter()
+        .map(|term| term.trim())
+        .filter(|term| !term.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    terms.sort_by_key(|term| std::cmp::Reverse(term.chars().count()));
+    terms.dedup_by(|a, b| normalize_privacy_term(a) == normalize_privacy_term(b));
+    terms
+}
+
+fn blocked_term_occurrences(text: &str, term: &str) -> usize {
+    let normalized_text = normalize_privacy_term(text);
+    let normalized_term = normalize_privacy_term(term);
+    if normalized_term.is_empty() {
+        return 0;
+    }
+    normalized_text.matches(&normalized_term).count()
+}
+
+fn privacy_term_is_allowed(term: &str, privacy: &PrivacyConfig) -> bool {
+    let term = normalize_privacy_term(term);
+    !term.is_empty()
+        && privacy
+            .allowed_terms
+            .iter()
+            .map(|allowed| normalize_privacy_term(allowed))
+            .any(|allowed| allowed == term)
+}
+
+fn normalize_privacy_term(value: &str) -> String {
+    value.trim().to_lowercase()
 }
 
 fn classify_privacy_token(path: &str, line: &str, token: &str) -> Option<(String, String, String)> {
@@ -13130,6 +13253,7 @@ fn privacy_findings_equivalent(existing: &PrivacyFinding, finding: &PrivacyFindi
 
     match finding.category.as_str() {
         "absolute_user_path"
+        | "blocked_term"
         | "commit_email"
         | "historical_sensitive_path"
         | "private_key_detector_literal"
@@ -13179,6 +13303,16 @@ fn privacy_next_actions(report: &PrivacyScanReport) -> Vec<String> {
     }
     if report.medium_count() > 0 {
         actions.push("review metadata findings before making the repository public".to_string());
+    }
+    if report
+        .findings
+        .iter()
+        .any(|finding| finding.category == "blocked_term")
+    {
+        actions.push(
+            "review configured blocked-term matches, then rename current content or plan a history rewrite"
+                .to_string(),
+        );
     }
     if report.low_count() > 0 {
         actions.push(
@@ -34107,6 +34241,106 @@ mod tests {
         assert_eq!(suppressed_user_path_occurrences, 2);
         assert!(!output.contains("alice"));
         assert!(output.contains(&redacted_old_root));
+    }
+
+    #[test]
+    fn privacy_scan_flags_configured_blocked_terms_without_leaking_term() {
+        let dir = tempdir().unwrap();
+        let blocked = "legacy_product_name";
+        fs::create_dir_all(dir.path().join(".deepcli")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/config.json"),
+            format!("{{\"privacy\":{{\"blockedTerms\":[\"{blocked}\"]}}}}\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.path().join("README.md"),
+            format!("Use {blocked} as the old command name.\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "deepcli-test@example.com"],
+        );
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "README.md", ".deepcli/config.json"]);
+        run_git(
+            dir.path(),
+            &["commit", "-m", &format!("document {blocked}")],
+        );
+
+        let mut config = AppConfig::default();
+        config.privacy.blocked_terms = vec![blocked.to_string()];
+        let error = handle_privacy_scan(
+            dir.path(),
+            &config,
+            vec!["--json".into(), "--fail-on-findings".into()],
+        )
+        .unwrap_err()
+        .downcast::<CommandExit>()
+        .unwrap();
+        let value: Value = serde_json::from_str(&error.output).unwrap();
+
+        assert_eq!(error.code, 1);
+        assert_eq!(value["status"], "needs_review");
+        assert!(value["counts"]["medium"].as_u64().unwrap() >= 1);
+        assert!(value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "blocked_term"
+                && finding["source"] == "git_metadata"));
+        assert!(value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "blocked_term"
+                && finding["source"] == "git_history_content"));
+        assert!(!value["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["path"] == ".deepcli/config.json"));
+        assert!(error.output.contains("<blocked-term>"));
+        assert!(!error.output.contains(blocked));
+    }
+
+    #[test]
+    fn privacy_scan_suppresses_allowed_blocked_terms() {
+        let dir = tempdir().unwrap();
+        let blocked = "legacy_product_name";
+        fs::write(
+            dir.path().join("README.md"),
+            format!("Use {blocked} only inside accepted migration docs.\n"),
+        )
+        .unwrap();
+        run_git(dir.path(), &["init"]);
+        run_git(
+            dir.path(),
+            &["config", "user.email", "deepcli-test@example.com"],
+        );
+        run_git(dir.path(), &["config", "user.name", "privacy tester"]);
+        run_git(dir.path(), &["add", "README.md"]);
+        run_git(dir.path(), &["commit", "-m", "accepted migration docs"]);
+
+        let mut config = AppConfig::default();
+        config.privacy.blocked_terms = vec![blocked.to_string()];
+        config.privacy.allowed_terms = vec![blocked.to_string()];
+        let output = handle_privacy_scan(dir.path(), &config, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["counts"]["medium"], 0);
+        assert_eq!(value["counts"]["actionable"], 0);
+        assert!(value["suppressedFindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|finding| finding["category"] == "blocked_term"
+                && finding["source"] == "git_history_content"));
+        assert!(output.contains("<blocked-term>"));
+        assert!(!output.contains(blocked));
     }
 
     #[tokio::test]
