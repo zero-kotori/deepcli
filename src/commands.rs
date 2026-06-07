@@ -1761,7 +1761,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip diagnostic-only sessions that only contain tool, test, or audit records, and local clarification-only sessions created from low-information input; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
         },
         CommandHelp {
             name: "/rename",
@@ -10702,7 +10702,7 @@ pub fn format_session_list(sessions: &[SessionMetadata]) -> String {
 
 pub(crate) fn list_resumable_sessions(workspace: &Path) -> Result<Vec<SessionMetadata>> {
     let store = SessionStore::new(workspace);
-    sessions_with_resumable_context(&store)
+    sessions_with_resumable_context(&store, workspace)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10726,15 +10726,19 @@ pub(crate) fn handle_resume(
             let session = store.load(&id)?;
             return Ok(serde_json::to_string_pretty(&session.metadata)?);
         }
-        return format_resumable_session_list(&store);
+        return format_resumable_session_list(&store, workspace);
     }
 
-    let (session, note) = resolve_session_for_optional_inspection(
-        &store,
-        options.session_id.as_deref(),
-        options.explicit_session,
-        SessionFallbackKind::ResumableContext,
-    )?;
+    let (session, note) = if options.session_id.is_none() {
+        resolve_resumable_session_for_workspace(&store, workspace)?
+    } else {
+        resolve_session_for_optional_inspection(
+            &store,
+            options.session_id.as_deref(),
+            options.explicit_session,
+            SessionFallbackKind::ResumableContext,
+        )?
+    };
     let report = format_resume_preview_report(&session, note.as_deref())?;
     let output = if options.json_output {
         format_resume_preview_json(workspace, &session, note.as_deref(), &report)?
@@ -20424,32 +20428,47 @@ fn session_metadata_json(metadata: &SessionMetadata) -> Value {
     })
 }
 
-fn format_resumable_session_list(store: &SessionStore) -> Result<String> {
+fn format_resumable_session_list(store: &SessionStore, workspace: &Path) -> Result<String> {
     let all = store.list()?;
-    let sessions = filter_session_metadata_with_resumable_context(store, &all)?;
+    let current_workspace_count = all
+        .iter()
+        .filter(|metadata| session_metadata_matches_workspace(metadata, workspace))
+        .count();
+    let sessions = filter_session_metadata_with_resumable_context(store, &all, workspace)?;
     Ok(format_limited_resumable_session_list(
         &sessions,
         None,
-        all.len().saturating_sub(sessions.len()),
+        current_workspace_count.saturating_sub(sessions.len()),
     ))
 }
 
-fn sessions_with_resumable_context(store: &SessionStore) -> Result<Vec<SessionMetadata>> {
-    filter_session_metadata_with_resumable_context(store, &store.list()?)
+fn sessions_with_resumable_context(
+    store: &SessionStore,
+    workspace: &Path,
+) -> Result<Vec<SessionMetadata>> {
+    filter_session_metadata_with_resumable_context(store, &store.list()?, workspace)
 }
 
 fn filter_session_metadata_with_resumable_context(
     store: &SessionStore,
     sessions: &[SessionMetadata],
+    workspace: &Path,
 ) -> Result<Vec<SessionMetadata>> {
     let mut filtered = Vec::new();
     for metadata in sessions {
+        if !session_metadata_matches_workspace(metadata, workspace) {
+            continue;
+        }
         let session = store.load(&metadata.id.to_string())?;
         if session_has_resumable_context(&session)? {
             filtered.push(metadata.clone());
         }
     }
     Ok(filtered)
+}
+
+fn session_metadata_matches_workspace(metadata: &SessionMetadata, workspace: &Path) -> bool {
+    metadata.workspace == workspace
 }
 
 fn filter_session_metadata_with_activity(
@@ -20477,17 +20496,20 @@ fn session_has_resumable_context(session: &Session) -> Result<bool> {
     if activity.approval_request_count > 0 || activity.side_question_count > 0 {
         return Ok(true);
     }
-    if session
-        .load_plan()?
-        .is_some_and(|plan| !plan.steps.is_empty())
-    {
-        return Ok(true);
-    }
     if session.load_goal()?.is_some() {
         return Ok(true);
     }
     if session_is_low_information_clarification_only(session, &activity)? {
         return Ok(false);
+    }
+    if session_is_thin_completed_chat_only(session, &activity)? {
+        return Ok(false);
+    }
+    if session
+        .load_plan()?
+        .is_some_and(|plan| !plan.steps.is_empty())
+    {
+        return Ok(true);
     }
     Ok(activity.message_count > 0 || activity.has_summary)
 }
@@ -20570,6 +20592,63 @@ fn is_low_information_clarification_text(text: &str) -> bool {
         && normalized.contains("请说明要我分析、修改、测试、继续上次任务"))
         || (normalized.contains("我还不能判断要继续哪一项")
             && normalized.contains("继续修复失败测试"))
+}
+
+fn session_is_thin_completed_chat_only(
+    session: &Session,
+    activity: &SessionActivitySummary,
+) -> Result<bool> {
+    if !matches!(session.metadata.state, SessionState::Completed)
+        || session
+            .metadata
+            .title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty())
+        || activity.test_run_count > 0
+        || activity.diff_count > 0
+        || activity.backup_count > 0
+        || activity.approval_request_count > 0
+        || activity.side_question_count > 0
+    {
+        return Ok(false);
+    }
+
+    let messages = session.load_messages()?;
+    let non_empty = messages
+        .iter()
+        .filter(|message| !message.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    if non_empty.len() != 2 {
+        return Ok(false);
+    }
+    let user = non_empty[0];
+    let assistant = non_empty[1];
+    if !user.role.eq_ignore_ascii_case("user")
+        || !assistant.role.eq_ignore_ascii_case("assistant")
+        || !is_short_single_line_reply(&assistant.content)
+    {
+        return Ok(false);
+    }
+
+    Ok(session
+        .load_summary()?
+        .as_deref()
+        .is_none_or(is_short_single_line_reply))
+}
+
+fn is_short_single_line_reply(text: &str) -> bool {
+    let trimmed = strip_session_metric_footers(text).trim();
+    !trimmed.is_empty() && !trimmed.contains('\n') && trimmed.chars().count() <= 160
+}
+
+fn strip_session_metric_footers(text: &str) -> &str {
+    text.split_once("\n\n[context cache]")
+        .map(|(head, _)| head)
+        .or_else(|| {
+            text.split_once("\n\n[usage estimate]")
+                .map(|(head, _)| head)
+        })
+        .unwrap_or(text)
 }
 
 fn format_limited_session_list(
@@ -20708,6 +20787,31 @@ fn resolve_session_for_optional_inspection(
     bail!(
         "missing session id and no session with {} was found",
         session_fallback_label(kind)
+    )
+}
+
+fn resolve_resumable_session_for_workspace(
+    store: &SessionStore,
+    workspace: &Path,
+) -> Result<(Session, Option<String>)> {
+    for metadata in store.list()? {
+        if !session_metadata_matches_workspace(&metadata, workspace) {
+            continue;
+        }
+        let session = store.load(&metadata.id.to_string())?;
+        if session_has_resumable_context(&session)? {
+            return Ok((
+                session,
+                Some(
+                    "latest session with resumable conversation context in current workspace; no current session"
+                        .to_string(),
+                ),
+            ));
+        }
+    }
+
+    bail!(
+        "missing session id and no session with resumable conversation context was found in current workspace"
     )
 }
 
@@ -29917,6 +30021,163 @@ mod tests {
         .unwrap();
         let explicit: Value = serde_json::from_str(&explicit_output).unwrap();
         assert_eq!(explicit["selected"]["id"], low_information.id().to_string());
+    }
+
+    #[tokio::test]
+    async fn resume_dry_run_without_id_skips_thin_completed_chat_sessions() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut conversation = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        conversation.rename("compiler task").unwrap();
+        conversation
+            .append_message("user", "continue implementing the compiler loop")
+            .unwrap();
+        conversation
+            .append_message("assistant", "I will inspect the failing tests")
+            .unwrap();
+        conversation
+            .write_summary("Continue implementing the compiler loop")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let mut thin_completed = store
+            .create(
+                dir.path(),
+                "kimi".to_string(),
+                Some("kimi-for-coding".to_string()),
+            )
+            .unwrap();
+        thin_completed
+            .append_message(
+                "user",
+                "请用 read_file 读取 Cargo.toml 的前 20 行，然后用一句话说明项目名称。不要修改文件。",
+            )
+            .unwrap();
+        thin_completed
+            .append_message(
+                "assistant",
+                "这个项目名为 deepcli，是一个本地优先 AI 编码代理 CLI。\n\n[context cache] prompt_cache_hit_tokens=768 prompt_cache_miss_tokens=0 hit_rate=100.0%\n\n[usage estimate] prompt_tokens~233",
+            )
+            .unwrap();
+        thin_completed
+            .append_tool_call(&ToolCallRecord {
+                tool: "read_file".to_string(),
+                input: json!({"path": "Cargo.toml"}),
+                output: json!({"content": "[package]\nname = \"deepcli\""}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        thin_completed
+            .write_summary(
+                "这个项目名为 deepcli，是一个本地优先 AI 编码代理 CLI。\n\n[context cache] prompt_cache_hit_tokens=768 prompt_cache_miss_tokens=0 hit_rate=100.0%\n\n[usage estimate] prompt_tokens~233",
+            )
+            .unwrap();
+        thin_completed
+            .save_plan(&Plan {
+                title: "Plan for: read Cargo.toml".to_string(),
+                steps: vec![PlanStep {
+                    id: "context".to_string(),
+                    description: "Read relevant workspace context.".to_string(),
+                    status: PlanStepStatus::Completed,
+                }],
+                updated_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        thin_completed.set_state(SessionState::Completed).unwrap();
+
+        let resumable = list_resumable_sessions(dir.path()).unwrap();
+        assert_eq!(resumable.len(), 1);
+        assert_eq!(resumable[0].id, conversation.id());
+
+        let output = handle_resume(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["selected"]["id"], conversation.id().to_string());
+        assert_ne!(value["selected"]["id"], thin_completed.id().to_string());
+
+        let explicit_output = handle_resume(
+            dir.path(),
+            None,
+            vec![
+                thin_completed.id().to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let explicit: Value = serde_json::from_str(&explicit_output).unwrap();
+        assert_eq!(explicit["selected"]["id"], thin_completed.id().to_string());
+    }
+
+    #[tokio::test]
+    async fn resume_dry_run_without_id_prefers_current_workspace_sessions() {
+        let dir = tempdir().unwrap();
+        let old_workspace = dir.path().with_file_name("old_deepcli");
+        let store = SessionStore::new(dir.path());
+        let current = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        current
+            .append_message("user", "continue the current workspace compiler task")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let old = store
+            .create(
+                &old_workspace,
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        old.append_message("user", "old workspace task").unwrap();
+        old.write_summary("old workspace summary").unwrap();
+
+        let resumable = list_resumable_sessions(dir.path()).unwrap();
+        assert_eq!(resumable.len(), 1);
+        assert_eq!(resumable[0].id, current.id());
+
+        let list = handle_resume(dir.path(), None, Vec::new()).unwrap();
+        assert!(list.contains(&current.id().to_string()[..8]));
+        assert!(!list.contains(&old.id().to_string()[..8]));
+        assert!(!list.contains("hidden non-resumable sessions"));
+
+        let output = handle_resume(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["selected"]["id"], current.id().to_string());
+        assert_ne!(value["selected"]["id"], old.id().to_string());
+
+        let explicit_output = handle_resume(
+            dir.path(),
+            None,
+            vec![
+                old.id().to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let explicit: Value = serde_json::from_str(&explicit_output).unwrap();
+        assert_eq!(explicit["selected"]["id"], old.id().to_string());
     }
 
     #[test]
