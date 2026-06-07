@@ -1761,7 +1761,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip diagnostic-only sessions that only contain tool, test, or audit records; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
         },
         CommandHelp {
             name: "/rename",
@@ -10592,7 +10592,7 @@ pub fn format_session_list(sessions: &[SessionMetadata]) -> String {
 
 pub(crate) fn list_resumable_sessions(workspace: &Path) -> Result<Vec<SessionMetadata>> {
     let store = SessionStore::new(workspace);
-    sessions_with_recorded_activity(&store)
+    sessions_with_resumable_context(&store)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10623,7 +10623,7 @@ pub(crate) fn handle_resume(
         &store,
         options.session_id.as_deref(),
         options.explicit_session,
-        SessionFallbackKind::RecordedActivity,
+        SessionFallbackKind::ResumableContext,
     )?;
     let report = format_resume_preview_report(&session, note.as_deref())?;
     let output = if options.json_output {
@@ -20316,16 +20316,30 @@ fn session_metadata_json(metadata: &SessionMetadata) -> Value {
 
 fn format_resumable_session_list(store: &SessionStore) -> Result<String> {
     let all = store.list()?;
-    let sessions = filter_session_metadata_with_activity(store, &all)?;
-    Ok(format_limited_session_list(
+    let sessions = filter_session_metadata_with_resumable_context(store, &all)?;
+    Ok(format_limited_resumable_session_list(
         &sessions,
         None,
         all.len().saturating_sub(sessions.len()),
     ))
 }
 
-fn sessions_with_recorded_activity(store: &SessionStore) -> Result<Vec<SessionMetadata>> {
-    filter_session_metadata_with_activity(store, &store.list()?)
+fn sessions_with_resumable_context(store: &SessionStore) -> Result<Vec<SessionMetadata>> {
+    filter_session_metadata_with_resumable_context(store, &store.list()?)
+}
+
+fn filter_session_metadata_with_resumable_context(
+    store: &SessionStore,
+    sessions: &[SessionMetadata],
+) -> Result<Vec<SessionMetadata>> {
+    let mut filtered = Vec::new();
+    for metadata in sessions {
+        let session = store.load(&metadata.id.to_string())?;
+        if session_has_resumable_context(&session)? {
+            filtered.push(metadata.clone());
+        }
+    }
+    Ok(filtered)
 }
 
 fn filter_session_metadata_with_activity(
@@ -20346,6 +20360,24 @@ fn session_has_recorded_activity(session: &Session) -> Result<bool> {
     let activity = session.activity_summary()?;
     let audits = session.load_audit_events()?;
     Ok(!session_has_no_recorded_activity(&activity, &audits))
+}
+
+fn session_has_resumable_context(session: &Session) -> Result<bool> {
+    let activity = session.activity_summary()?;
+    if activity.message_count > 0
+        || activity.has_summary
+        || activity.approval_request_count > 0
+        || activity.side_question_count > 0
+    {
+        return Ok(true);
+    }
+    if session
+        .load_plan()?
+        .is_some_and(|plan| !plan.steps.is_empty())
+    {
+        return Ok(true);
+    }
+    Ok(session.load_goal()?.is_some())
 }
 
 fn format_limited_session_list(
@@ -20379,9 +20411,41 @@ fn format_limited_session_list(
     output
 }
 
+fn format_limited_resumable_session_list(
+    sessions: &[SessionMetadata],
+    limit: Option<usize>,
+    hidden_non_resumable: usize,
+) -> String {
+    let shown = limit.map_or(sessions.len(), |limit| sessions.len().min(limit));
+    let visible = &sessions[..shown];
+    if visible.is_empty() {
+        return if hidden_non_resumable == 0 {
+            "no resumable sessions".to_string()
+        } else {
+            format!(
+                "no resumable sessions\nhidden non-resumable sessions: {hidden_non_resumable}; run `/session list --all` to inspect diagnostic-only sessions"
+            )
+        };
+    }
+    let mut output = format_session_list(visible);
+    if shown < sessions.len() {
+        output.push_str(&format!(
+            "\nshowing {shown}/{} sessions; omit `--limit` to show all",
+            sessions.len()
+        ));
+    }
+    if hidden_non_resumable > 0 {
+        output.push_str(&format!(
+            "\nhidden non-resumable sessions: {hidden_non_resumable}; run `/session list --all` to inspect diagnostic-only sessions"
+        ));
+    }
+    output
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SessionFallbackKind {
     RecordedActivity,
+    ResumableContext,
     Messages,
     Summary,
     ToolCalls,
@@ -20572,6 +20636,7 @@ fn session_matches_fallback_kind(session: &Session, kind: SessionFallbackKind) -
             let audits = session.load_audit_events()?;
             !session_has_no_recorded_activity(&activity, &audits)
         }
+        SessionFallbackKind::ResumableContext => session_has_resumable_context(session)?,
         SessionFallbackKind::Messages => !session.load_messages()?.is_empty(),
         SessionFallbackKind::Summary => session
             .load_summary()?
@@ -20600,6 +20665,7 @@ fn session_matches_fallback_kind(session: &Session, kind: SessionFallbackKind) -
 fn session_fallback_label(kind: SessionFallbackKind) -> &'static str {
     match kind {
         SessionFallbackKind::RecordedActivity => "recorded activity",
+        SessionFallbackKind::ResumableContext => "resumable conversation context",
         SessionFallbackKind::Messages => "messages",
         SessionFallbackKind::Summary => "a saved summary",
         SessionFallbackKind::ToolCalls => "tool calls",
@@ -29523,6 +29589,74 @@ mod tests {
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/resume.json")).unwrap();
         assert_eq!(written, output);
         assert_eq!(store.list().unwrap().len(), before);
+    }
+
+    #[tokio::test]
+    async fn resume_dry_run_without_id_skips_tool_only_sessions() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let conversation = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        conversation
+            .append_message("user", "continue this compiler task")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let tool_only = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        tool_only
+            .append_tool_call(&ToolCallRecord {
+                tool: "list_files".to_string(),
+                input: json!({"path": "."}),
+                output: json!({"files": ["src/main.rs"]}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let test_only = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        test_only
+            .append_test_run(&TestRunRecord {
+                command: "cargo test".to_string(),
+                exit_code: Some(101),
+                stdout: String::new(),
+                stderr: "failed".to_string(),
+                passed: false,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+
+        let resumable = list_resumable_sessions(dir.path()).unwrap();
+        assert_eq!(resumable.len(), 1);
+        assert_eq!(resumable[0].id, conversation.id());
+
+        let output = handle_resume(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["selected"]["id"], conversation.id().to_string());
+        assert_eq!(value["selected"]["activity"]["messages"], 1);
+        assert_ne!(value["selected"]["id"], tool_only.id().to_string());
+        assert_ne!(value["selected"]["id"], test_only.id().to_string());
     }
 
     #[test]

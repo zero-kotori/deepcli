@@ -52,9 +52,9 @@ TUI 面向实际编码任务，而不是简单聊天框：
 
 会话是 deepcli 的核心状态单元：
 
-- `deepcli resume` 打开会话选择器。
+- `deepcli resume` 打开会话选择器，并默认跳过只包含工具、测试或审计记录的诊断型 session。
 - `deepcli resume <session_id>` 恢复指定会话。
-- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，不创建新会话、不进入 TUI、不调用 provider。
+- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，不创建新会话、不进入 TUI、不调用 provider；无 id 时同样使用去噪后的可恢复候选。
 - `deepcli sessions --all --limit 20` 查看历史。
 - `deepcli history` 是历史列表快捷入口。
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
@@ -166,7 +166,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
 
-`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`resume --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，从持久化 session 文件读取 metadata、activity、summary 和最近消息，供外部 UI 或脚本在进入 TUI 前确认将恢复的上下文。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；dry-run 报告使用同一 schema、`status=dry_run` 和 `dryRun=true`，且 `fork=null`，用于确认源会话和计划而不创建历史记录；真实 fork 可加 `--verify` 输出 `verification` resume 健康检查，确认副本是否 ready、workspace/provider/model 是否一致、持久化记录计数是否复制一致；`contextCopy` 与 `nextActions` 会明确暴露源会话状态、复制模式、运行中任务限制和恢复命令；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。`terminal` 输出稳定 `deepcli.terminal.v1` JSON，允许外部 UI 或验收脚本在不打开 Terminal 的情况下确认 workspace、命令、平台支持状态和下一步动作。
+`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`resume --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，从持久化 session 文件读取 metadata、activity、summary 和最近消息，供外部 UI 或脚本在进入 TUI 前确认将恢复的上下文；无 id 时会跳过只包含工具、测试或审计记录的诊断型 session。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；dry-run 报告使用同一 schema、`status=dry_run` 和 `dryRun=true`，且 `fork=null`，用于确认源会话和计划而不创建历史记录；真实 fork 可加 `--verify` 输出 `verification` resume 健康检查，确认副本是否 ready、workspace/provider/model 是否一致、持久化记录计数是否复制一致；`contextCopy` 与 `nextActions` 会明确暴露源会话状态、复制模式、运行中任务限制和恢复命令；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。`terminal` 输出稳定 `deepcli.terminal.v1` JSON，允许外部 UI 或验收脚本在不打开 Terminal 的情况下确认 workspace、命令、平台支持状态和下一步动作。
 
 `preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，`--quick` 跳过较慢的 clippy/gate。
 

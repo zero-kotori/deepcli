@@ -141,9 +141,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                 use_tui = true;
             }
             ResumeSelection::NoSessions => {
-                println!(
-                    "no resumable sessions with activity; run `deepcli` to start a new session"
-                );
+                println!("no resumable conversation context; run `deepcli` to start a new session");
                 return Ok(());
             }
             ResumeSelection::Cancelled => {
