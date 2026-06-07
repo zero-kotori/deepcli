@@ -1,9 +1,10 @@
 use crate::agents::AgentStore;
 use crate::commands::{
     handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_logs,
-    handle_preflight, handle_privacy_scan, handle_recipes, handle_round, handle_scorecard,
-    handle_selftest_local, handle_session, handle_terminal, handle_trace, handle_usage,
-    list_resumable_sessions, CommandHelpSummary, CommandRouter, SlashCommand,
+    handle_preflight, handle_privacy_scan, handle_recipes, handle_restore_backup_dry_run,
+    handle_round, handle_scorecard, handle_selftest_local, handle_session, handle_terminal,
+    handle_trace, handle_usage, list_resumable_sessions, CommandHelpSummary, CommandRouter,
+    SlashCommand,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::permissions::PermissionEngine;
@@ -2643,8 +2644,11 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
                     args.first().map(String::as_str),
                     Some("restore-backup" | "restore")
                 ) {
-                    anyhow::bail!(
-                        "/session restore-backup writes files; stop or wait for the running task before restoring"
+                    return handle_restore_backup_dry_run(
+                        &active.workspace,
+                        Some(active.session_id.clone()),
+                        &args[1..],
+                        false,
                     );
                 }
                 handle_session(&active.workspace, Some(active.session_id.clone()), args)
@@ -8541,6 +8545,95 @@ mod tests {
         assert_eq!(
             loaded.load_approval_requests().unwrap()[0].status,
             ApprovalStatus::Approved
+        );
+    }
+
+    #[test]
+    fn running_tui_allows_session_restore_backup_dry_run_only() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session.save_backup("src/lib.rs", "old content\n").unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "new content\n").unwrap();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/session restore-backup latest --dry-run --json"
+        ));
+        let preview = state
+            .chat
+            .last()
+            .expect("dry-run should append a result")
+            .content
+            .clone();
+        let value: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(value["schema"], "deepcli.session.restore_backup.v1");
+        assert_eq!(value["status"], "preview");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+            "new content\n"
+        );
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error" && line.content.contains("restore-backup --dry-run --output")
+        }));
+        assert!(!dir
+            .path()
+            .join(".deepcli/exports/restore-preview.json")
+            .exists());
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/session restore-backup latest"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line
+                    .content
+                    .contains("stop or wait for the running task before restoring")
+        }));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+            "new content\n"
         );
     }
 

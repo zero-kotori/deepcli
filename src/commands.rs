@@ -1709,7 +1709,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/session export [session_id|--current] [path]",
             ],
             examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run --json", "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json", "/session export"],
-            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
+            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, restore-backup is limited to dry-run preview without `--output`; real restore and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
         },
         CommandHelp {
             name: "/history",
@@ -20185,46 +20185,26 @@ async fn handle_restore_backup(
     args: &[String],
 ) -> Result<String> {
     let parsed = parse_restore_backup_args(args, current)?;
-    let store = SessionStore::new(workspace);
-    let (session, note) = resolve_restore_backup_session(
-        &store,
-        parsed.session_id.as_deref(),
-        parsed.explicit_session,
-    )?;
-    let backup = select_backup_record(&session.load_backups()?, &parsed.selector)?;
-    let (target, target_arg) =
-        resolve_restore_target(workspace, parsed.target.as_deref(), &backup)?;
-    let target_workspace_path = workspace_relative_display(workspace, &target).replace('\\', "/");
-    let next_actions = restore_backup_next_actions(
-        &parsed.selector,
-        &session.id().to_string(),
-        &target_workspace_path,
-        parsed.dry_run,
-    );
-
     let output = if parsed.dry_run {
-        let before = fs::read_to_string(&target).unwrap_or_default();
-        let diff = redact_sensitive_text(&restore_preview_diff(&before, &backup.content, &target));
-        let format = RestoreBackupFormat {
-            workspace,
-            status: "preview",
-            dry_run: true,
-            session: &session,
-            backup: &backup,
-            target: &target,
-            target_workspace_path: &target_workspace_path,
-            note: note.as_deref(),
-            diff: Some(&diff),
-            tool_output: None,
-            next_actions: &next_actions,
-        };
-        let report = format_restore_backup_report(&format);
-        if parsed.json_output {
-            format_restore_backup_json(&format, &report)?
-        } else {
-            report
-        }
+        render_restore_backup_dry_run(workspace, &parsed)?
     } else {
+        let store = SessionStore::new(workspace);
+        let (session, note) = resolve_restore_backup_session(
+            &store,
+            parsed.session_id.as_deref(),
+            parsed.explicit_session,
+        )?;
+        let backup = select_backup_record(&session.load_backups()?, &parsed.selector)?;
+        let (target, target_arg) =
+            resolve_restore_target(workspace, parsed.target.as_deref(), &backup)?;
+        let target_workspace_path =
+            workspace_relative_display(workspace, &target).replace('\\', "/");
+        let next_actions = restore_backup_next_actions(
+            &parsed.selector,
+            &session.id().to_string(),
+            &target_workspace_path,
+            false,
+        );
         let result = executor
             .execute(
                 "write_file",
@@ -20260,6 +20240,69 @@ async fn handle_restore_backup(
         write_command_output(workspace, output_path, &output)?;
     }
     Ok(output)
+}
+
+pub(crate) fn handle_restore_backup_dry_run(
+    workspace: &Path,
+    current: Option<String>,
+    args: &[String],
+    write_output: bool,
+) -> Result<String> {
+    let parsed = parse_restore_backup_args(args, current)?;
+    if !parsed.dry_run {
+        bail!(
+            "stop or wait for the running task before restoring; use `/session restore-backup latest --dry-run --json` to preview while the agent is running"
+        );
+    }
+    if parsed.output_path.is_some() && !write_output {
+        bail!(
+            "`/session restore-backup --dry-run --output` writes a file; omit `--output` or stop/wait before writing preview artifacts"
+        );
+    }
+    let output = render_restore_backup_dry_run(workspace, &parsed)?;
+    if let Some(output_path) = &parsed.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn render_restore_backup_dry_run(workspace: &Path, parsed: &RestoreBackupArgs) -> Result<String> {
+    let store = SessionStore::new(workspace);
+    let (session, note) = resolve_restore_backup_session(
+        &store,
+        parsed.session_id.as_deref(),
+        parsed.explicit_session,
+    )?;
+    let backup = select_backup_record(&session.load_backups()?, &parsed.selector)?;
+    let (target, _) = resolve_restore_target(workspace, parsed.target.as_deref(), &backup)?;
+    let target_workspace_path = workspace_relative_display(workspace, &target).replace('\\', "/");
+    let next_actions = restore_backup_next_actions(
+        &parsed.selector,
+        &session.id().to_string(),
+        &target_workspace_path,
+        true,
+    );
+    let before = fs::read_to_string(&target).unwrap_or_default();
+    let diff = redact_sensitive_text(&restore_preview_diff(&before, &backup.content, &target));
+    let format = RestoreBackupFormat {
+        workspace,
+        status: "preview",
+        dry_run: true,
+        session: &session,
+        backup: &backup,
+        target: &target,
+        target_workspace_path: &target_workspace_path,
+        note: note.as_deref(),
+        diff: Some(&diff),
+        tool_output: None,
+        next_actions: &next_actions,
+    };
+    let report = format_restore_backup_report(&format);
+    if parsed.json_output {
+        format_restore_backup_json(&format, &report)
+    } else {
+        Ok(report)
+    }
 }
 
 fn parse_restore_backup_args(
