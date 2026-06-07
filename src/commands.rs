@@ -1689,7 +1689,7 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/session",
-            listing: "/session list [--all] [--limit n] [--json] [--output path]|search <query> [--limit n] [--json] [--output path]|next [--json] [--output path] [session_id|--current]|diagnose [--limit n] [--json] [--output path] [session_id|--current]|rename <session_id|--current> <title>|prune-empty [--dry-run|--force] [--json] [--output path]|show [--json] [--output path] [session_id|--current]|history [--limit n] [--json] [--output path] [session_id|--current]|summary [--json] [--output path] [session_id|--current]|tools [--failed] [--limit n] [--json] [--output path] [session_id|--current]|tests [--limit n] [--json] [--output path] [session_id|--current]|diffs [--limit n] [--json] [--output path] [session_id|--current]|backups [--limit n] [--json] [--output path] [session_id|--current]|restore-backup <name|latest> [--path <target>] [--session id|--current] [--dry-run]|export [session_id|--current] [path]",
+            listing: "/session list [--all] [--limit n] [--json] [--output path]|search <query> [--limit n] [--json] [--output path]|next [--json] [--output path] [session_id|--current]|diagnose [--limit n] [--json] [--output path] [session_id|--current]|rename <session_id|--current> <title>|prune-empty [--dry-run|--force] [--json] [--output path]|show [--json] [--output path] [session_id|--current]|history [--limit n] [--json] [--output path] [session_id|--current]|summary [--json] [--output path] [session_id|--current]|tools [--failed] [--limit n] [--json] [--output path] [session_id|--current]|tests [--limit n] [--json] [--output path] [session_id|--current]|diffs [--limit n] [--json] [--output path] [session_id|--current]|backups [--limit n] [--json] [--output path] [session_id|--current]|restore-backup <name|latest> [--path <target>] [--session id|--current] [--dry-run] [--json] [--output path]|export [session_id|--current] [path]",
             summary: "Inspect, debug, and export persisted session context.",
             usage: &[
                 "/session list [--all] [--limit n] [--json] [--output path]",
@@ -1705,11 +1705,11 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/session tests [--limit n] [--json] [--output path] [session_id|--current]",
                 "/session diffs [--limit n] [--json] [--output path] [session_id|--current]",
                 "/session backups [--limit n] [--json] [--output path] [session_id|--current]",
-                "/session restore-backup <name|latest> [--path <target>] [--session id|--current] [--dry-run]",
+                "/session restore-backup <name|latest> [--path <target>] [--session id|--current] [--dry-run] [--json] [--output path]",
                 "/session export [session_id|--current] [path]",
             ],
-            examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run", "/session export"],
-            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
+            examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run --json", "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json", "/session export"],
+            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
         },
         CommandHelp {
             name: "/history",
@@ -20160,6 +20160,22 @@ struct RestoreBackupArgs {
     session_id: Option<String>,
     explicit_session: bool,
     dry_run: bool,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+struct RestoreBackupFormat<'a> {
+    workspace: &'a Path,
+    status: &'static str,
+    dry_run: bool,
+    session: &'a Session,
+    backup: &'a SessionBackupRecord,
+    target: &'a Path,
+    target_workspace_path: &'a str,
+    note: Option<&'a str>,
+    diff: Option<&'a str>,
+    tool_output: Option<&'a str>,
+    next_actions: &'a [String],
 }
 
 async fn handle_restore_backup(
@@ -20178,46 +20194,70 @@ async fn handle_restore_backup(
     let backup = select_backup_record(&session.load_backups()?, &parsed.selector)?;
     let (target, target_arg) =
         resolve_restore_target(workspace, parsed.target.as_deref(), &backup)?;
-
-    if parsed.dry_run {
-        let before = fs::read_to_string(&target).unwrap_or_default();
-        let diff = restore_preview_diff(&before, &backup.content, &target);
-        let mut output = format!(
-            "restore-backup dry-run: session {}\nbackup: {}\ntarget: {}",
-            session.id(),
-            backup.name,
-            target.display()
-        );
-        if let Some(note) = note {
-            output.push_str(&format!("\nnote: {note}"));
-        }
-        output.push('\n');
-        output.push_str(&diff);
-        return Ok(output);
-    }
-
-    let result = executor
-        .execute(
-            "write_file",
-            json!({
-                "path": target_arg,
-                "content": backup.content,
-                "approved": true
-            }),
-        )
-        .await?;
-    let mut output = format!(
-        "restored backup {} from session {} to {}",
-        backup.name,
-        session.id(),
-        target.display()
+    let target_workspace_path = workspace_relative_display(workspace, &target).replace('\\', "/");
+    let next_actions = restore_backup_next_actions(
+        &parsed.selector,
+        &session.id().to_string(),
+        &target_workspace_path,
+        parsed.dry_run,
     );
-    if let Some(note) = note {
-        output.push_str(&format!("\nnote: {note}"));
-    }
-    if !result.content.trim().is_empty() {
-        output.push('\n');
-        output.push_str(&result.content);
+
+    let output = if parsed.dry_run {
+        let before = fs::read_to_string(&target).unwrap_or_default();
+        let diff = redact_sensitive_text(&restore_preview_diff(&before, &backup.content, &target));
+        let format = RestoreBackupFormat {
+            workspace,
+            status: "preview",
+            dry_run: true,
+            session: &session,
+            backup: &backup,
+            target: &target,
+            target_workspace_path: &target_workspace_path,
+            note: note.as_deref(),
+            diff: Some(&diff),
+            tool_output: None,
+            next_actions: &next_actions,
+        };
+        let report = format_restore_backup_report(&format);
+        if parsed.json_output {
+            format_restore_backup_json(&format, &report)?
+        } else {
+            report
+        }
+    } else {
+        let result = executor
+            .execute(
+                "write_file",
+                json!({
+                    "path": target_arg,
+                    "content": backup.content,
+                    "approved": true
+                }),
+            )
+            .await?;
+        let tool_output = redact_sensitive_text(&result.content);
+        let format = RestoreBackupFormat {
+            workspace,
+            status: "restored",
+            dry_run: false,
+            session: &session,
+            backup: &backup,
+            target: &target,
+            target_workspace_path: &target_workspace_path,
+            note: note.as_deref(),
+            diff: None,
+            tool_output: Some(&tool_output),
+            next_actions: &next_actions,
+        };
+        let report = format_restore_backup_report(&format);
+        if parsed.json_output {
+            format_restore_backup_json(&format, &report)?
+        } else {
+            report
+        }
+    };
+    if let Some(output_path) = &parsed.output_path {
+        write_command_output(workspace, output_path, &output)?;
     }
     Ok(output)
 }
@@ -20231,11 +20271,27 @@ fn parse_restore_backup_args(
     let mut session_id = None;
     let mut explicit_session = false;
     let mut dry_run = false;
+    let mut json_output = false;
+    let mut output_path = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--dry-run" => {
                 dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                let raw = value.trim_start_matches("--output=");
+                set_command_output_path(&mut output_path, raw)?;
                 index += 1;
             }
             "--path" => {
@@ -20286,6 +20342,8 @@ fn parse_restore_backup_args(
         session_id,
         explicit_session,
         dry_run,
+        json_output,
+        output_path,
     })
 }
 
@@ -20372,6 +20430,81 @@ fn restore_preview_diff(before: &str, after: &str, target: &Path) -> String {
     } else {
         diff
     }
+}
+
+fn restore_backup_next_actions(
+    selector: &str,
+    session_id: &str,
+    target_workspace_path: &str,
+    dry_run: bool,
+) -> Vec<String> {
+    let restore = format!(
+        "deepcli session restore-backup {} --session {} --path {}",
+        shell_words::quote(selector),
+        shell_words::quote(session_id),
+        shell_words::quote(target_workspace_path)
+    );
+    let mut actions = Vec::new();
+    if dry_run {
+        actions.push(restore);
+    } else {
+        actions.push(format!("deepcli session backups {} --limit 5", session_id));
+        actions.push("deepcli session diffs --current --limit 5".to_string());
+    }
+    actions
+}
+
+fn format_restore_backup_report(input: &RestoreBackupFormat<'_>) -> String {
+    let session_id = input.session.id().to_string();
+    let mut lines = if input.dry_run {
+        vec![
+            format!("restore-backup dry-run: session {session_id}"),
+            format!("backup: {}", input.backup.name),
+            format!("target: {}", input.target.display()),
+        ]
+    } else {
+        vec![format!(
+            "restored backup {} from session {} to {}",
+            input.backup.name,
+            session_id,
+            input.target.display()
+        )]
+    };
+    lines.push(format!("status: {}", input.status));
+    if let Some(note) = input.note {
+        lines.push(format!("note: {note}"));
+    }
+    if let Some(diff) = input.diff {
+        lines.push(diff.to_string());
+    }
+    if let Some(tool_output) = input.tool_output.filter(|output| !output.trim().is_empty()) {
+        lines.push(tool_output.to_string());
+    }
+    lines.push("next actions:".to_string());
+    for action in input.next_actions {
+        lines.push(format!("  - {action}"));
+    }
+    lines.join("\n")
+}
+
+fn format_restore_backup_json(input: &RestoreBackupFormat<'_>, report: &str) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.session.restore_backup.v1",
+        "status": input.status,
+        "dryRun": input.dry_run,
+        "workspace": input.workspace.display().to_string(),
+        "session": session_inspect_metadata_json(input.session),
+        "backup": session_backup_record_json(input.backup),
+        "target": {
+            "path": input.target.display().to_string(),
+            "workspacePath": input.target_workspace_path,
+        },
+        "note": input.note,
+        "diff": input.diff,
+        "toolOutput": input.tool_output,
+        "nextActions": input.next_actions,
+        "report": report,
+    }))?)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -37676,6 +37809,69 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(
             fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
             "new content\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn session_restore_backup_dry_run_json_writes_structured_preview() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        session
+            .save_backup("src/lib.rs", "old content\napi_key = sk-restore-secret\n")
+            .unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "new content\napi_key = sk-current-secret\n",
+        )
+        .unwrap();
+        let executor = test_executor(dir.path());
+
+        let output = handle_session_command(
+            dir.path(),
+            Some(session.id().to_string()),
+            &executor,
+            vec![
+                "restore-backup".into(),
+                "latest".into(),
+                "--dry-run".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/restore-preview.json".into(),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.session.restore_backup.v1");
+        assert_eq!(value["status"], "preview");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["session"]["id"], session.id().to_string());
+        assert_eq!(value["backup"]["targetPath"], "src/lib.rs");
+        assert!(value["target"]["path"]
+            .as_str()
+            .unwrap()
+            .ends_with("src/lib.rs"));
+        assert_eq!(value["target"]["workspacePath"], "src/lib.rs");
+        assert!(value["diff"].as_str().unwrap().contains("-new content"));
+        assert!(value["diff"].as_str().unwrap().contains("+old content"));
+        assert!(!output.contains("sk-restore-secret"));
+        assert!(!output.contains("sk-current-secret"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str().unwrap().contains("restore-backup latest")));
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/restore-preview.json")).unwrap();
+        assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), value);
+        assert_eq!(
+            fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
+            "new content\napi_key = sk-current-secret\n"
         );
     }
 
