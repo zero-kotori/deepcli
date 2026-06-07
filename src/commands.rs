@@ -1334,7 +1334,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -18602,6 +18602,7 @@ fn terminal_next_actions(opened: bool) -> Vec<&'static str> {
 struct ForkOptions {
     session_id: Option<String>,
     explicit_session: bool,
+    missing_current: bool,
     dry_run: bool,
     no_open: bool,
     verify: bool,
@@ -18672,8 +18673,26 @@ pub(crate) fn handle_fork(
 ) -> Result<String> {
     let options = parse_fork_options(&args, current)?;
     let store = SessionStore::new(workspace);
+    if options.missing_current {
+        return fork_source_error(
+            workspace,
+            &options,
+            "no_active_session",
+            "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli sessions --all --limit 20`",
+        );
+    }
     let (source, note) = if options.session_id.is_none() {
-        resolve_resumable_session_for_workspace(&store, workspace)?
+        match resolve_resumable_session_for_workspace(&store, workspace) {
+            Ok(source) => source,
+            Err(error) => {
+                return fork_source_error(
+                    workspace,
+                    &options,
+                    "no_resumable_context",
+                    &error.to_string(),
+                );
+            }
+        }
     } else {
         resolve_session_for_optional_inspection(
             &store,
@@ -18784,27 +18803,24 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
     let mut verify = false;
     let mut json_output = false;
     let mut output_path = None;
+    let mut missing_current = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
             "--current" => {
-                if session_id.is_some() {
+                if session_id.is_some() || missing_current {
                     bail!("multiple session ids were provided");
                 }
-                session_id = Some(
-                    current
-                        .clone()
-                        .ok_or_else(|| {
-                            anyhow::anyhow!(
-                                "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli sessions --all --limit 20`"
-                            )
-                        })?,
-                );
+                if let Some(current) = current.clone() {
+                    session_id = Some(current);
+                } else {
+                    missing_current = true;
+                }
                 explicit_session = true;
                 index += 1;
             }
             "--session" => {
-                if session_id.is_some() {
+                if session_id.is_some() || missing_current {
                     bail!("multiple session ids were provided");
                 }
                 session_id = Some(required_arg(args, index + 1, "session id")?.to_string());
@@ -18838,7 +18854,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
             }
             value if value.starts_with('-') => bail!("unsupported /fork option `{value}`"),
             value => {
-                if session_id.is_some() {
+                if session_id.is_some() || missing_current {
                     bail!("multiple session ids were provided");
                 }
                 session_id = Some(value.to_string());
@@ -18847,7 +18863,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
             }
         }
     }
-    if session_id.is_none() {
+    if session_id.is_none() && !missing_current {
         if let Some(current) = current {
             session_id = Some(current);
             explicit_session = true;
@@ -18856,6 +18872,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
     Ok(ForkOptions {
         session_id,
         explicit_session,
+        missing_current,
         dry_run,
         no_open,
         verify,
@@ -19057,6 +19074,44 @@ fn fork_preview_next_actions(source: &Session, context_copy: &ForkContextCopy) -
         );
     }
     actions
+}
+
+fn fork_source_error(
+    workspace: &Path,
+    options: &ForkOptions,
+    code: &str,
+    message: &str,
+) -> Result<String> {
+    if !options.json_output {
+        bail!("{}", message);
+    }
+    let next_actions = fork_error_next_actions();
+    let report = format_fork_error_report(message, &next_actions);
+    let output = format_fork_error_json(workspace, options, code, message, &next_actions, &report)?;
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Err(CommandExit::new(output, 1).into())
+}
+
+fn fork_error_next_actions() -> Vec<String> {
+    vec![
+        "deepcli resume".to_string(),
+        "deepcli sessions --all --limit 20".to_string(),
+        "deepcli fork <session_id> --dry-run --json".to_string(),
+    ]
+}
+
+fn format_fork_error_report(message: &str, next_actions: &[String]) -> String {
+    let mut lines = vec![
+        format!("fork error: {}", redact_sensitive_text(message)),
+        "fork not created; no source session was selected".to_string(),
+        "next actions:".to_string(),
+    ];
+    for action in next_actions {
+        lines.push(format!("  - {action}"));
+    }
+    lines.join("\n")
 }
 
 fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
@@ -19283,6 +19338,42 @@ fn format_fork_dry_run_json(
         "limitations": [
             "dry-run does not create a fork session or copy files",
             "forking a currently running agent task copies persisted session files only; the in-memory task is not hot-forked"
+        ],
+        "report": report,
+    }))?)
+}
+
+fn format_fork_error_json(
+    workspace: &Path,
+    options: &ForkOptions,
+    code: &str,
+    message: &str,
+    next_actions: &[String],
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.session.fork.v1",
+        "status": "error",
+        "dryRun": options.dry_run,
+        "workspace": workspace.display().to_string(),
+        "source": Value::Null,
+        "fork": Value::Null,
+        "plannedFork": Value::Null,
+        "terminal": {
+            "opened": false,
+            "error": Value::Null,
+            "resumeCommand": Value::Null,
+            "wouldOpen": !options.no_open,
+        },
+        "contextCopy": Value::Null,
+        "verification": Value::Null,
+        "error": {
+            "code": code,
+            "message": redact_sensitive_text(message),
+        },
+        "nextActions": next_actions,
+        "limitations": [
+            "no fork session was created because no source session was selected"
         ],
         "report": report,
     }))?)
@@ -29962,6 +30053,42 @@ mod tests {
     }
 
     #[test]
+    fn fork_current_json_without_active_session_returns_structured_error() {
+        let dir = tempdir().unwrap();
+        let error = handle_fork(
+            dir.path(),
+            None,
+            vec![
+                "--current".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+                "--output".to_string(),
+                ".deepcli/exports/fork-error.json".to_string(),
+            ],
+        )
+        .unwrap_err()
+        .downcast::<CommandExit>()
+        .unwrap();
+        let value: Value = serde_json::from_str(&error.output).unwrap();
+        let written = fs::read_to_string(dir.path().join(".deepcli/exports/fork-error.json"))
+            .expect("structured error should be written before non-zero exit");
+
+        assert_eq!(error.code, 1);
+        assert_eq!(written, error.output);
+        assert_eq!(value["schema"], "deepcli.session.fork.v1");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["source"], Value::Null);
+        assert_eq!(value["fork"], Value::Null);
+        assert_eq!(value["error"]["code"], "no_active_session");
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli sessions --all --limit 20")));
+    }
+
+    #[test]
     fn fork_without_resumable_context_reports_candidate_commands() {
         let dir = tempdir().unwrap();
         let store = SessionStore::new(dir.path());
@@ -29982,6 +30109,41 @@ mod tests {
 
         assert!(error.to_string().contains("deepcli resume"));
         assert!(error.to_string().contains("deepcli sessions --all"));
+    }
+
+    #[test]
+    fn fork_json_without_resumable_context_returns_structured_error() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+
+        let error = handle_fork(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap_err()
+        .downcast::<CommandExit>()
+        .unwrap();
+        let value: Value = serde_json::from_str(&error.output).unwrap();
+
+        assert_eq!(error.code, 1);
+        assert_eq!(value["schema"], "deepcli.session.fork.v1");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["error"]["code"], "no_resumable_context");
+        assert_eq!(value["terminal"]["wouldOpen"], true);
+        assert!(value["report"].as_str().unwrap().contains("fork error"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli resume")));
     }
 
     #[test]
