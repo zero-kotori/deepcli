@@ -2978,6 +2978,7 @@ fn build_scorecard_report(
     };
     let has_gaps = !gaps.is_empty();
     let next_actions = scorecard_global_next_actions(
+        workspace,
         &categories,
         has_gaps,
         &benchmark_status,
@@ -3065,6 +3066,7 @@ fn scorecard_add_gap(category: &mut ScorecardCategory, gap: &str, next_action: &
 }
 
 fn scorecard_global_next_actions(
+    workspace: &Path,
     categories: &[ScorecardCategory],
     has_gaps: bool,
     benchmark_status: &BenchmarkStatusReport,
@@ -3081,8 +3083,7 @@ fn scorecard_global_next_actions(
                 "deepcli benchmark status --json".to_string(),
                 "deepcli preflight --json".to_string(),
                 "deepcli gate --json".to_string(),
-                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-                    .to_string(),
+                sota_baseline_next_action(workspace),
             ]);
         }
         return vec![
@@ -3092,8 +3093,7 @@ fn scorecard_global_next_actions(
             "deepcli recipes sota --json".to_string(),
             "deepcli benchmark trends --json".to_string(),
             "deepcli benchmark status --json".to_string(),
-            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-                .to_string(),
+            sota_baseline_next_action(workspace),
         ];
     }
 
@@ -31794,7 +31794,7 @@ mod tests {
                 "deepcli benchmark status --json",
                 "deepcli preflight --json",
                 "deepcli gate --json",
-                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
+                "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
         );
 
@@ -31809,6 +31809,42 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap() == "deepcli quickstart --json"));
+    }
+
+    #[test]
+    fn scorecard_ready_next_actions_compare_when_default_baseline_exists() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
+        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+        fs::write(&baseline, "{}\n").unwrap();
+        let now = Utc::now();
+        for preset in MEANINGFUL_BENCHMARK_PRESETS {
+            write_benchmark_status_test_artifact(
+                dir.path(),
+                &format!("20990101T000000Z-product-{preset}.json"),
+                now,
+                preset,
+                preset,
+                "passed",
+            );
+        }
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"].as_array().unwrap();
+
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap()
+                == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+        }));
+        assert!(!next_actions.iter().any(|action| {
+            action.as_str().unwrap()
+                == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        }));
     }
 
     #[test]
