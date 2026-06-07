@@ -152,7 +152,7 @@
    - 目的：让 benchmark 证据报告的终端文本保持专业、可读，避免 SOTA 产品循环中的本地证据给出明显格式噪声。
 
 28. scorecard ready 状态下一步动作聚焦
-   - 结果：当 `deepcli scorecard --json` 没有 gaps 且状态为 ok 时，顶层 `nextActions` 会切换为持续验收动作：`deepcli round --json`、`deepcli preflight --json`、`deepcli gate --json`、`deepcli recipes sota --json`、`deepcli benchmark trends --json`、`deepcli benchmark status --json`，以及 baseline template 或 baseline compare。
+   - 结果：当 `deepcli scorecard --json` 没有 gaps 且状态为 ok 时，顶层 `nextActions` 会切换为持续验收动作：`deepcli round --json`、`deepcli preflight --json`、`deepcli gate --json`、`deepcli recipes sota --json`、`deepcli benchmark trends --json`、`deepcli benchmark status --json`，以及 `--from-current`、手工 baseline template 或 baseline compare。
    - 如果 benchmark evidence 已 ready 但 trends 仍是 `insufficient_history` 或 `regression`，顶层首项会改为 `deepcli round --json --run-benchmark --fail-on-command`，和当前 round gate 的修复路径保持一致。
    - 分类级 `categories[].nextActions` 仍保留对应分类的探索和诊断命令，TUI 或外部 UI 仍可展开查看，但顶层列表不再把 `quickstart`、`completion`、`status` 等所有强分类 discovery 命令混成一组。
    - 目的：ready 报告应该指导用户继续验收、观察趋势和做横向对比，而不是给出像命令大全一样的下一步列表。
@@ -270,17 +270,17 @@
 
 52. SOTA recipe baseline-aware nextActions
    - 结果：`deepcli recipes sota --json` 的顶层 `nextActions` 会检查默认 baseline 文件 `.deepcli/baselines/competitor.json`。
-   - 行为：baseline 缺失时推荐 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。recipe 的 commands 清单仍保留 template 和 compare 两个完整步骤。
+   - 行为：baseline 缺失且当前 artifact 可完整捕获时，先推荐 `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`，再保留 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。recipe 的 commands 清单仍保留 template 和 compare 两个完整步骤。
    - 目的：避免产品循环入口在 ready 状态下给出一个因为默认 baseline 缺失而必然失败的 compare 命令，让用户按可执行顺序完成竞品或旧版本对比。
 
 53. scorecard ready baseline-aware nextActions
    - 结果：`deepcli scorecard --json` 在没有 gaps 且状态为 ok 时，顶层 `nextActions` 也会检查默认 baseline 文件 `.deepcli/baselines/competitor.json`。
-   - 行为：baseline 缺失时推荐 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。如果 benchmark trends 需要补历史或处理回归，原有首项修复动作保持优先。
+   - 行为：baseline 缺失且当前 artifact 可完整捕获时，先推荐 `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`，再保留 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。如果 benchmark trends 需要补历史或处理回归，原有首项修复动作保持优先。
    - 目的：让 scorecard 和 SOTA recipe 两个产品循环入口都只推荐当前可执行的 baseline 下一步，避免同类入口给出互相矛盾的动作。
 
 54. round ready baseline-aware nextActions
    - 结果：`deepcli round --json` 在所有 gates 通过且 round ready 时，外层 `nextActions` 会在 preflight/gate 后检查默认 baseline 文件 `.deepcli/baselines/competitor.json`。
-   - 行为：baseline 缺失时推荐 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。benchmark evidence、trend 或 goal gate 未 ready 时，原有失败 gate 修复动作继续优先。
+   - 行为：baseline 缺失且当前 artifact 可完整捕获时，先推荐 `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`，再保留 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。benchmark evidence、trend 或 goal gate 未 ready 时，原有失败 gate 修复动作继续优先。
    - 目的：让主产品循环报告本身也不会在 ready 状态下漏掉横向 baseline 证据，避免用户只运行 `round --json` 时停在 preflight/gate，而看不到下一步 SOTA 对比动作。
 
 55. baseline-template 自带后续动作
@@ -293,13 +293,18 @@
    - 行为：当 required cases 都有可用 artifact 和耗时时，baseline 顶层 `status=ready`，`nextActions` 直接指向 `deepcli benchmark compare --baseline <path> --json`；缺少 artifact 或耗时时仍保持 `needs_values`，并提示补跑 benchmark 或编辑 baseline。
    - 目的：让用户可以把当前版本、旧版本或手工跑完的对照版本保存成可立即 compare 的本地基线，不必手工填写每个 required case。
 
+57. ready 产品循环优先推荐当前 baseline 捕获
+   - 结果：`scorecard`、`round` 和 `recipes sota` 在默认 competitor baseline 缺失且本地 required benchmark artifact 可完整捕获时，会先推荐 `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`。
+   - 行为：该动作排在手工 `.deepcli/baselines/competitor.json` 模板之前；如果默认 competitor baseline 已存在，仍只推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`；如果当前 artifact 缺失或缺少 duration，则仍只推荐手工 baseline template。
+   - 目的：让 ready 产品循环直接暴露零手填的本地基线捕获路径，同时保留竞品或旧版本手工 baseline 工作流。
+
 ## 当前产品自评
 
-当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 baseline template 或 baseline compare；baseline-template 自身会输出 `status=needs_values`、`nextActions` 和 `report`，把用户带到编辑 baseline 和 compare 的下一步；`baseline-template --from-current` 可在本地 benchmark artifact 完整时直接生成 `status=ready` 的 compare-ready baseline。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
+当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 `--from-current`、手工 baseline template 或 baseline compare；如果默认 competitor baseline 缺失且本地 artifact 可完整捕获，会先提示 `baseline-template --from-current` 生成 `status=ready` 的 compare-ready baseline，再提示手工 competitor baseline template。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、baseline-template 自带后续动作、baseline-template 捕获当前 benchmark、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查、resume dry-run 预览、resume 候选去噪、preflight 运行诊断摘要、benchmark status/summary JSON 内嵌 report、resume 低信息澄清会话去噪、resume 当前 workspace 与短任务去噪、privacy 配置化禁用词扫描、fork 默认候选去噪、fork JSON 错误结构化、benchmark 证据 freshness 可见性、SOTA recipe baseline-aware nextActions、scorecard ready baseline-aware nextActions，以及 round ready baseline-aware nextActions，下一轮可继续关注 TUI 可观测性、恢复历史或环境自动化验收的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、baseline-template 自带后续动作、baseline-template 捕获当前 benchmark、ready 产品循环优先推荐当前 baseline 捕获、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查、resume dry-run 预览、resume 候选去噪、preflight 运行诊断摘要、benchmark status/summary JSON 内嵌 report、resume 低信息澄清会话去噪、resume 当前 workspace 与短任务去噪、privacy 配置化禁用词扫描、fork 默认候选去噪、fork JSON 错误结构化、benchmark 证据 freshness 可见性、SOTA recipe baseline-aware nextActions、scorecard ready baseline-aware nextActions，以及 round ready baseline-aware nextActions，下一轮可继续关注 TUI 可观测性、恢复历史或环境自动化验收的真实交互阻力。
 
 ## 常用检查命令
 

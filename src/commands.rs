@@ -2373,7 +2373,7 @@ fn recipes_next_actions(
                 None,
             )
             .next_actions;
-            actions.push(sota_baseline_next_action(workspace));
+            actions.extend(sota_baseline_next_actions(workspace));
             return dedup_preserve_order(actions);
         }
         _ => vec![
@@ -2385,12 +2385,26 @@ fn recipes_next_actions(
     dedup_preserve_order(actions.into_iter().map(str::to_string).collect())
 }
 
-fn sota_baseline_next_action(workspace: &Path) -> String {
+fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
     if workspace.join(DEFAULT_BENCHMARK_BASELINE_PATH).is_file() {
-        DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()
+        vec![DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()]
+    } else if benchmark_current_baseline_ready(workspace) {
+        vec![
+            DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION.to_string(),
+            DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string(),
+        ]
     } else {
-        DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()
+        vec![DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()]
     }
+}
+
+fn benchmark_current_baseline_ready(workspace: &Path) -> bool {
+    load_benchmark_artifacts(workspace)
+        .map(|artifacts| {
+            let captures = benchmark_current_baseline_captures(&artifacts);
+            benchmark_baseline_template_status(Some(&captures)) == "ready"
+        })
+        .unwrap_or(false)
 }
 
 fn format_recipes_text(
@@ -2494,6 +2508,8 @@ const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
     "deepcli benchmark run --preset cargo-test --json --fail-on-command";
 const DEFAULT_BENCHMARK_BASELINE_PATH: &str = ".deepcli/baselines/competitor.json";
+const DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION: &str =
+    "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json";
 const DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION: &str =
     "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json";
 const DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION: &str =
@@ -3077,25 +3093,27 @@ fn scorecard_global_next_actions(
         if benchmark_status.status == "ready"
             && round_benchmark_trends_needs_attention(benchmark_trends_status)
         {
-            return dedup_preserve_order(vec![
+            let mut actions = vec![
                 round_benchmark_trends_next_action(benchmark_trends_status),
                 "deepcli recipes sota --json".to_string(),
                 "deepcli benchmark trends --json".to_string(),
                 "deepcli benchmark status --json".to_string(),
                 "deepcli preflight --json".to_string(),
                 "deepcli gate --json".to_string(),
-                sota_baseline_next_action(workspace),
-            ]);
+            ];
+            actions.extend(sota_baseline_next_actions(workspace));
+            return dedup_preserve_order(actions);
         }
-        return vec![
+        let mut actions = vec![
             SCORECARD_ROUND_REPORT_ACTION.to_string(),
             "deepcli preflight --json".to_string(),
             "deepcli gate --json".to_string(),
             "deepcli recipes sota --json".to_string(),
             "deepcli benchmark trends --json".to_string(),
             "deepcli benchmark status --json".to_string(),
-            sota_baseline_next_action(workspace),
         ];
+        actions.extend(sota_baseline_next_actions(workspace));
+        return actions;
     }
 
     let mut next_actions = categories
@@ -3659,7 +3677,7 @@ fn build_round_report(
     next_actions.push("deepcli preflight --json".to_string());
     next_actions.push("deepcli gate --json".to_string());
     if status == "ready" {
-        next_actions.push(sota_baseline_next_action(workspace));
+        next_actions.extend(sota_baseline_next_actions(workspace));
     }
     let next_actions = dedup_preserve_order(next_actions);
     let report = format_round_text(
@@ -31786,6 +31804,65 @@ mod tests {
     }
 
     #[test]
+    fn sota_baseline_next_actions_prefer_current_capture_when_artifacts_are_ready() {
+        let dir = tempdir().unwrap();
+        let now = Utc::now();
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            now + chrono::Duration::seconds(1),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+            120,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            now + chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+            250,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990103T000000Z-product-selftest.json",
+            now + chrono::Duration::seconds(3),
+            "selftest",
+            "selftest",
+            "passed",
+            30,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990104T000000Z-product-scorecard.json",
+            now + chrono::Duration::seconds(4),
+            "scorecard",
+            "scorecard",
+            "passed",
+            10,
+        );
+
+        assert_eq!(
+            sota_baseline_next_actions(dir.path()),
+            vec![
+                "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
+                "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
+            ]
+        );
+
+        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
+        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+        fs::write(&baseline, "{}\n").unwrap();
+
+        assert_eq!(
+            sota_baseline_next_actions(dir.path()),
+            vec!["deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"]
+        );
+    }
+
+    #[test]
     fn scorecard_json_output_is_structured_and_written() {
         let dir = tempdir().unwrap();
         let config = AppConfig::default();
@@ -31951,6 +32028,7 @@ mod tests {
                 "deepcli benchmark status --json",
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
         );
@@ -32243,9 +32321,13 @@ mod tests {
             vec![
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
         );
+        assert!(value["report"].as_str().unwrap().contains(
+            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        ));
         assert!(value["report"].as_str().unwrap().contains(
             "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
         ));
