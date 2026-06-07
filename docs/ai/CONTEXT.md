@@ -268,6 +268,11 @@
    - 行为：所有 required preset 证据都小于 1 天显示 `fresh`；任一 required preset 超过 1 天但未超过 7 天仍保持 `ready`，但标为 `aging` 并把 `deepcli round --json --run-benchmark --fail-on-command` 放到刷新动作前面；超过 stale 阈值继续按原有 `stale` gate 失败。
    - 目的：让用户和外部 UI 区分“本地证据仍有效”和“刚刚验证过”，避免 ready 报告隐藏证据年龄。
 
+52. SOTA recipe baseline-aware nextActions
+   - 结果：`deepcli recipes sota --json` 的顶层 `nextActions` 会检查默认 baseline 文件 `.deepcli/baselines/competitor.json`。
+   - 行为：baseline 缺失时推荐 `deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json`；baseline 文件存在后才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`。recipe 的 commands 清单仍保留 template 和 compare 两个完整步骤。
+   - 目的：避免产品循环入口在 ready 状态下给出一个因为默认 baseline 缺失而必然失败的 compare 命令，让用户按可执行顺序完成竞品或旧版本对比。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。

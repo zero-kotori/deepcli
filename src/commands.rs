@@ -2327,8 +2327,8 @@ fn recipes_catalog() -> Vec<Recipe> {
                 "deepcli round --json --run-benchmark --fail-on-command",
                 "deepcli benchmark status --json",
                 "deepcli benchmark trends --json",
-                "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
-                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
+                DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION,
+                DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION,
                 "deepcli benchmark gate --json",
             ],
             notes: &[
@@ -2372,10 +2372,7 @@ fn recipes_next_actions(
                 None,
             )
             .next_actions;
-            actions.push(
-                "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-                    .to_string(),
-            );
+            actions.push(sota_baseline_next_action(workspace));
             return dedup_preserve_order(actions);
         }
         _ => vec![
@@ -2385,6 +2382,14 @@ fn recipes_next_actions(
         ],
     };
     dedup_preserve_order(actions.into_iter().map(str::to_string).collect())
+}
+
+fn sota_baseline_next_action(workspace: &Path) -> String {
+    if workspace.join(DEFAULT_BENCHMARK_BASELINE_PATH).is_file() {
+        DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()
+    } else {
+        DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()
+    }
 }
 
 fn format_recipes_text(
@@ -2487,6 +2492,11 @@ const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
     "deepcli benchmark run-suite --json --fail-on-command";
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
     "deepcli benchmark run --preset cargo-test --json --fail-on-command";
+const DEFAULT_BENCHMARK_BASELINE_PATH: &str = ".deepcli/baselines/competitor.json";
+const DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION: &str =
+    "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json";
+const DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION: &str =
+    "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json";
 
 pub(crate) fn handle_scorecard(
     workspace: &Path,
@@ -31539,6 +31549,10 @@ mod tests {
         );
         assert!(next_actions.iter().any(|action| {
             action.as_str().unwrap()
+                == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        }));
+        assert!(!next_actions.iter().any(|action| {
+            action.as_str().unwrap()
                 == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
         }));
         assert!(next_actions
@@ -31582,6 +31596,36 @@ mod tests {
         let help = CommandRouter::help_for(&["recipes".to_string()]).unwrap();
         assert!(help.contains("/recipes sota"));
         assert!(help.contains("product-loop"));
+    }
+
+    #[test]
+    fn recipes_sota_next_actions_compare_when_default_baseline_exists() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
+        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+        fs::write(&baseline, "{}\n").unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["sota".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"].as_array().unwrap();
+
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap()
+                == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+        }));
+        assert!(!next_actions.iter().any(|action| {
+            action.as_str().unwrap()
+                == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        }));
     }
 
     #[test]
