@@ -1335,7 +1335,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. No-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -19071,7 +19071,7 @@ pub(crate) fn handle_fork(
             workspace,
             &options,
             "no_active_session",
-            "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli sessions --all --limit 20`",
+            "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`",
         );
     }
     let (source, note) = if options.session_id.is_none() {
@@ -19497,7 +19497,8 @@ fn fork_source_error(
 
 fn fork_error_next_actions() -> Vec<String> {
     vec![
-        "deepcli resume".to_string(),
+        "deepcli resume --dry-run --json".to_string(),
+        "deepcli session list --all --limit 20 --json".to_string(),
         "deepcli sessions --all --limit 20".to_string(),
         "deepcli fork <session_id> --dry-run --json".to_string(),
     ]
@@ -21655,7 +21656,7 @@ fn resolve_resumable_session_for_workspace(
     }
 
     bail!(
-        "missing session id and no session with resumable conversation context was found in current workspace; run `deepcli resume` to inspect resumable sessions, `deepcli sessions --all --limit 20` to inspect all sessions, or pass an explicit session id"
+        "missing session id and no session with resumable conversation context was found in current workspace; run `deepcli resume --dry-run --json` to inspect resumable candidates, `deepcli session list --all --limit 20 --json` to inspect all sessions with structured output, or pass an explicit session id"
     )
 }
 
@@ -30691,7 +30692,12 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("omit `--current`"));
-        assert!(error.to_string().contains("deepcli sessions --all"));
+        assert!(error
+            .to_string()
+            .contains("deepcli resume --dry-run --json"));
+        assert!(error
+            .to_string()
+            .contains("deepcli session list --all --limit 20 --json"));
     }
 
     #[test]
@@ -30723,11 +30729,14 @@ mod tests {
         assert_eq!(value["source"], Value::Null);
         assert_eq!(value["fork"], Value::Null);
         assert_eq!(value["error"]["code"], "no_active_session");
+        assert_eq!(value["nextActions"][0], "deepcli resume --dry-run --json");
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action.as_str() == Some("deepcli sessions --all --limit 20")));
+            .any(|action| {
+                action.as_str() == Some("deepcli session list --all --limit 20 --json")
+            }));
     }
 
     #[test]
@@ -30749,8 +30758,12 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains("deepcli resume"));
-        assert!(error.to_string().contains("deepcli sessions --all"));
+        assert!(error
+            .to_string()
+            .contains("deepcli resume --dry-run --json"));
+        assert!(error
+            .to_string()
+            .contains("deepcli session list --all --limit 20 --json"));
     }
 
     #[test]
@@ -30781,11 +30794,14 @@ mod tests {
         assert_eq!(value["error"]["code"], "no_resumable_context");
         assert_eq!(value["terminal"]["wouldOpen"], true);
         assert!(value["report"].as_str().unwrap().contains("fork error"));
+        assert_eq!(value["nextActions"][0], "deepcli resume --dry-run --json");
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|action| action.as_str() == Some("deepcli resume")));
+            .any(|action| {
+                action.as_str() == Some("deepcli session list --all --limit 20 --json")
+            }));
     }
 
     #[test]
