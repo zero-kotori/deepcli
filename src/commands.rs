@@ -3729,6 +3729,13 @@ fn round_benchmark_gate_summary(benchmark: &BenchmarkStatusReport) -> String {
         "benchmark status is {} with {} artifact(s)",
         benchmark.status, benchmark.artifact_count
     )];
+    if benchmark.latest_meaningful_age_seconds.is_some() {
+        parts.push(format!(
+            "freshness={} age={}",
+            benchmark_freshness_status(benchmark),
+            format_benchmark_age(benchmark_freshness_age_seconds(benchmark))
+        ));
+    }
     for (status, label) in [
         ("missing", "missing presets"),
         ("failed", "failed presets"),
@@ -3794,10 +3801,11 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
             input.scorecard.tier
         ),
         format!(
-            "benchmark: status={} ready={} artifacts={}",
+            "benchmark: status={} ready={} artifacts={}{}",
             input.benchmark.status,
             input.benchmark.status == "ready",
-            input.benchmark.artifact_count
+            input.benchmark.artifact_count,
+            format_round_benchmark_freshness_suffix(input.benchmark)
         ),
     ];
     if let Some(goal) = input.goal {
@@ -3960,9 +3968,21 @@ fn round_benchmark_status_json(report: &BenchmarkStatusReport) -> Value {
         "latestArtifact": benchmark_status_artifact_json(&report.latest_artifact),
         "latestMeaningfulArtifact": benchmark_status_artifact_json(&report.latest_meaningful),
         "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
+        "freshness": benchmark_freshness_json(report),
         "gaps": &report.gaps,
         "nextActions": &report.next_actions,
     })
+}
+
+fn format_round_benchmark_freshness_suffix(report: &BenchmarkStatusReport) -> String {
+    if report.latest_meaningful_age_seconds.is_none() {
+        return String::new();
+    }
+    format!(
+        " freshness={} age={}",
+        benchmark_freshness_status(report),
+        format_benchmark_age(benchmark_freshness_age_seconds(report))
+    )
 }
 
 const DEFAULT_BENCHMARK_SUITE: &str = "product";
@@ -3973,6 +3993,7 @@ const BENCHMARK_SUITE_SCHEMA: &str = "deepcli.benchmark.suite.v1";
 const BENCHMARK_STATUS_SCHEMA: &str = "deepcli.benchmark.status.v1";
 const DEFAULT_BENCHMARK_TIMEOUT_SECONDS: u64 = 120;
 const BENCHMARK_OUTPUT_SAMPLE_CHARS: usize = 8_000;
+const BENCHMARK_EVIDENCE_REFRESH_AFTER_DAYS: i64 = 1;
 const BENCHMARK_EVIDENCE_STALE_AFTER_DAYS: i64 = 7;
 const MEANINGFUL_BENCHMARK_PRESETS: &[&str] =
     &["cargo-test", "preflight-quick", "selftest", "scorecard"];
@@ -5654,7 +5675,7 @@ fn build_benchmark_status_report(
         missing_meaningful_presets: Vec::new(),
         required_preset_statuses: Vec::new(),
         gaps: Vec::new(),
-        next_actions: benchmark_status_next_actions(artifacts.len()),
+        next_actions: Vec::new(),
     };
     report.missing_meaningful_presets = MEANINGFUL_BENCHMARK_PRESETS
         .iter()
@@ -5723,11 +5744,16 @@ fn build_benchmark_status_report(
     report.required_preset_statuses = benchmark_required_preset_statuses(artifacts, now);
     report.status = classify_benchmark_status(&report);
     report.gaps = benchmark_status_gaps(&report);
+    report.next_actions = benchmark_status_next_actions(&report);
     report
 }
 
-fn benchmark_status_next_actions(artifact_count: usize) -> Vec<String> {
-    let mut actions = vec![
+fn benchmark_status_next_actions(report: &BenchmarkStatusReport) -> Vec<String> {
+    let mut actions = Vec::new();
+    if benchmark_freshness_refresh_recommended(report) {
+        actions.push(SCORECARD_BENCHMARK_REMEDIATION_ACTION.to_string());
+    }
+    actions.extend([
         "deepcli recipes sota --json".to_string(),
         "deepcli benchmark presets --json".to_string(),
         "deepcli benchmark run-suite --json --fail-on-command".to_string(),
@@ -5735,12 +5761,12 @@ fn benchmark_status_next_actions(artifact_count: usize) -> Vec<String> {
         "deepcli benchmark gate --json".to_string(),
         "deepcli benchmark summary --json".to_string(),
         "deepcli benchmark trends --json".to_string(),
-    ];
-    if artifact_count > 0 {
+    ]);
+    if report.artifact_count > 0 {
         actions.push("deepcli benchmark clean --dry-run --json".to_string());
     }
     actions.push("deepcli scorecard --json".to_string());
-    actions
+    dedup_preserve_order(actions)
 }
 
 fn classify_benchmark_status(report: &BenchmarkStatusReport) -> &'static str {
@@ -6014,6 +6040,7 @@ fn format_benchmark_status_json(
         "latestArtifact": benchmark_status_artifact_json(&report.latest_artifact),
         "latestMeaningfulArtifact": benchmark_status_artifact_json(&report.latest_meaningful),
         "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
+        "freshness": benchmark_freshness_json(report),
         "gaps": report.gaps,
         "nextActions": report.next_actions,
         "report": format_benchmark_status_text(workspace, report),
@@ -6028,6 +6055,94 @@ fn benchmark_required_preset_status_json(status: &BenchmarkRequiredPresetStatus)
         "ageSeconds": status.age_seconds,
         "gap": status.gap,
     })
+}
+
+fn benchmark_freshness_json(report: &BenchmarkStatusReport) -> Value {
+    json!({
+        "status": benchmark_freshness_status(report),
+        "ageSeconds": benchmark_freshness_age_seconds(report),
+        "age": format_benchmark_age(benchmark_freshness_age_seconds(report)),
+        "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
+        "latestMeaningfulAge": format_benchmark_age(report.latest_meaningful_age_seconds),
+        "oldestRequiredAgeSeconds": benchmark_oldest_required_age_seconds(report),
+        "oldestRequiredAge": format_benchmark_age(benchmark_oldest_required_age_seconds(report)),
+        "refreshAfterDays": BENCHMARK_EVIDENCE_REFRESH_AFTER_DAYS,
+        "staleAfterDays": BENCHMARK_EVIDENCE_STALE_AFTER_DAYS,
+        "refreshRecommended": benchmark_freshness_refresh_recommended(report),
+        "refreshAction": benchmark_freshness_refresh_action(report),
+    })
+}
+
+fn benchmark_freshness_status(report: &BenchmarkStatusReport) -> &'static str {
+    let Some(age_seconds) = benchmark_freshness_age_seconds(report) else {
+        return "missing";
+    };
+    if report.status == "stale" || age_seconds > benchmark_stale_after_seconds() {
+        "stale"
+    } else if age_seconds >= benchmark_refresh_after_seconds() {
+        "aging"
+    } else {
+        "fresh"
+    }
+}
+
+fn benchmark_freshness_refresh_recommended(report: &BenchmarkStatusReport) -> bool {
+    matches!(benchmark_freshness_status(report), "aging" | "stale")
+}
+
+fn benchmark_freshness_refresh_action(report: &BenchmarkStatusReport) -> Option<&'static str> {
+    benchmark_freshness_refresh_recommended(report)
+        .then_some(SCORECARD_BENCHMARK_REMEDIATION_ACTION)
+}
+
+fn benchmark_freshness_age_seconds(report: &BenchmarkStatusReport) -> Option<i64> {
+    benchmark_oldest_required_age_seconds(report).or(report.latest_meaningful_age_seconds)
+}
+
+fn benchmark_oldest_required_age_seconds(report: &BenchmarkStatusReport) -> Option<i64> {
+    report
+        .required_preset_statuses
+        .iter()
+        .filter_map(|preset| preset.age_seconds)
+        .max()
+}
+
+fn benchmark_refresh_after_seconds() -> i64 {
+    BENCHMARK_EVIDENCE_REFRESH_AFTER_DAYS * 24 * 60 * 60
+}
+
+fn benchmark_stale_after_seconds() -> i64 {
+    BENCHMARK_EVIDENCE_STALE_AFTER_DAYS * 24 * 60 * 60
+}
+
+fn format_benchmark_age(age_seconds: Option<i64>) -> String {
+    let Some(age_seconds) = age_seconds else {
+        return "unknown".to_string();
+    };
+    let age_seconds = age_seconds.max(0);
+    if age_seconds < 60 {
+        return format!("{age_seconds}s");
+    }
+    let minutes = age_seconds / 60;
+    if minutes < 60 {
+        return format!("{minutes}m");
+    }
+    let hours = minutes / 60;
+    if hours < 24 {
+        let remaining_minutes = minutes % 60;
+        return if remaining_minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {remaining_minutes}m")
+        };
+    }
+    let days = hours / 24;
+    let remaining_hours = hours % 24;
+    if remaining_hours == 0 {
+        format!("{days}d")
+    } else {
+        format!("{days}d {remaining_hours}h")
+    }
 }
 
 fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport) -> String {
@@ -6055,6 +6170,16 @@ fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport
             report.meaningful_timeout_count
         ),
     ];
+    if report.latest_meaningful_age_seconds.is_some() {
+        lines.push(format!(
+            "freshness: {} age={} refreshRecommended={} refreshAfter={}d staleAfter={}d",
+            benchmark_freshness_status(report),
+            format_benchmark_age(benchmark_freshness_age_seconds(report)),
+            benchmark_freshness_refresh_recommended(report),
+            BENCHMARK_EVIDENCE_REFRESH_AFTER_DAYS,
+            BENCHMARK_EVIDENCE_STALE_AFTER_DAYS
+        ));
+    }
     if let Some(latest) = &report.latest_artifact {
         lines.push(format!(
             "latest artifact: {} status={} preset={} case={}",
@@ -6067,7 +6192,7 @@ fn format_benchmark_status_text(workspace: &Path, report: &BenchmarkStatusReport
     if let Some(latest) = &report.latest_meaningful {
         let age = report
             .latest_meaningful_age_seconds
-            .map(|value| format!("{value}s"))
+            .map(|value| format!("{} ({value}s)", format_benchmark_age(Some(value))))
             .unwrap_or_else(|| "unknown".to_string());
         lines.push(format!(
             "latest meaningful: {} status={} age={}",
@@ -32654,6 +32779,151 @@ mod tests {
             .unwrap()
             .iter()
             .any(|gap| gap.as_str().unwrap().contains("older than")));
+    }
+
+    #[test]
+    fn benchmark_status_surfaces_aging_ready_evidence_freshness() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let latest_created_at = Utc::now() - chrono::Duration::days(2);
+
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            latest_created_at - chrono::Duration::seconds(3),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            latest_created_at - chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990103T000000Z-product-selftest.json",
+            latest_created_at - chrono::Duration::seconds(1),
+            "selftest",
+            "selftest",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990104T000000Z-product-scorecard.json",
+            latest_created_at,
+            "scorecard",
+            "scorecard",
+            "passed",
+        );
+
+        let status = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&status).unwrap();
+
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["ready"], true);
+        assert_eq!(value["freshness"]["status"], "aging");
+        assert_eq!(value["freshness"]["latestMeaningfulAge"], "2d");
+        assert_eq!(value["freshness"]["refreshRecommended"], true);
+        assert_eq!(
+            value["freshness"]["refreshAction"],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert_eq!(
+            value["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("freshness: aging age=2d"));
+
+        let round = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let round_value: Value = serde_json::from_str(&round).unwrap();
+        assert_eq!(
+            round_value["benchmarkStatus"]["freshness"]["status"],
+            "aging"
+        );
+        assert!(round_value["gates"].as_array().unwrap().iter().any(|gate| {
+            gate["id"] == "benchmark_evidence"
+                && gate["summary"]
+                    .as_str()
+                    .unwrap()
+                    .contains("freshness=aging age=2d")
+        }));
+        assert!(round_value["report"]
+            .as_str()
+            .unwrap()
+            .contains("benchmark: status=ready ready=true artifacts=4 freshness=aging age=2d"));
+    }
+
+    #[test]
+    fn benchmark_status_ages_ready_evidence_by_oldest_required_preset() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let now = Utc::now();
+
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            now - chrono::Duration::days(2),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            now + chrono::Duration::seconds(1),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990103T000000Z-product-selftest.json",
+            now + chrono::Duration::seconds(2),
+            "selftest",
+            "selftest",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20990104T000000Z-product-scorecard.json",
+            now + chrono::Duration::seconds(3),
+            "scorecard",
+            "scorecard",
+            "passed",
+        );
+
+        let status = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&status).unwrap();
+
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["freshness"]["status"], "aging");
+        assert_eq!(value["freshness"]["oldestRequiredAge"], "2d");
+        assert_eq!(value["freshness"]["latestMeaningfulAge"], "0s");
+        assert_eq!(
+            value["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
     }
 
     #[test]
