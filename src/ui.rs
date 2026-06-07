@@ -4816,7 +4816,10 @@ fn append_monitor_quick_actions(
     if actions.is_empty() {
         return;
     }
-    lines.push(format!("{label} (Up/Down select, Enter run):"));
+    lines.push(format!(
+        "{label} (Up/Down select, Enter {}):",
+        quick_action_enter_label(actions)
+    ));
     let selected = selected.min(actions.len() - 1);
     for (index, action) in actions.iter().enumerate() {
         let marker = if index == selected { ">" } else { " " };
@@ -4826,6 +4829,16 @@ fn append_monitor_quick_actions(
             ""
         };
         lines.push(format!(" {marker} {}{suffix}", action.command));
+    }
+}
+
+fn quick_action_enter_label(actions: &[MonitorQuickAction]) -> &'static str {
+    let has_edit = actions.iter().any(|action| action.edit_before_run);
+    let has_run = actions.iter().any(|action| !action.edit_before_run);
+    match (has_run, has_edit) {
+        (true, true) => "run/edit",
+        (false, true) => "edit",
+        _ => "run",
     }
 }
 
@@ -7899,6 +7912,8 @@ mod tests {
         ));
         assert_eq!(state.selected_command, 1);
         let rendered = format_task_monitor_text(&state, None, 18);
+        assert!(rendered.contains("quick actions (Up/Down select, Enter run/edit):"));
+        assert!(!rendered.contains("quick actions (Up/Down select, Enter run):"));
         assert!(rendered.contains("> /prompt render <name> --file path (edit)"));
 
         assert!(handle_monitor_quick_action_key(

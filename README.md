@@ -126,6 +126,8 @@ deepcli env test compiler --json
 
 TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、read-only `/session` 查看命令、`/session restore-backup --dry-run --json` 预览和 `/preflight --dry-run`；会执行 benchmark、完整 preflight、session 改名/导出/强制清理、真实恢复或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
 
+任务观察面板的 quick actions 会按动作类型提示 `Enter run`、`Enter edit` 或 `Enter run/edit`，其中 `(edit)` 动作只会预填 message box。
+
 Tools 视图中的工具调用默认折叠；折叠列表会显示可编辑的 `/session tools --limit 20 --current` 和 `/session tools --failed --limit 20 --current` 动作，鼠标点击会预填 message box，展开详情时仍可用 `Ctrl-O`/`Ctrl-F` 预填完整或失败工具输出命令。
 
 查看任务型工作流清单：
