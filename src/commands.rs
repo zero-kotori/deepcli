@@ -1762,7 +1762,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
         },
         CommandHelp {
             name: "/rename",
@@ -11020,7 +11020,17 @@ pub(crate) fn handle_resume(
     }
 
     let (session, note) = if options.session_id.is_none() {
-        resolve_resumable_session_for_workspace(&store, workspace)?
+        match resolve_resumable_session_for_workspace(&store, workspace) {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                return resume_source_error(
+                    workspace,
+                    &options,
+                    "no_resumable_context",
+                    &error.to_string(),
+                )
+            }
+        }
     } else {
         resolve_session_for_optional_inspection(
             &store,
@@ -11210,6 +11220,72 @@ fn format_resume_preview_json(
         "resumeCommand": format!("deepcli resume {}", session.id()),
         "note": note,
         "nextActions": resume_preview_next_actions(session),
+        "report": report,
+    }))?)
+}
+
+fn resume_source_error(
+    workspace: &Path,
+    options: &ResumeOptions,
+    code: &str,
+    message: &str,
+) -> Result<String> {
+    if !options.json_output {
+        bail!("{}", message);
+    }
+    let next_actions = resume_error_next_actions();
+    let report = format_resume_error_report(message, &next_actions);
+    let output =
+        format_resume_error_json(workspace, options, code, message, &next_actions, &report)?;
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Err(CommandExit::new(output, 1).into())
+}
+
+fn resume_error_next_actions() -> Vec<String> {
+    vec![
+        "deepcli sessions --all --limit 20".to_string(),
+        "deepcli session list --all --limit 20 --json".to_string(),
+        "deepcli history --limit 20".to_string(),
+    ]
+}
+
+fn format_resume_error_report(message: &str, next_actions: &[String]) -> String {
+    let mut lines = vec![
+        format!("resume error: {}", redact_sensitive_text(message)),
+        "resume preview not created; no session was selected".to_string(),
+        "next actions:".to_string(),
+    ];
+    for action in next_actions {
+        lines.push(format!("  - {action}"));
+    }
+    lines.join("\n")
+}
+
+fn format_resume_error_json(
+    workspace: &Path,
+    options: &ResumeOptions,
+    code: &str,
+    message: &str,
+    next_actions: &[String],
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.resume.preview.v1",
+        "status": "error",
+        "dryRun": options.dry_run,
+        "workspace": workspace.display().to_string(),
+        "selected": Value::Null,
+        "recentMessages": [],
+        "resumeCommand": Value::Null,
+        "note": Value::Null,
+        "candidateCount": 0,
+        "error": {
+            "code": code,
+            "message": redact_sensitive_text(message),
+        },
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -30821,6 +30897,47 @@ mod tests {
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/resume.json")).unwrap();
         assert_eq!(written, output);
         assert_eq!(store.list().unwrap().len(), before);
+    }
+
+    #[test]
+    fn resume_dry_run_json_without_resumable_context_returns_structured_error() {
+        let dir = tempdir().unwrap();
+
+        let error = handle_resume(
+            dir.path(),
+            None,
+            vec![
+                "--dry-run".to_string(),
+                "--json".to_string(),
+                "--output".to_string(),
+                ".deepcli/exports/resume-error.json".to_string(),
+            ],
+        )
+        .unwrap_err()
+        .downcast::<CommandExit>()
+        .unwrap();
+
+        let value: Value = serde_json::from_str(&error.output).unwrap();
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/resume-error.json")).unwrap();
+
+        assert_eq!(error.code, 1);
+        assert_eq!(written, error.output);
+        assert_eq!(value["schema"], "deepcli.resume.preview.v1");
+        assert_eq!(value["status"], "error");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["selected"], Value::Null);
+        assert_eq!(value["error"]["code"], "no_resumable_context");
+        assert!(value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no session with resumable conversation context"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli sessions --all --limit 20")));
+        assert!(value["report"].as_str().unwrap().contains("resume error"));
     }
 
     #[tokio::test]
