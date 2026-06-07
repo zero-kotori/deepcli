@@ -1334,7 +1334,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -18672,12 +18672,16 @@ pub(crate) fn handle_fork(
 ) -> Result<String> {
     let options = parse_fork_options(&args, current)?;
     let store = SessionStore::new(workspace);
-    let (source, note) = resolve_session_for_optional_inspection(
-        &store,
-        options.session_id.as_deref(),
-        options.explicit_session,
-        SessionFallbackKind::RecordedActivity,
-    )?;
+    let (source, note) = if options.session_id.is_none() {
+        resolve_resumable_session_for_workspace(&store, workspace)?
+    } else {
+        resolve_session_for_optional_inspection(
+            &store,
+            options.session_id.as_deref(),
+            options.explicit_session,
+            SessionFallbackKind::RecordedActivity,
+        )?
+    };
     if options.dry_run {
         let context_copy = fork_context_copy(&source.metadata.state);
         let planned_title = planned_fork_title(&source);
@@ -18790,7 +18794,11 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
                 session_id = Some(
                     current
                         .clone()
-                        .ok_or_else(|| anyhow::anyhow!("no active session is available"))?,
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli sessions --all --limit 20`"
+                            )
+                        })?,
                 );
                 explicit_session = true;
                 index += 1;
@@ -20945,7 +20953,7 @@ fn resolve_resumable_session_for_workspace(
     }
 
     bail!(
-        "missing session id and no session with resumable conversation context was found in current workspace"
+        "missing session id and no session with resumable conversation context was found in current workspace; run `deepcli resume` to inspect resumable sessions, `deepcli sessions --all --limit 20` to inspect all sessions, or pass an explicit session id"
     )
 }
 
@@ -29889,6 +29897,91 @@ mod tests {
             value["source"]["id"].as_str(),
             Some(current.id().to_string().as_str())
         );
+    }
+
+    #[test]
+    fn fork_without_current_prefers_resumable_context_over_diagnostic_activity() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let conversation = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        conversation
+            .append_message("user", "continue compiler repair")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let diagnostic = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        diagnostic
+            .append_tool_call(&ToolCallRecord {
+                tool: "git_status".to_string(),
+                input: json!({}),
+                output: json!({"clean": true}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["source"]["id"], conversation.id().to_string());
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("resumable conversation context"));
+    }
+
+    #[test]
+    fn fork_current_without_active_session_reports_shell_fallbacks() {
+        let dir = tempdir().unwrap();
+        let error = handle_fork(
+            dir.path(),
+            None,
+            vec!["--current".to_string(), "--dry-run".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("omit `--current`"));
+        assert!(error.to_string().contains("deepcli sessions --all"));
+    }
+
+    #[test]
+    fn fork_without_resumable_context_reports_candidate_commands() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+
+        let error = handle_fork(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("deepcli resume"));
+        assert!(error.to_string().contains("deepcli sessions --all"));
     }
 
     #[test]
