@@ -855,7 +855,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli release-check --dry-run",
                 "deepcli preflight --quick --json",
             ],
-            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Use `--json` for the stable `deepcli.preflight.v1` schema. While an agent task is running in the TUI, use `/preflight --dry-run --json` for a non-executing plan; full preflight should wait until the task is stopped or finished."],
+            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Text and JSON reports include diagnostics for total measured duration, slowest check, largest output check, and failed required checks. Use `--json` for the stable `deepcli.preflight.v1` schema. While an agent task is running in the TUI, use `/preflight --dry-run --json` for a non-executing plan; full preflight should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/completion",
@@ -9551,6 +9551,10 @@ fn format_preflight_text(
     if options.fail_fast {
         lines.push("fail-fast: true".to_string());
     }
+    if let Some(diagnostics) = format_preflight_diagnostics_line(checks) {
+        lines.push("diagnostics:".to_string());
+        lines.push(format!("  {diagnostics}"));
+    }
     lines.push("checks:".to_string());
     for check in checks {
         let mut line = format!("  - [{}] {}: {}", check.status, check.name, check.command);
@@ -9573,6 +9577,40 @@ fn format_preflight_text(
     lines.join("\n")
 }
 
+fn format_preflight_diagnostics_line(checks: &[PreflightCheckResult]) -> Option<String> {
+    let measured = checks
+        .iter()
+        .filter(|check| check.duration_ms.is_some())
+        .count();
+    let failed = preflight_failed_required_checks(checks);
+    if measured == 0 && failed.is_empty() {
+        return None;
+    }
+
+    let mut parts = vec![
+        format!("total_duration={}ms", preflight_total_duration_ms(checks)),
+        format!("measured_checks={measured}"),
+    ];
+    if let Some(check) = preflight_slowest_check(checks) {
+        parts.push(format!(
+            "slowest={} {}ms",
+            check.name,
+            check.duration_ms.unwrap_or_default()
+        ));
+    }
+    if let Some(check) = preflight_largest_output_check(checks) {
+        parts.push(format!(
+            "largest_output={} {} chars",
+            check.name,
+            preflight_output_chars(check)
+        ));
+    }
+    if !failed.is_empty() {
+        parts.push(format!("failed_required={}", failed.join(",")));
+    }
+    Some(parts.join(" "))
+}
+
 fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.preflight.v1",
@@ -9588,6 +9626,7 @@ fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<S
             "skipped": report.checks.iter().filter(|check| check.status == "skipped").count(),
             "planned": report.checks.iter().filter(|check| check.status == "planned").count(),
         },
+        "diagnostics": preflight_diagnostics_json(&report.checks),
         "checks": report.checks.iter().map(|check| json!({
             "name": check.name,
             "command": check.command,
@@ -9603,6 +9642,75 @@ fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<S
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
+}
+
+fn preflight_diagnostics_json(checks: &[PreflightCheckResult]) -> Value {
+    json!({
+        "totalDurationMs": status_u128_value(preflight_total_duration_ms(checks)),
+        "measuredChecks": checks.iter().filter(|check| check.duration_ms.is_some()).count(),
+        "slowestCheck": preflight_slowest_check(checks)
+            .map(preflight_duration_check_json)
+            .unwrap_or(Value::Null),
+        "largestOutputCheck": preflight_largest_output_check(checks)
+            .map(preflight_output_check_json)
+            .unwrap_or(Value::Null),
+        "failedRequiredChecks": preflight_failed_required_checks(checks),
+    })
+}
+
+fn preflight_total_duration_ms(checks: &[PreflightCheckResult]) -> u128 {
+    checks
+        .iter()
+        .filter_map(|check| check.duration_ms)
+        .sum::<u128>()
+}
+
+fn preflight_slowest_check(checks: &[PreflightCheckResult]) -> Option<&PreflightCheckResult> {
+    checks
+        .iter()
+        .filter(|check| check.duration_ms.is_some())
+        .max_by_key(|check| check.duration_ms.unwrap_or_default())
+}
+
+fn preflight_largest_output_check(
+    checks: &[PreflightCheckResult],
+) -> Option<&PreflightCheckResult> {
+    checks
+        .iter()
+        .filter(|check| preflight_output_chars(check) > 0)
+        .max_by_key(|check| preflight_output_chars(check))
+}
+
+fn preflight_output_chars(check: &PreflightCheckResult) -> usize {
+    check.stdout_chars.saturating_add(check.stderr_chars)
+}
+
+fn preflight_failed_required_checks(checks: &[PreflightCheckResult]) -> Vec<String> {
+    checks
+        .iter()
+        .filter(|check| check.required && check.status == "failed")
+        .map(|check| check.name.clone())
+        .collect::<Vec<_>>()
+}
+
+fn preflight_duration_check_json(check: &PreflightCheckResult) -> Value {
+    json!({
+        "name": check.name,
+        "command": check.command,
+        "status": check.status,
+        "durationMs": check.duration_ms.map(status_u128_value).unwrap_or(Value::Null),
+    })
+}
+
+fn preflight_output_check_json(check: &PreflightCheckResult) -> Value {
+    json!({
+        "name": check.name,
+        "command": check.command,
+        "status": check.status,
+        "outputChars": preflight_output_chars(check),
+        "stdoutChars": check.stdout_chars,
+        "stderrChars": check.stderr_chars,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29788,6 +29896,7 @@ mod tests {
         assert!(preflight_help.contains("/preflight - "));
         assert!(preflight_help.contains("running-safe: yes"));
         assert!(preflight_help.contains("deepcli.preflight.v1"));
+        assert!(preflight_help.contains("slowest check"));
         assert!(preflight_help.contains("does not create a session or call a provider"));
         assert!(preflight_help.contains("deepcli preflight --json"));
         assert!(preflight_help.contains("deepcli release-check --dry-run"));
@@ -32707,6 +32816,101 @@ mod tests {
         .to_string();
         assert!(error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../preflight.json").exists());
+    }
+
+    #[test]
+    fn preflight_json_and_text_surface_runtime_diagnostics() {
+        let dir = tempdir().unwrap();
+        let checks = vec![
+            PreflightCheckResult {
+                name: "format".to_string(),
+                command: "cargo fmt --check".to_string(),
+                status: "passed".to_string(),
+                required: true,
+                exit_code: Some(0),
+                duration_ms: Some(20),
+                stdout_chars: 0,
+                stderr_chars: 0,
+                output: None,
+                note: None,
+            },
+            PreflightCheckResult {
+                name: "doctor".to_string(),
+                command: "deepcli doctor --quick --json".to_string(),
+                status: "passed".to_string(),
+                required: true,
+                exit_code: Some(0),
+                duration_ms: Some(10),
+                stdout_chars: 500,
+                stderr_chars: 20,
+                output: Some("doctor output".to_string()),
+                note: None,
+            },
+            PreflightCheckResult {
+                name: "privacy".to_string(),
+                command: "deepcli privacy --json --fail-on-findings".to_string(),
+                status: "passed".to_string(),
+                required: true,
+                exit_code: Some(0),
+                duration_ms: Some(1_500),
+                stdout_chars: 3,
+                stderr_chars: 0,
+                output: Some("privacy output".to_string()),
+                note: None,
+            },
+            PreflightCheckResult {
+                name: "gate".to_string(),
+                command: "deepcli gate --json".to_string(),
+                status: "failed".to_string(),
+                required: true,
+                exit_code: Some(1),
+                duration_ms: Some(30),
+                stdout_chars: 10,
+                stderr_chars: 15,
+                output: Some("gate failed".to_string()),
+                note: None,
+            },
+        ];
+        let options = PreflightOptions::default();
+        let next_actions = preflight_next_actions("failed", &checks);
+        let report_text =
+            format_preflight_text(dir.path(), "failed", &options, &checks, &next_actions);
+        let report = PreflightReport {
+            report: report_text.clone(),
+            status: "failed".to_string(),
+            dry_run: false,
+            quick: false,
+            fail_fast: false,
+            checks,
+            next_actions,
+        };
+
+        let output = format_preflight_json(dir.path(), &report).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["diagnostics"]["totalDurationMs"], 1_560);
+        assert_eq!(value["diagnostics"]["measuredChecks"], 4);
+        assert_eq!(value["diagnostics"]["slowestCheck"]["name"], "privacy");
+        assert_eq!(value["diagnostics"]["slowestCheck"]["durationMs"], 1_500);
+        assert_eq!(value["diagnostics"]["largestOutputCheck"]["name"], "doctor");
+        assert_eq!(
+            value["diagnostics"]["largestOutputCheck"]["outputChars"],
+            520
+        );
+        assert_eq!(
+            value["diagnostics"]["failedRequiredChecks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| item.as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["gate"]
+        );
+        assert!(value["report"].as_str().unwrap().contains("diagnostics:"));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("slowest=privacy 1500ms"));
+        assert!(report_text.contains("largest_output=doctor 520 chars"));
     }
 
     #[test]
