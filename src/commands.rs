@@ -1761,7 +1761,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip diagnostic-only sessions that only contain tool, test, or audit records; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip diagnostic-only sessions that only contain tool, test, or audit records, and local clarification-only sessions created from low-information input; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider."],
         },
         CommandHelp {
             name: "/rename",
@@ -20474,11 +20474,7 @@ fn session_has_recorded_activity(session: &Session) -> Result<bool> {
 
 fn session_has_resumable_context(session: &Session) -> Result<bool> {
     let activity = session.activity_summary()?;
-    if activity.message_count > 0
-        || activity.has_summary
-        || activity.approval_request_count > 0
-        || activity.side_question_count > 0
-    {
+    if activity.approval_request_count > 0 || activity.side_question_count > 0 {
         return Ok(true);
     }
     if session
@@ -20487,7 +20483,93 @@ fn session_has_resumable_context(session: &Session) -> Result<bool> {
     {
         return Ok(true);
     }
-    Ok(session.load_goal()?.is_some())
+    if session.load_goal()?.is_some() {
+        return Ok(true);
+    }
+    if session_is_low_information_clarification_only(session, &activity)? {
+        return Ok(false);
+    }
+    Ok(activity.message_count > 0 || activity.has_summary)
+}
+
+fn session_is_low_information_clarification_only(
+    session: &Session,
+    activity: &SessionActivitySummary,
+) -> Result<bool> {
+    if activity.tool_call_count > 0
+        || activity.test_run_count > 0
+        || activity.diff_count > 0
+        || activity.backup_count > 0
+        || activity.approval_request_count > 0
+        || activity.side_question_count > 0
+    {
+        return Ok(false);
+    }
+
+    let summary = session.load_summary()?;
+    if let Some(summary) = summary.as_deref() {
+        if !summary.trim().is_empty() && !is_low_information_clarification_text(summary) {
+            return Ok(false);
+        }
+    }
+
+    let messages = session.load_messages()?;
+    if messages.is_empty() {
+        return Ok(summary
+            .as_deref()
+            .is_some_and(is_low_information_clarification_text));
+    }
+    Ok(session_messages_are_low_information_clarification_only(
+        &messages,
+    ))
+}
+
+fn session_messages_are_low_information_clarification_only(messages: &[SessionMessage]) -> bool {
+    let non_empty = messages
+        .iter()
+        .filter(|message| !message.content.trim().is_empty())
+        .collect::<Vec<_>>();
+    if non_empty.len() != 2 {
+        return false;
+    }
+    let user = non_empty[0];
+    let assistant = non_empty[1];
+    user.role.eq_ignore_ascii_case("user")
+        && assistant.role.eq_ignore_ascii_case("assistant")
+        && is_low_information_resume_input(&user.content)
+        && is_low_information_clarification_text(&assistant.content)
+}
+
+fn is_low_information_resume_input(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed.starts_with('/') {
+        return false;
+    }
+
+    let normalized = trimmed.to_ascii_lowercase();
+    if normalized.chars().all(|ch| ch.is_ascii_digit()) {
+        return true;
+    }
+    if normalized.chars().count() <= 2
+        && normalized
+            .chars()
+            .all(|ch| ch.is_ascii_punctuation() || ch.is_ascii_alphanumeric())
+    {
+        return true;
+    }
+
+    matches!(
+        normalized.as_str(),
+        "ok" | "k" | "y" | "n" | "yes" | "no" | "嗯" | "好" | "继续" | "go" | "next"
+    )
+}
+
+fn is_low_information_clarification_text(text: &str) -> bool {
+    let normalized = text.trim();
+    (normalized.contains("我不确定你想执行什么")
+        && normalized.contains("请说明要我分析、修改、测试、继续上次任务"))
+        || (normalized.contains("我还不能判断要继续哪一项")
+            && normalized.contains("继续修复失败测试"))
 }
 
 fn format_limited_session_list(
@@ -29767,6 +29849,74 @@ mod tests {
         assert_eq!(value["selected"]["activity"]["messages"], 1);
         assert_ne!(value["selected"]["id"], tool_only.id().to_string());
         assert_ne!(value["selected"]["id"], test_only.id().to_string());
+    }
+
+    #[tokio::test]
+    async fn resume_dry_run_without_id_skips_low_information_clarification_sessions() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut conversation = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        conversation.rename("real compiler task").unwrap();
+        conversation
+            .append_message("user", "continue fixing the compiler parser")
+            .unwrap();
+        conversation
+            .append_message("assistant", "I will inspect the parser failure")
+            .unwrap();
+        conversation
+            .write_summary("Continue the compiler parser investigation")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let clarification = "我不确定你想执行什么。请说明要我分析、修改、测试、继续上次任务，或使用 /help 查看命令。";
+        let mut low_information = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        low_information.append_message("user", "1").unwrap();
+        low_information
+            .append_message("assistant", clarification)
+            .unwrap();
+        low_information.write_summary(clarification).unwrap();
+        low_information
+            .set_state(SessionState::WaitingUser)
+            .unwrap();
+
+        let resumable = list_resumable_sessions(dir.path()).unwrap();
+        assert_eq!(resumable.len(), 1);
+        assert_eq!(resumable[0].id, conversation.id());
+
+        let output = handle_resume(
+            dir.path(),
+            None,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["selected"]["id"], conversation.id().to_string());
+        assert_ne!(value["selected"]["id"], low_information.id().to_string());
+
+        let explicit_output = handle_resume(
+            dir.path(),
+            None,
+            vec![
+                low_information.id().to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let explicit: Value = serde_json::from_str(&explicit_output).unwrap();
+        assert_eq!(explicit["selected"]["id"], low_information.id().to_string());
     }
 
     #[test]
