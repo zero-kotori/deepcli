@@ -19078,7 +19078,7 @@ pub(crate) fn handle_fork(
     } else {
         None
     };
-    let next_actions = fork_next_actions(&fork_id, &context_copy);
+    let next_actions = fork_next_actions(workspace, &fork_id, &context_copy);
     let report = format_fork_report(ForkReportText {
         workspace,
         source: &source,
@@ -19367,8 +19367,15 @@ fn session_state_name(state: &SessionState) -> String {
         .unwrap_or_else(|| format!("{state:?}").to_ascii_lowercase())
 }
 
-fn fork_next_actions(fork_id: &str, context_copy: &ForkContextCopy) -> Vec<String> {
-    let mut actions = vec![format!("deepcli resume {fork_id}")];
+fn fork_next_actions(
+    workspace: &Path,
+    fork_id: &str,
+    context_copy: &ForkContextCopy,
+) -> Vec<String> {
+    let mut actions = vec![
+        fork_workspace_resume_command(workspace, fork_id),
+        format!("deepcli resume {fork_id}"),
+    ];
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
         actions.push(
@@ -19506,10 +19513,12 @@ fn format_fork_report(input: ForkReportText<'_>) -> String {
     if terminal.opened {
         lines.push("opened new Terminal with the forked conversation".to_string());
     } else if let Some(error) = terminal.error {
+        let workspace_resume_command =
+            fork_workspace_resume_command(workspace, &fork.id().to_string());
         lines.push(format!(
-            "terminal not opened: {}; run `deepcli resume {}` manually",
+            "terminal not opened: {}; run `{}` manually",
             redact_sensitive_text(error),
-            fork.id()
+            workspace_resume_command
         ));
     } else {
         lines.push("terminal open skipped by --no-open".to_string());
@@ -30371,10 +30380,15 @@ mod tests {
         assert!(workspace_resume_command.starts_with("cd "));
         assert!(workspace_resume_command.contains(" && deepcli resume "));
         assert!(workspace_resume_command.ends_with(fork_id));
+        assert_eq!(value["nextActions"][0], workspace_resume_command);
         assert!(value["report"]
             .as_str()
             .unwrap()
             .contains("workspace resume command: cd "));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("  - {workspace_resume_command}")));
 
         let fork = store.load(fork_id).unwrap();
         assert_eq!(fork.load_messages().unwrap().len(), 2);
