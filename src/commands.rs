@@ -1803,7 +1803,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/terminal --dry-run --json",
                 "deepcli terminal --dry-run --json",
             ],
-            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--dry-run` or `--no-open` to inspect the workspace and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, and `--output` writes the selected format to a workspace-contained file."],
+            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--dry-run` or `--no-open` to inspect the workspace and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, including `workspaceCommand` for manually entering the same workspace, and `--output` writes the selected format to a workspace-contained file."],
         },
     ]
 }
@@ -18834,6 +18834,13 @@ fn terminal_supported() -> bool {
     cfg!(target_os = "macos")
 }
 
+fn terminal_workspace_command(workspace: &Path) -> String {
+    format!(
+        "cd {}",
+        shell_words::quote(&workspace.display().to_string())
+    )
+}
+
 fn format_terminal_report(
     workspace: &Path,
     status: &str,
@@ -18845,6 +18852,10 @@ fn format_terminal_report(
         format!("terminal status: {status}"),
         format!("workspace: {}", workspace.display()),
         format!("command: {command}"),
+        format!(
+            "workspace command: {}",
+            terminal_workspace_command(workspace)
+        ),
         format!("opened: {opened}"),
     ];
     if let Some(detail) = detail.filter(|detail| !detail.trim().is_empty()) {
@@ -18852,7 +18863,7 @@ fn format_terminal_report(
         lines.push(redact_sensitive_text(detail));
     }
     lines.push("next actions:".to_string());
-    for action in terminal_next_actions(opened) {
+    for action in terminal_next_actions(workspace, opened) {
         lines.push(format!("  - {action}"));
     }
     lines.join("\n")
@@ -18873,18 +18884,23 @@ fn format_terminal_json(
         "platform": std::env::consts::OS,
         "supported": terminal_supported(),
         "command": command,
+        "workspaceCommand": terminal_workspace_command(workspace),
         "opened": opened,
         "detail": detail.map(redact_sensitive_text),
-        "nextActions": terminal_next_actions(opened),
+        "nextActions": terminal_next_actions(workspace, opened),
         "report": report,
     }))?)
 }
 
-fn terminal_next_actions(opened: bool) -> Vec<&'static str> {
+fn terminal_next_actions(workspace: &Path, opened: bool) -> Vec<String> {
     if opened {
-        vec!["use the opened terminal for parallel local work"]
+        vec!["use the opened terminal for parallel local work".to_string()]
     } else {
-        vec!["deepcli terminal", "deepcli terminal --dry-run --json"]
+        vec![
+            terminal_workspace_command(workspace),
+            "deepcli terminal".to_string(),
+            "deepcli terminal --dry-run --json".to_string(),
+        ]
     }
 }
 
@@ -31113,10 +31129,14 @@ mod tests {
         assert_eq!(value["workspace"], dir.path().display().to_string());
         assert_eq!(value["command"], "open -a Terminal .");
         assert_eq!(value["opened"], false);
-        assert!(value["nextActions"][0]
+        let workspace_command = value["workspaceCommand"].as_str().unwrap();
+        assert!(workspace_command.starts_with("cd "));
+        assert!(workspace_command.contains(&dir.path().display().to_string()));
+        assert_eq!(value["nextActions"][0], workspace_command);
+        assert!(value["report"]
             .as_str()
             .unwrap()
-            .contains("deepcli terminal"));
+            .contains("workspace command: cd "));
     }
 
     #[test]
@@ -31366,6 +31386,7 @@ mod tests {
         let terminal_help = CommandRouter::help_for(&["terminal".to_string()]).unwrap();
         assert!(terminal_help.contains("running-safe: yes"));
         assert!(terminal_help.contains("/terminal --dry-run --json"));
+        assert!(terminal_help.contains("workspaceCommand"));
 
         let permissions_help = CommandRouter::help_for(&["permissions".to_string()]).unwrap();
         assert!(permissions_help.contains("/permissions [show] [--json] [--output path]"));

@@ -41,6 +41,7 @@
 - Changes 视图的文件级 patch 交互应同时支持键盘 `[`/`]`、PageUp/PageDown、Ctrl-Home/Ctrl-End，以及鼠标点击变更文件列表和在工具区用鼠标/触控板滚轮滚动当前 patch。
 - 任务观察区 tab 应同时支持键盘快捷键和鼠标点击切换，避免用户看到可视 tab 却只能记快捷键。
 - Resume session 选择器应支持键盘、直接输入过滤、鼠标点击选择和鼠标/触控板滚轮移动选择，保持与主 TUI 工具区一致的交互能力。
+- `/terminal --dry-run --json` 应输出稳定 `deepcli.terminal.v1` 报告，并包含可直接复制的 `workspaceCommand`，让用户或外部 UI 在不打开 Terminal、打开失败或非 macOS 平台时仍能手动进入同一 workspace。
 - Slash 命令建议面板应支持键盘、鼠标/触控板滚轮切换候选，以及鼠标点击候选命令补全到 message box，避免用户必须记住 Tab 补全。
 - Tools 视图中的工具调用应默认折叠；支持键盘 Up/Down/PageUp/PageDown/Home/End 选择、Enter 展开/折叠、鼠标点击展开/折叠、鼠标/触控板滚轮移动选择，并确保当前选中工具在面板高度不足时仍可见；折叠列表状态应直接展示完整工具输出和失败工具输出的可编辑动作，鼠标点击只预填 message box；展开当前工具时应在 TUI 内显示多行详情预览，并支持 `Ctrl-O` 预填完整工具输出命令、`Ctrl-F` 预填失败工具输出命令，避免失败工具只露出一行截断信息或让用户手输 `/session tools`。
 - Approvals 视图应支持鼠标/触控板滚轮移动当前审批或 BTW 选择，并支持鼠标点击列表项选中；鼠标点击不得直接批准、拒绝或提交回答，避免误触安全敏感操作。
