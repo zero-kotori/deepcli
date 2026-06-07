@@ -6016,6 +6016,7 @@ fn format_benchmark_status_json(
         "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
         "gaps": report.gaps,
         "nextActions": report.next_actions,
+        "report": format_benchmark_status_text(workspace, report),
     }))?)
 }
 
@@ -7638,6 +7639,7 @@ fn format_benchmark_summary_json(
             "deepcli benchmark clean --dry-run --json",
             "deepcli scorecard --json",
         ],
+        "report": format_benchmark_summary_text(workspace, artifacts.len(), summaries),
     }))?)
 }
 
@@ -31574,6 +31576,14 @@ mod tests {
         assert_eq!(missing_value["ready"], false);
         assert_eq!(missing_value["hasGaps"], true);
         assert_eq!(missing_value["artifactCount"], 0);
+        assert!(missing_value["report"]
+            .as_str()
+            .unwrap()
+            .contains("deepcli benchmark status"));
+        assert!(missing_value["report"]
+            .as_str()
+            .unwrap()
+            .contains("status: missing"));
         assert_eq!(missing_value["meaningful"]["passedCount"], 0);
         assert!(missing_value["nextActions"]
             .as_array()
@@ -32148,6 +32158,11 @@ mod tests {
         assert_eq!(value["schema"], "deepcli.benchmark.summary.v1");
         assert_eq!(value["artifactCount"], 3);
         assert_eq!(value["caseCount"], 2);
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("deepcli benchmark summary"));
+        assert!(value["report"].as_str().unwrap().contains("cases:"));
         assert_eq!(value["totals"]["total"], 3);
         assert_eq!(value["totals"]["executableCount"], 2);
         assert_eq!(value["totals"]["passedCount"], 1);
