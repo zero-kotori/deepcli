@@ -1335,7 +1335,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and whether the created clone is ready to resume; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -18956,6 +18956,17 @@ struct ForkDryRunFlags {
     verify_requested: bool,
 }
 
+struct ForkReportText<'a> {
+    workspace: &'a Path,
+    source: &'a Session,
+    fork: &'a Session,
+    note: Option<&'a str>,
+    terminal: ForkTerminalOutcome<'a>,
+    context_copy: &'a ForkContextCopy,
+    verification: Option<&'a ForkVerification>,
+    next_actions: &'a [String],
+}
+
 pub(crate) fn handle_fork(
     workspace: &Path,
     current: Option<String>,
@@ -19052,18 +19063,19 @@ pub(crate) fn handle_fork(
         None
     };
     let next_actions = fork_next_actions(&fork_id, &context_copy);
-    let report = format_fork_report(
-        &source,
-        &fork,
-        note.as_deref(),
-        ForkTerminalOutcome {
+    let report = format_fork_report(ForkReportText {
+        workspace,
+        source: &source,
+        fork: &fork,
+        note: note.as_deref(),
+        terminal: ForkTerminalOutcome {
             opened: terminal_opened,
             error: terminal_error.as_deref(),
         },
-        &context_copy,
-        verification.as_ref(),
-        &next_actions,
-    );
+        context_copy: &context_copy,
+        verification: verification.as_ref(),
+        next_actions: &next_actions,
+    });
     let fork_report = ForkReport {
         source: source.metadata,
         fork: fork.metadata,
@@ -19405,11 +19417,7 @@ fn format_fork_error_report(message: &str, next_actions: &[String]) -> String {
 }
 
 fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
-    let command = format!(
-        "cd {} && deepcli resume {}",
-        shell_words::quote(&workspace.display().to_string()),
-        shell_words::quote(fork_id)
-    );
+    let command = fork_workspace_resume_command(workspace, fork_id);
     #[cfg(target_os = "macos")]
     {
         let script = format!(
@@ -19433,20 +19441,30 @@ fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
     }
 }
 
+fn fork_workspace_resume_command(workspace: &Path, fork_id: &str) -> String {
+    format!(
+        "cd {} && deepcli resume {}",
+        shell_words::quote(&workspace.display().to_string()),
+        shell_words::quote(fork_id)
+    )
+}
+
 fn apple_script_string(value: &str) -> String {
     let escaped = value.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
 }
 
-fn format_fork_report(
-    source: &Session,
-    fork: &Session,
-    note: Option<&str>,
-    terminal: ForkTerminalOutcome<'_>,
-    context_copy: &ForkContextCopy,
-    verification: Option<&ForkVerification>,
-    next_actions: &[String],
-) -> String {
+fn format_fork_report(input: ForkReportText<'_>) -> String {
+    let ForkReportText {
+        workspace,
+        source,
+        fork,
+        note,
+        terminal,
+        context_copy,
+        verification,
+        next_actions,
+    } = input;
     let mut lines = vec![
         format!(
             "forked session id={} full={} from id={} full={}",
@@ -19459,6 +19477,10 @@ fn format_fork_report(
         "context copy: persisted session files only".to_string(),
         format!("resume command: deepcli resume {}", fork.id()),
     ];
+    lines.push(format!(
+        "workspace resume command: {}",
+        fork_workspace_resume_command(workspace, &fork.id().to_string())
+    ));
     if let Some(warning) = &context_copy.warning {
         lines.push(format!("warning: {warning}"));
     }
@@ -19561,6 +19583,7 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
             "opened": report.terminal_opened,
             "error": report.terminal_error.as_deref().map(redact_sensitive_text),
             "resumeCommand": format!("deepcli resume {}", report.fork.id),
+            "workspaceResumeCommand": fork_workspace_resume_command(workspace, &report.fork.id.to_string()),
         },
         "contextCopy": {
             "mode": "persisted_session_files",
@@ -19605,6 +19628,7 @@ fn format_fork_dry_run_json(
             "opened": false,
             "error": Value::Null,
             "resumeCommand": Value::Null,
+            "workspaceResumeCommand": Value::Null,
             "wouldOpen": flags.would_open,
         },
         "contextCopy": {
@@ -19653,6 +19677,7 @@ fn format_fork_error_json(
             "opened": false,
             "error": Value::Null,
             "resumeCommand": Value::Null,
+            "workspaceResumeCommand": Value::Null,
             "wouldOpen": !options.no_open,
         },
         "contextCopy": Value::Null,
@@ -30152,6 +30177,16 @@ mod tests {
         assert_eq!(value["contextCopy"]["completeForIdleSession"], true);
         let fork_id = value["fork"]["id"].as_str().unwrap();
         assert_ne!(fork_id, session.id().to_string());
+        let workspace_resume_command = value["terminal"]["workspaceResumeCommand"]
+            .as_str()
+            .expect("fork JSON should include workspace-aware resume command");
+        assert!(workspace_resume_command.starts_with("cd "));
+        assert!(workspace_resume_command.contains(" && deepcli resume "));
+        assert!(workspace_resume_command.ends_with(fork_id));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("workspace resume command: cd "));
 
         let fork = store.load(fork_id).unwrap();
         assert_eq!(fork.load_messages().unwrap().len(), 2);
