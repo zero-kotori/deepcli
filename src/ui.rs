@@ -2651,6 +2651,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
                         false,
                     );
                 }
+                ensure_running_session_is_read_only(&args)?;
                 handle_session(&active.workspace, Some(active.session_id.clone()), args)
             });
             true
@@ -2671,7 +2672,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
@@ -2758,6 +2759,33 @@ fn ensure_running_preflight_is_planned(args: &[String]) -> Result<()> {
     anyhow::bail!(
         "stop or wait for the running task before executing `/preflight`; use `/preflight --dry-run --json` while the agent is running"
     );
+}
+
+fn ensure_running_session_is_read_only(args: &[String]) -> Result<()> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--output" | "-o") || arg.starts_with("--output="))
+    {
+        anyhow::bail!(
+            "`/session ... --output` writes a file; wait for the running task or use `/stop` before writing session artifacts"
+        );
+    }
+    match args.first().map(String::as_str) {
+        Some("rename") => anyhow::bail!(
+            "`/session rename` updates session metadata; wait for the running task or use `/stop` before renaming"
+        ),
+        Some("export") => anyhow::bail!(
+            "`/session export` writes a file; wait for the running task or use `/stop` before exporting"
+        ),
+        Some("prune-empty" | "prune")
+            if args.iter().any(|arg| arg == "--force") =>
+        {
+            anyhow::bail!(
+                "`/session prune-empty --force` deletes session directories; wait for the running task or use `/stop` before cleanup"
+            );
+        }
+        _ => Ok(()),
+    }
 }
 
 fn push_running_command_result<F>(state: &mut TuiState, action: F)
@@ -8635,6 +8663,89 @@ mod tests {
             fs::read_to_string(dir.path().join("src/lib.rs")).unwrap(),
             "new content\n"
         );
+    }
+
+    #[test]
+    fn running_tui_blocks_session_write_actions() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session.rename("active task").unwrap();
+        session.append_message("user", "inspect me").unwrap();
+        let empty = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let empty_id = empty.id().to_string();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/session history --json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "deepcli" && line.content.contains("deepcli.session.inspect.v1")
+        }));
+
+        for command in [
+            "/session history --json --output .deepcli/exports/session-history.json",
+            "/session rename --current renamed while running",
+            "/session export --current .deepcli/exports/session-current.json",
+            "/session prune-empty --force",
+        ] {
+            assert!(handle_running_tui_local_command(&mut state, command));
+            assert!(
+                state.chat.last().is_some_and(|line| {
+                    line.role == "error"
+                        && line
+                            .content
+                            .contains("wait for the running task or use `/stop`")
+                }),
+                "{command} should be rejected while running"
+            );
+        }
+        let loaded = store.load(&session.id().to_string()).unwrap();
+        assert_eq!(loaded.metadata.title.as_deref(), Some("active task"));
+        assert!(store.load(&empty_id).is_ok());
+        assert!(!dir
+            .path()
+            .join(".deepcli/exports/session-history.json")
+            .exists());
+        assert!(!dir
+            .path()
+            .join(".deepcli/exports/session-current.json")
+            .exists());
     }
 
     #[test]
