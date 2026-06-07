@@ -24470,19 +24470,16 @@ fn environment_check_next_actions(report: &EnvironmentReport) -> Vec<String> {
             "docker"
         };
         return vec![
-            format!("run `/env test {target} --json` to capture smoke-test evidence"),
-            "run `/test discover --json` to inspect project test commands".to_string(),
+            slash_to_deepcli_command(&format!("/env test {target} --json")),
+            slash_to_deepcli_command("/test discover --json"),
         ];
     }
     let mut actions = Vec::new();
     if let Some(action) = &report.recommended_action {
-        actions.push(format!(
-            "run `{}` to continue environment setup",
-            with_smoke(action)
-        ));
+        actions.push(slash_to_deepcli_command(&with_smoke(action)));
     }
     actions.push(format!(
-        "run `/env plan {} --smoke --json` before setup",
+        "deepcli env plan {} --smoke --json",
         if report.target == "auto" {
             "docker"
         } else {
@@ -24500,7 +24497,7 @@ fn environment_plan_next_actions(
 ) -> Vec<String> {
     environment_plan_commands(report, effective_target, smoke_test, compiler_test)
         .into_iter()
-        .map(|command| format!("run `{command}`"))
+        .map(|command| slash_to_deepcli_command(&command))
         .collect()
 }
 
@@ -24512,18 +24509,14 @@ fn environment_setup_next_actions(kind: &str, setup: &EnvironmentSetupResult) ->
             "docker"
         };
         let mut actions = vec![
-            format!("run `/env test {target} --json` to record fresh environment evidence"),
-            "run `/test discover --json` to continue acceptance preparation".to_string(),
+            slash_to_deepcli_command(&format!("/env test {target} --json")),
+            slash_to_deepcli_command("/test discover --json"),
         ];
         if kind == "test" {
             actions = vec![
-                format!(
-                    "include this environment evidence in an acceptance report: run `/accept --env-check {target} --json`"
-                ),
-                format!(
-                    "run a strict acceptance gate with `/gate --env-check {target} --json` before handoff"
-                ),
-                "run `/test run --json` for project-level test evidence".to_string(),
+                slash_to_deepcli_command(&format!("/accept --env-check {target} --json")),
+                slash_to_deepcli_command(&format!("/gate --env-check {target} --json")),
+                slash_to_deepcli_command("/test run --json"),
             ];
         }
         return actions;
@@ -24535,27 +24528,30 @@ fn environment_setup_next_actions(kind: &str, setup: &EnvironmentSetupResult) ->
     };
     vec![
         "inspect failed action stdout/stderr before retrying setup".to_string(),
-        format!("run `/env plan {target} --smoke --json` to recompute next steps"),
+        slash_to_deepcli_command(&format!("/env plan {target} --smoke --json")),
     ]
 }
 
 fn environment_test_next_actions(target: &str, passed: bool) -> Vec<String> {
     if passed {
         vec![
-            format!(
-                "include this environment evidence in an acceptance report: run `/accept --env-check {target} --json`"
-            ),
-            format!(
-                "run a strict acceptance gate with `/gate --env-check {target} --json` before handoff"
-            ),
-            "run `/test run --json` for project-level test evidence".to_string(),
+            slash_to_deepcli_command(&format!("/accept --env-check {target} --json")),
+            slash_to_deepcli_command(&format!("/gate --env-check {target} --json")),
+            slash_to_deepcli_command("/test run --json"),
         ]
     } else {
         vec![
             "inspect stdout/stderr and repair the environment before project tests".to_string(),
-            format!("run `/env plan {target} --smoke --json` to recompute setup steps"),
+            slash_to_deepcli_command(&format!("/env plan {target} --smoke --json")),
         ]
     }
+}
+
+fn slash_to_deepcli_command(command: &str) -> String {
+    command
+        .strip_prefix('/')
+        .map(|rest| format!("deepcli {rest}"))
+        .unwrap_or_else(|| command.to_string())
 }
 
 fn with_smoke(command: &str) -> String {
@@ -39642,11 +39638,19 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["checks"][0]["name"], "docker_cli");
         assert_eq!(value["checks"][1]["detail"], "daemon is not running");
         assert_eq!(value["recommendedAction"], "/setup docker --smoke");
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/setup docker --smoke")));
+            .any(|action| action.as_str().unwrap() == "deepcli setup docker --smoke"));
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli env plan docker --smoke --json"
+        }));
+        assert!(
+            next_actions
+                .iter()
+                .all(|action| !action.as_str().unwrap().starts_with("run `")),
+            "environment JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
     }
 
     #[test]
@@ -39701,6 +39705,19 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .iter()
             .any(|command| command.as_str().unwrap() == "/setup compiler --smoke"));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions
+            .iter()
+            .any(|action| { action.as_str().unwrap() == "deepcli setup compiler --smoke" }));
+        assert!(next_actions
+            .iter()
+            .any(|action| action.as_str().unwrap() == "deepcli env test compiler"));
+        assert!(
+            next_actions
+                .iter()
+                .all(|action| !action.as_str().unwrap().starts_with("run `")),
+            "environment JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
         assert_eq!(
             value["compilerTest"]["command"],
             "docker run --rm maxxing/compiler-dev autotest -koopa -s lv1"
@@ -39751,11 +39768,16 @@ diff --git a/docs/b.md b/docs/b.md
             "colima start --runtime docker"
         );
         assert_eq!(value["actions"][0]["exitCode"], 0);
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/env test docker --json")));
+            .any(|action| action.as_str().unwrap() == "deepcli env test docker --json"));
+        assert!(
+            next_actions
+                .iter()
+                .all(|action| !action.as_str().unwrap().starts_with("run `")),
+            "environment JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
 
         let output = format_environment_setup_result_json(
             dir.path(),
@@ -39765,26 +39787,19 @@ diff --git a/docs/b.md b/docs/b.md
         )
         .unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action
-                    .as_str()
-                    .unwrap()
-                    .contains("/accept --env-check docker --json")
-            }));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action
-                    .as_str()
-                    .unwrap()
-                    .contains("/gate --env-check docker --json")
-            }));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli accept --env-check docker --json"
+        }));
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli gate --env-check docker --json"
+        }));
+        assert!(
+            next_actions
+                .iter()
+                .all(|action| !action.as_str().unwrap().starts_with("run `")),
+            "environment JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
     }
 
     #[test]
@@ -39807,26 +39822,19 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["schema"], "deepcli.env.inspect.v1");
         assert_eq!(value["kind"], "test");
         assert_eq!(value["status"], "ready");
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action
-                    .as_str()
-                    .unwrap()
-                    .contains("/accept --env-check docker --json")
-            }));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| {
-                action
-                    .as_str()
-                    .unwrap()
-                    .contains("/gate --env-check docker --json")
-            }));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli accept --env-check docker --json"
+        }));
+        assert!(next_actions.iter().any(|action| {
+            action.as_str().unwrap() == "deepcli gate --env-check docker --json"
+        }));
+        assert!(
+            next_actions
+                .iter()
+                .all(|action| !action.as_str().unwrap().starts_with("run `")),
+            "environment JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
     }
 
     fn test_environment_check(name: &str, available: bool) -> EnvironmentCheck {

@@ -129,6 +129,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 - `deepcli env test compiler --json`
 
 环境 setup/test 走权限和工具审计路径；只读 check/plan 可作为快速预检。
+环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli setup docker --smoke` 和 `deepcli env plan docker --smoke --json`；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
 
 ## 测试、验收与交付
 
