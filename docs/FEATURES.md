@@ -62,7 +62,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
 - `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code` 和 `nextActions`，方便脚本和外部 UI 不解析纯文本错误；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.workspaceResumeCommand` 中给出 `cd <workspace> && deepcli resume <new_id>`，并把同一条命令放在顶层 `nextActions[0]`，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
-- `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史。
+- `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作。
 - `/session restore-backup latest --dry-run --json` 会输出稳定 `deepcli.session.restore_backup.v1` 预览，包含选中的 backup、目标文件、脱敏 diff 和下一步恢复命令；真实恢复也支持 `--json`/`--output`，但仍通过受控工具执行器写文件并记录新的 backup/diff。Agent 运行中可直接执行不带 `--output` 的 dry-run 预览；`/session rename`、`/session export`、`/session prune-empty --force`、`/session ... --output`、真实恢复和预览 artifact 写入都需要等待任务结束或先 `/stop`。
 - `/cleanup sessions` 可预览或删除空的一次性会话。
 
