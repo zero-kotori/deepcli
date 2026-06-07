@@ -3786,7 +3786,7 @@ fn format_task_monitor_text(
         MonitorTab::Deliver => {
             format_deliver_tab_lines(monitor, &quick_actions, state.selected_command)
         }
-        MonitorTab::Tools => format_tool_tab_lines(state),
+        MonitorTab::Tools => format_tool_tab_lines(state, &quick_actions, state.selected_command),
         MonitorTab::Tests => {
             format_tests_tab_lines(monitor, &quick_actions, state.selected_command)
         }
@@ -3891,19 +3891,33 @@ fn format_task_overview_lines(
     lines
 }
 
-fn format_tool_tab_lines(state: &TuiState) -> Vec<String> {
-    tool_tab_lines(state)
+fn format_tool_tab_lines(
+    state: &TuiState,
+    quick_actions: &[MonitorQuickAction],
+    selected_quick_action: usize,
+) -> Vec<String> {
+    tool_tab_lines_with_actions(state, quick_actions, selected_quick_action)
         .into_iter()
         .map(|line| line.text)
         .collect()
 }
 
 fn tool_tab_lines(state: &TuiState) -> Vec<ToolTabLine> {
+    tool_tab_lines_with_actions(state, &tool_quick_actions(), state.selected_command)
+}
+
+fn tool_tab_lines_with_actions(
+    state: &TuiState,
+    quick_actions: &[MonitorQuickAction],
+    selected_quick_action: usize,
+) -> Vec<ToolTabLine> {
     if state.tool_log.is_empty() {
-        return vec![ToolTabLine {
+        let mut lines = vec![ToolTabLine {
             text: "no tool calls yet".to_string(),
             tool_index: None,
         }];
+        append_tool_quick_action_lines(&mut lines, quick_actions, selected_quick_action);
+        return lines;
     }
     let mut lines = Vec::new();
     if let Some((index, item)) = selected_tool_item(state).filter(|(_, item)| item.expanded) {
@@ -3934,9 +3948,11 @@ fn tool_tab_lines(state: &TuiState) -> Vec<ToolTabLine> {
         });
     } else {
         lines.push(ToolTabLine {
-            text: "tool calls: Up/Down select, Enter/click expand, Ctrl-O full".to_string(),
+            text: "tool calls: Up/Down select, Enter/click expand, Ctrl-O full, Ctrl-F failed"
+                .to_string(),
             tool_index: None,
         });
+        append_tool_quick_action_lines(&mut lines, quick_actions, selected_quick_action);
     }
     lines.extend(state.tool_log.iter().enumerate().map(|(index, item)| {
         let marker = if item.expanded { "v" } else { ">" };
@@ -3951,6 +3967,33 @@ fn tool_tab_lines(state: &TuiState) -> Vec<ToolTabLine> {
         }
     }));
     lines
+}
+
+fn append_tool_quick_action_lines(
+    lines: &mut Vec<ToolTabLine>,
+    actions: &[MonitorQuickAction],
+    selected: usize,
+) {
+    if actions.is_empty() {
+        return;
+    }
+    lines.push(ToolTabLine {
+        text: "tool actions (click or Ctrl-O/Ctrl-F; edit before run):".to_string(),
+        tool_index: None,
+    });
+    let selected = selected.min(actions.len() - 1);
+    for (index, action) in actions.iter().enumerate() {
+        let marker = if index == selected { ">" } else { " " };
+        let suffix = if action.edit_before_run {
+            " (edit)"
+        } else {
+            ""
+        };
+        lines.push(ToolTabLine {
+            text: format!(" {marker} {}{suffix}", action.command),
+            tool_index: None,
+        });
+    }
 }
 
 fn selected_tool_item(state: &TuiState) -> Option<(usize, &ToolLogItem)> {
@@ -4614,7 +4657,7 @@ fn monitor_quick_actions_for_tab(
         MonitorTab::Health => health_quick_actions_for_state(state),
         MonitorTab::Library => library_quick_actions_for_state(state),
         MonitorTab::Deliver => deliver_quick_actions(monitor),
-        MonitorTab::Tools => Vec::new(),
+        MonitorTab::Tools => tool_quick_actions(),
         MonitorTab::Tests => vec![
             MonitorQuickAction::run("/test discover --json"),
             MonitorQuickAction::run("/test run --json"),
@@ -4630,6 +4673,13 @@ fn monitor_quick_actions_for_tab(
             MonitorQuickAction::run("/session diagnose --json"),
         ],
     }
+}
+
+fn tool_quick_actions() -> Vec<MonitorQuickAction> {
+    vec![
+        MonitorQuickAction::edit("/session tools --limit 20 --current"),
+        MonitorQuickAction::edit("/session tools --failed --limit 20 --current"),
+    ]
 }
 
 fn health_quick_actions_for_state(state: &TuiState) -> Vec<MonitorQuickAction> {
@@ -9547,6 +9597,104 @@ mod tests {
             &mut state
         ));
         assert_eq!(state.input.buffer(), "");
+    }
+
+    #[test]
+    fn tools_tab_shows_visible_session_tool_actions() {
+        let state = TuiState {
+            runtime: None,
+            active_session: None,
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: vec![ToolLogItem {
+                title: "tool: run_tests [failed]".to_string(),
+                detail: "stderr".to_string(),
+                expanded: false,
+            }],
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: Some(0),
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Tools,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "ready".to_string(),
+            worker: None,
+        };
+
+        let rendered = format_task_monitor_text(&state, None, 12);
+
+        assert!(rendered.contains("tool actions"));
+        assert!(rendered.contains("> /session tools --limit 20 --current (edit)"));
+        assert!(rendered.contains("  /session tools --failed --limit 20 --current (edit)"));
+    }
+
+    #[test]
+    fn tools_tab_mouse_click_prefills_visible_tool_action_without_toggling_tool() {
+        let mut state = TuiState {
+            runtime: None,
+            active_session: None,
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: vec![ToolLogItem {
+                title: "tool: run_tests [failed]".to_string(),
+                detail: "stderr".to_string(),
+                expanded: false,
+            }],
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: Some(0),
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Tools,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "ready".to_string(),
+            worker: None,
+        };
+        let tools_area = Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 12,
+        };
+        let rendered = format_task_monitor_text(&state, None, tools_area.height);
+        let failed_action_line = rendered
+            .lines()
+            .position(|line| line.contains("/session tools --failed --limit 20 --current"))
+            .expect("failed tool action should be visible");
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let (done_tx, _done_rx) = mpsc::channel();
+
+        assert!(activate_monitor_quick_action_at_row(
+            &mut state,
+            tools_area,
+            tools_area.y + 1 + failed_action_line as u16,
+            &progress_tx,
+            &done_tx,
+        ));
+
+        assert_eq!(
+            state.input.buffer(),
+            "/session tools --failed --limit 20 --current"
+        );
+        assert!(!state.tool_log[0].expanded);
+        assert!(state.last_event.contains("quick action ready for edit"));
     }
 
     #[test]
