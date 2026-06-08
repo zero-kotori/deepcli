@@ -10,6 +10,12 @@ struct WrapperRun {
     args: Vec<String>,
 }
 
+struct WrapperRawRun {
+    stdout: String,
+    stderr: String,
+    status_success: bool,
+}
+
 fn run_wrapper(args: &[&str]) -> WrapperRun {
     let home = TempDir::new().unwrap();
     let workspace = TempDir::new().unwrap();
@@ -47,6 +53,32 @@ fn run_wrapper(args: &[&str]) -> WrapperRun {
     }
 }
 
+fn run_wrapper_raw(args: &[&str]) -> WrapperRawRun {
+    let home = TempDir::new().unwrap();
+    let workspace = TempDir::new().unwrap();
+    let fake_bin = home.path().join("fake-deepcli");
+    write_fake_binary(&fake_bin);
+
+    let output = Command::new("bash")
+        .arg(wrapper_script())
+        .args(args)
+        .env("DEEPCLI_HOME", home.path())
+        .env("DEEPCLI_BIN", &fake_bin)
+        .env(
+            "DEEPCLI_CONFIG",
+            home.path().join(".deepcli").join("config.json"),
+        )
+        .current_dir(workspace.path())
+        .output()
+        .unwrap();
+
+    WrapperRawRun {
+        stdout: String::from_utf8(output.stdout).unwrap(),
+        stderr: String::from_utf8(output.stderr).unwrap(),
+        status_success: output.status.success(),
+    }
+}
+
 fn write_fake_binary(path: &Path) {
     fs::write(
         path,
@@ -79,6 +111,35 @@ fn ends_with_args(args: &[String], suffix: &[&str]) -> bool {
             .iter()
             .map(String::as_str)
             .eq(suffix.iter().copied())
+}
+
+#[test]
+fn wrapper_usage_lists_terminal_where_it_is_routable() {
+    let run = run_wrapper_raw(&["--help"]);
+
+    assert!(
+        run.status_success,
+        "wrapper help failed: stdout={}\nstderr={}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli status|usage|next|goal|plan|fork|terminal|accept|gate|verify"),
+        "top-level routable command list should include terminal: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|"),
+        "kimi provider routable command list should include terminal: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|"),
+        "deepseek provider routable command list should include terminal: {}",
+        run.stdout
+    );
 }
 
 #[test]

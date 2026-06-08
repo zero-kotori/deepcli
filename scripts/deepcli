@@ -243,14 +243,14 @@ Usage:
                                    Run a fast workspace + session diagnosis
   deepcli support [bundle-dir]    Create a redacted support bundle and issue draft
   deepcli init [--quick]          Run /init without typing the slash
-  deepcli status|usage|next|goal|plan|fork|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion
+  deepcli status|usage|next|goal|plan|fork|terminal|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion
                                    Run common diagnostic slash commands
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|terminal|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|terminal|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
