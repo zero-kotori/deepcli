@@ -47,7 +47,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
 - Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark status|summary|trends|compare|list|show|presets`、`/git status|diff|branch|message`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
-- 会执行本地 shell、修改 session metadata、导出/写入 artifact、删除会话、Git 写操作或恢复文件的 `/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean`、任意运行中旁路命令的 `--output`、`/git create-branch`、`/git commit`、`/session rename`、`/session export`、`/session prune-empty --force`、`/session restore-backup` 真实恢复和完整 `/preflight` 需要等当前 Agent 任务结束或先 `/stop`。
+- 会执行本地 shell、修改 session metadata、安装 shell completion、导出/写入 artifact、删除会话、Git 写操作或恢复文件的 `/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean`、`/completion install --force`、任意运行中旁路命令的 `--output`、`/git create-branch`、`/git commit`、`/session rename`、`/session export`、`/session prune-empty --force`、`/session restore-backup` 真实恢复和完整 `/preflight` 需要等当前 Agent 任务结束或先 `/stop`。
 - 任务观察面板的 quick actions 会按动作类型展示 `Enter run`、`Enter edit` 或 `Enter run/edit`，避免可编辑命令被误认为会直接执行。
 - 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情；Tools 视图在折叠列表状态直接展示 `/session tools --limit 20 --current` 和 `/session tools --failed --limit 20 --current` 可编辑动作，鼠标点击会预填 message box，展开详情时仍保留 `Ctrl-O`/`Ctrl-F` 快捷入口。
 

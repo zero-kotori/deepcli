@@ -2642,7 +2642,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Completion { args } => {
             push_running_command_result(state, |active| {
-                ensure_running_no_output(&args, "/completion")?;
+                ensure_running_completion_is_observation_only(&args)?;
                 handle_completion_local(&active.workspace, args)
             });
             true
@@ -2717,6 +2717,16 @@ fn ensure_running_no_output(args: &[String], command: &str) -> Result<()> {
     if running_args_include_output(args) {
         anyhow::bail!(
             "stop or wait for the running task before executing `{command} ... --output`; it writes a file"
+        );
+    }
+    Ok(())
+}
+
+fn ensure_running_completion_is_observation_only(args: &[String]) -> Result<()> {
+    ensure_running_no_output(args, "/completion")?;
+    if args.iter().any(|arg| arg == "--force") {
+        anyhow::bail!(
+            "completion install --force writes a shell completion file; stop or wait for the running task before installing shell completions"
         );
     }
     Ok(())
@@ -9139,6 +9149,76 @@ mod tests {
                 "{output_path} should not be written while the agent is running"
             );
         }
+    }
+
+    #[test]
+    fn running_tui_blocks_completion_force_install() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(ensure_running_completion_is_observation_only(&[
+            "install".to_string(),
+            "zsh".to_string(),
+            "--force".to_string(),
+            "--json".to_string(),
+        ])
+        .is_err());
+        assert!(ensure_running_completion_is_observation_only(&[
+            "install".to_string(),
+            "zsh".to_string(),
+            "--json".to_string(),
+        ])
+        .is_ok());
+        assert!(ensure_running_completion_is_observation_only(&[
+            "status".to_string(),
+            "zsh".to_string(),
+            "--json".to_string(),
+        ])
+        .is_ok());
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/completion install zsh --force --dry-run --json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line.content.contains("completion install --force")
+                && line.content.contains("stop or wait for the running task")
+        }));
     }
 
     #[test]
