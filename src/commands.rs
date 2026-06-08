@@ -2484,7 +2484,7 @@ fn format_recipes_json(
 ) -> Result<String> {
     let title = recipes_json_title(topic, recipes);
     let summary = recipes_json_summary(topic, recipes);
-    let checklist = recipes_checklist(recipes);
+    let checklist = recipes_checklist(workspace, recipes);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.recipes.v1",
         "status": "ok",
@@ -2522,17 +2522,16 @@ fn recipes_json_summary(topic: Option<&'static str>, recipes: &[Recipe]) -> Stri
     }
 }
 
-fn recipes_checklist(recipes: &[Recipe]) -> Vec<Value> {
+fn recipes_checklist(workspace: &Path, recipes: &[Recipe]) -> Vec<Value> {
     if recipes.len() == 1 {
         let recipe = recipes[0];
-        return recipe
-            .commands
-            .iter()
+        return recipe_checklist_commands(workspace, &recipe)
+            .into_iter()
             .enumerate()
             .map(|(index, command)| {
                 json!({
                     "step": index + 1,
-                    "label": recipe_command_label(recipe.name, command),
+                    "label": recipe_command_label(recipe.name, &command),
                     "command": command,
                 })
             })
@@ -2551,6 +2550,27 @@ fn recipes_checklist(recipes: &[Recipe]) -> Vec<Value> {
         .collect()
 }
 
+fn recipe_checklist_commands(workspace: &Path, recipe: &Recipe) -> Vec<String> {
+    if recipe.name != "sota" {
+        return recipe
+            .commands
+            .iter()
+            .map(|command| command.to_string())
+            .collect();
+    }
+    let mut commands = Vec::new();
+    for command in recipe.commands {
+        match *command {
+            DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION => {
+                commands.extend(sota_baseline_next_actions(workspace));
+            }
+            DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION => {}
+            _ => commands.push(command.to_string()),
+        }
+    }
+    dedup_preserve_order(commands)
+}
+
 fn recipe_command_label(recipe_name: &str, command: &str) -> String {
     if recipe_name == "sota" {
         return sota_recipe_command_label(command).to_string();
@@ -2566,6 +2586,7 @@ fn sota_recipe_command_label(command: &str) -> &'static str {
         "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
         "deepcli benchmark status --json" => "Check benchmark evidence",
         "deepcli benchmark trends --json" => "Check benchmark trends",
+        DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION => "Capture current benchmark baseline",
         DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION => "Create competitor baseline template",
         DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION => "Compare against competitor baseline",
         "deepcli benchmark gate --json" => "Gate benchmark evidence",
@@ -33875,6 +33896,40 @@ mod tests {
             action.as_str().unwrap()
                 == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
         }));
+    }
+
+    #[test]
+    fn recipes_sota_checklist_matches_baseline_state_when_current_capture_is_ready() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["sota".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let checklist = value["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|item| item["command"].as_str().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(checklist.contains(
+            &"deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        ));
+        assert!(checklist.contains(
+            &"deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        ));
+        assert!(!checklist.contains(
+            &"deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+        ));
     }
 
     #[test]
