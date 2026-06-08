@@ -31,6 +31,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli plan <rough requirement>`：围绕不成熟需求生成澄清问题、推荐选项和需求草稿。
 - `deepcli fork [session_id|--current] [--dry-run|--no-open] [--verify]`：预览或复制已持久化会话上下文，并可打开新终端恢复到副本，在同一历史上下文上独立继续交互；`--verify --json` 会输出 resume 健康检查。
 - `deepcli terminal [--dry-run|--no-open] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；JSON 包含可直接复制的 `workspaceCommand` 和首个 `cd <workspace>` nextAction。
+- `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard、benchmark status 和最近 goal readiness，输出本轮产品迭代状态、去重后的门禁和下一步动作。
 - `deepcli benchmark presets|run-suite|run|record|status|gate|summary|trends|baseline-template|compare|list|show|clean [--json]`：发现推荐 workload、一键执行推荐基准套件、执行单项 preset、记录、评估证据质量、门禁、汇总、趋势分析、baseline 模板、baseline 对比、列出、查看和清理本地 benchmark 证据 artifact。
@@ -134,6 +135,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 
 环境 setup/test 走权限和工具审计路径；只读 check/plan 可作为快速预检。
 环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli setup docker --smoke` 和 `deepcli env plan docker --smoke --json`；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
+`health/doctor --json` 复用同一可执行动作契约：缺凭据时给出 `deepcli credentials set/import-env/template ...`，环境未就绪时给出 `deepcli setup ... --smoke` 或 `deepcli env test compiler`，`doctor shell --json` 的 PATH 和 completion 建议直接给出可复制命令。
 
 ## 测试、验收与交付
 

@@ -989,7 +989,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/doctor --output <workspace-relative-path>",
             ],
             examples: &["/doctor --quick", "/doctor shell --json", "/doctor docker --json", "/doctor --quick --json --output .deepcli/exports/doctor.json", "/doctor --fix --quick", "/doctor --probe-provider --provider deepseek"],
-            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, provider turn timeout, and configured Git identity for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema and `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, provider turn timeout, and configured Git identity for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema; JSON top-level `nextActions` are executable shell commands, while explanatory context remains in `report`, `environment`, and `shell`. Use `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/trace",
@@ -2012,10 +2012,10 @@ fn parse_version_options(args: &[String]) -> Result<VersionOptions> {
 
 fn version_next_actions() -> Vec<&'static str> {
     vec![
-        "/quickstart --check",
-        "/doctor --quick",
-        "/model show --json",
-        "/support",
+        "deepcli quickstart --check",
+        "deepcli doctor --quick",
+        "deepcli model show --json",
+        "deepcli support",
     ]
 }
 
@@ -15220,18 +15220,14 @@ fn doctor_shell_next_actions(
 ) -> Vec<String> {
     let mut actions = Vec::new();
     match (&deepcli.path, deepcli.executable) {
-        (None, _) => actions.push(format!(
-            "put `deepcli` on PATH: symlink `{}` into a PATH directory such as `~/.local/bin/deepcli`",
-            workspace.join("scripts").join("deepcli").display()
-        )),
+        (None, _) => actions.push(deepcli_path_symlink_action(workspace)),
         (Some(path), false) => actions.push(format!(
-            "make `deepcli` executable: run `chmod +x {}`",
-            path.display()
+            "chmod +x {}",
+            shell_words::quote(&path.display().to_string())
         )),
-        (Some(_), true) if deepcli.workspace_match == Some(false) => actions.push(format!(
-            "repoint `deepcli` to this checkout: run `ln -sf {} ~/.local/bin/deepcli`",
-            workspace.join("scripts").join("deepcli").display()
-        )),
+        (Some(_), true) if deepcli.workspace_match == Some(false) => {
+            actions.push(deepcli_path_symlink_action(workspace))
+        }
         (Some(_), true) => {}
     }
 
@@ -15239,29 +15235,38 @@ fn doctor_shell_next_actions(
         .iter()
         .filter(|status| status.path.is_some())
     {
-        actions.push(format!(
-            "remove legacy command `{}` at `{}` after confirming users launch `deepcli`",
-            status.name,
-            status
-                .path
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "<unknown>".to_string())
-        ));
+        if let Some(path) = &status.path {
+            actions.push(format!(
+                "rm -i {}",
+                shell_words::quote(&path.display().to_string())
+            ));
+        }
     }
 
     for status in completions.iter().filter(|status| !status.up_to_date) {
         actions.push(format!(
-            "install or refresh {} completion: run `deepcli completion install {} --force`",
-            completion_shell_name(status.shell),
+            "deepcli completion install {} --force",
             completion_shell_name(status.shell)
         ));
     }
 
     if actions.is_empty() {
-        actions.push("shell install looks ready for PATH and completion".to_string());
+        actions.push("deepcli doctor shell --json".to_string());
     }
     dedup_preserve_order(actions)
+}
+
+fn deepcli_path_symlink_action(workspace: &Path) -> String {
+    format!(
+        "mkdir -p ~/.local/bin && ln -sf {} ~/.local/bin/deepcli",
+        shell_words::quote(
+            &workspace
+                .join("scripts")
+                .join("deepcli")
+                .display()
+                .to_string()
+        )
+    )
 }
 
 async fn handle_init(
@@ -15519,7 +15524,7 @@ fn doctor_next_actions(
     environment: Option<&EnvironmentReport>,
     tests: &[DiscoveredTestCommand],
 ) -> Vec<String> {
-    let mut actions = vec!["read the one-page onboarding flow: run `/quickstart`".to_string()];
+    let mut actions = vec!["deepcli quickstart".to_string()];
     if let Ok((provider_name, provider)) = config.provider(None) {
         let credentials_path = absolutize_workspace_path(workspace, &provider.credentials_file);
         let env_key = provider_env_key(provider_name);
@@ -15527,12 +15532,12 @@ fn doctor_next_actions(
             .ok()
             .is_some_and(|value| !value.trim().is_empty());
         if !credentials_path.exists() && !env_present {
-            actions.push(format!(
-                "configure provider credentials: run `/credentials set {provider_name}`, export {env_key} then run `/credentials import-env {provider_name}`, or run `/credentials template {provider_name}`"
-            ));
+            actions.push(format!("deepcli credentials set {provider_name}"));
+            actions.push(format!("deepcli credentials import-env {provider_name}"));
+            actions.push(format!("deepcli credentials template {provider_name}"));
         }
     }
-    actions.push("run `/config validate` after editing configuration".to_string());
+    actions.push("deepcli config validate".to_string());
     actions.extend(environment_next_actions(environment, tests));
     dedup_preserve_order(actions)
 }
@@ -15551,46 +15556,38 @@ fn environment_next_actions(
     match environment {
         Some(report) if report.ready => {
             if compiler_docker_test {
-                actions.push(
-                    "compiler Docker environment is ready; run `/env test compiler` for the discovered autotest".to_string(),
-                );
+                actions.push("deepcli env test compiler".to_string());
             }
         }
         Some(report) => {
             if let Some(action) = &report.recommended_action {
                 let action = with_smoke(action);
-                match action.as_str() {
-                    "/setup docker --smoke" => actions
-                        .push("prepare Docker runtime: run `/setup docker --smoke`".to_string()),
-                    "/setup compiler --smoke" => actions.push(
-                        "prepare compiler Docker image: run `/setup compiler --smoke`".to_string(),
-                    ),
-                    other if other.starts_with("/env ") => {
-                        actions.push(format!("run `{other}` to continue environment setup"));
-                    }
-                    other if other.starts_with("/setup ") => {
-                        actions.push(format!("run `{other}` to continue environment setup"));
-                    }
-                    other => actions.push(other.to_string()),
-                }
+                actions.push(shell_command_from_slash_command(&action));
             }
             if compiler_docker_test {
-                actions.push(
-                    "compiler autotest discovered; after environment setup run `/env test compiler`"
-                        .to_string(),
-                );
+                actions.push("deepcli env test compiler".to_string());
             }
         }
-        None => actions.push(
-            "run `/env check docker` or `/setup docker --smoke` for Docker tasks".to_string(),
-        ),
+        None => actions.extend(default_environment_next_actions()),
     }
     if actions.is_empty() {
-        actions.push(
-            "run `/env check docker` or `/setup docker --smoke` for Docker tasks".to_string(),
-        );
+        actions.extend(default_environment_next_actions());
     }
     actions
+}
+
+fn default_environment_next_actions() -> Vec<String> {
+    vec![
+        "deepcli env check docker --json".to_string(),
+        "deepcli setup docker --smoke".to_string(),
+    ]
+}
+
+fn shell_command_from_slash_command(action: &str) -> String {
+    action
+        .strip_prefix('/')
+        .map(|command| format!("deepcli {command}"))
+        .unwrap_or_else(|| action.to_string())
 }
 
 fn dedup_preserve_order(items: Vec<String>) -> Vec<String> {
@@ -35264,7 +35261,7 @@ mod tests {
         assert!(text.contains("project config: .deepcli/config.json (present)"));
         assert!(text.contains("default provider: deepseek"));
         assert!(text.contains("provider turn timeout: 600s"));
-        assert!(text.contains("/support"));
+        assert!(text.contains("deepcli support"));
 
         let output = handle_version(
             dir.path(),
@@ -35283,6 +35280,12 @@ mod tests {
         assert_eq!(value["defaultProvider"], "deepseek");
         assert_eq!(value["providerTurnTimeoutSeconds"], 600);
         assert!(value["commandCount"].as_u64().unwrap() > 0);
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(next_actions[0], "deepcli quickstart --check");
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli support"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/version.json")).unwrap();
         assert_eq!(serde_json::from_str::<Value>(&written).unwrap(), value);
     }
@@ -39380,24 +39383,74 @@ diff --git a/docs/b.md b/docs/b.md
 
     const MISSING_TEST_PROVIDER: &str = "missing-provider-2f7c1e";
 
+    fn json_string_array(value: &Value) -> Vec<String> {
+        value
+            .as_array()
+            .expect("expected array")
+            .iter()
+            .map(|item| item.as_str().expect("expected string").to_string())
+            .collect()
+    }
+
+    fn assert_executable_deepcli_actions(actions: &[String]) {
+        assert!(!actions.is_empty(), "expected at least one next action");
+        for action in actions {
+            assert!(
+                action.starts_with("deepcli "),
+                "next action should be a deepcli command: {action}"
+            );
+            assert!(
+                !action.starts_with('/'),
+                "next action should not be a slash command: {action}"
+            );
+            assert!(
+                !action.contains("`/") && !action.starts_with("run `"),
+                "next action should not contain slash-command prose: {action}"
+            );
+        }
+    }
+
+    fn assert_executable_shell_actions(actions: &[String]) {
+        assert!(!actions.is_empty(), "expected at least one next action");
+        for action in actions {
+            assert!(
+                action.starts_with("deepcli ")
+                    || action.starts_with("mkdir ")
+                    || action.starts_with("chmod ")
+                    || action.starts_with("ln ")
+                    || action.starts_with("rm "),
+                "next action should be an executable shell command: {action}"
+            );
+            assert!(
+                !action.starts_with('/'),
+                "next action should not be a slash command: {action}"
+            );
+            assert!(
+                !action.contains("`/") && !action.starts_with("run `"),
+                "next action should not contain slash-command prose: {action}"
+            );
+        }
+    }
+
     #[test]
     fn doctor_next_actions_point_to_missing_default_provider_credentials() {
         let dir = tempdir().unwrap();
         let config = test_provider_config(MISSING_TEST_PROVIDER);
         let actions = doctor_next_actions(dir.path(), &config, None, &[]);
-        assert!(actions.iter().any(|action| action.contains("/quickstart")));
+        assert_executable_deepcli_actions(&actions);
+        assert!(actions.iter().any(|action| action == "deepcli quickstart"));
         assert!(actions
             .iter()
-            .any(|action| action.contains("MISSING_PROVIDER_2F7C1E_API_KEY")));
+            .any(|action| action == "deepcli credentials set missing-provider-2f7c1e"));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/credentials set missing-provider-2f7c1e")));
+            .any(|action| action == "deepcli credentials import-env missing-provider-2f7c1e"));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/credentials import-env missing-provider-2f7c1e")));
+            .any(|action| action == "deepcli credentials template missing-provider-2f7c1e"));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/setup docker --smoke")));
+            .any(|action| action == "deepcli setup docker --smoke"));
     }
 
     #[tokio::test]
@@ -39480,11 +39533,11 @@ diff --git a/docs/b.md b/docs/b.md
             .as_str()
             .unwrap()
             .contains("<redacted>"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/config validate")));
+            .any(|action| action == "deepcli config validate"));
         assert!(!output.contains("sk-doctor-session-secret"));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/doctor.json")).unwrap();
@@ -39527,6 +39580,13 @@ diff --git a/docs/b.md b/docs/b.md
             .as_str()
             .unwrap()
             .contains("shell install:"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_shell_actions(&next_actions);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli completion install zsh --force"));
+        let shell_next_actions = json_string_array(&value["shell"]["nextActions"]);
+        assert_executable_shell_actions(&shell_next_actions);
         assert!(SessionStore::new(dir.path()).list().unwrap().is_empty());
     }
 
@@ -39559,9 +39619,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(external_status.workspace_match, Some(false));
 
         let actions = doctor_shell_next_actions(workspace.path(), &external_status, &[], &[]);
+        assert_executable_shell_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action.contains("repoint `deepcli` to this checkout")));
+            .any(|action| action.starts_with("mkdir -p ~/.local/bin && ln -sf ")));
     }
 
     fn write_test_executable(path: &Path) {
@@ -39924,12 +39985,13 @@ diff --git a/docs/b.md b/docs/b.md
             Some(&compiler_missing),
             std::slice::from_ref(&compiler_test),
         );
+        assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action.contains("/setup compiler --smoke")));
+            .any(|action| action == "deepcli setup compiler --smoke"));
         assert!(actions
             .iter()
-            .any(|action| action.contains("/env test compiler")));
+            .any(|action| action == "deepcli env test compiler"));
 
         let docker_missing = EnvironmentReport {
             target: "docker".to_string(),
@@ -39938,9 +40000,10 @@ diff --git a/docs/b.md b/docs/b.md
             recommended_action: Some("/env setup docker".to_string()),
         };
         let actions = doctor_next_actions(dir.path(), &config, Some(&docker_missing), &[]);
+        assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action.contains("/setup docker --smoke")));
+            .any(|action| action == "deepcli setup docker --smoke"));
 
         let compiler_ready = EnvironmentReport {
             target: "compiler".to_string(),
@@ -39954,9 +40017,10 @@ diff --git a/docs/b.md b/docs/b.md
             Some(&compiler_ready),
             std::slice::from_ref(&compiler_test),
         );
+        assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action.contains("/env test compiler")));
+            .any(|action| action == "deepcli env test compiler"));
     }
 
     #[test]
