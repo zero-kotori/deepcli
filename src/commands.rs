@@ -19024,15 +19024,14 @@ fn format_terminal_json(
 }
 
 fn terminal_next_actions(workspace: &Path, opened: bool) -> Vec<String> {
-    if opened {
-        vec!["use the opened terminal for parallel local work".to_string()]
-    } else {
-        vec![
-            terminal_workspace_command(workspace),
-            "deepcli terminal".to_string(),
-            "deepcli terminal --dry-run --json".to_string(),
-        ]
+    let mut actions = vec![
+        terminal_workspace_command(workspace),
+        "deepcli terminal --dry-run --json".to_string(),
+    ];
+    if !opened {
+        actions.insert(1, "deepcli terminal".to_string());
     }
+    actions
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31471,6 +31470,31 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("workspace command: cd "));
+    }
+
+    #[test]
+    fn terminal_opened_next_actions_are_still_executable() {
+        let dir = tempdir().unwrap();
+        let actions = terminal_next_actions(dir.path(), true);
+        assert!(!actions.is_empty(), "expected terminal next actions");
+        for action in &actions {
+            assert!(
+                action.starts_with("deepcli ") || action.starts_with("cd "),
+                "terminal next action should be directly executable: {action}"
+            );
+            assert!(
+                !action.contains("use the opened terminal"),
+                "terminal next action should not be prose: {action}"
+            );
+            assert!(
+                !action.contains('<') && !action.contains('>'),
+                "terminal next action should not contain placeholders: {action}"
+            );
+        }
+        assert_eq!(actions[0], terminal_workspace_command(dir.path()));
+        assert!(actions
+            .iter()
+            .any(|action| action == "deepcli terminal --dry-run --json"));
     }
 
     #[test]
