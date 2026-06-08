@@ -78,6 +78,8 @@ deepcli 当前面向 DeepSeek-compatible providers，并内置 DeepSeek/Kimi 相
 - `deepcli provider [provider] [model]`
 - `deepcli providers --json`
 
+模型、超时、日志、Prompt、Skill 和 Agent 查看类 JSON 的顶层 `nextActions` 都是可直接执行的 `deepcli ...` 命令；有具体条目时会优先输出具体 prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report` 或条目字段。
+
 凭据相关命令都在本地执行，不需要先创建会话或调用 provider：
 
 - `deepcli credentials status [provider] --json`

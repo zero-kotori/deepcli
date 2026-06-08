@@ -126,6 +126,8 @@ deepcli env test compiler --json
 
 `next --json` / `session next --json` 面向恢复 UI 和脚本输出可执行的 `deepcli ...` 动作队列；`session diagnose --json` 的 `recommendedNextActions` 和 `quickLinks` 使用同一格式，说明性上下文保留在 `signals` 与 `report`。
 
+`model show/list --json`、`timeout --json`、`logs --json`、`prompt list|get|render --json`、`skill list|run --json` 和 `agent list|show --json` 也遵守同一原则：顶层 `nextActions` 只输出可直接复制执行的 `deepcli ...` 命令；当前已有 prompt、skill 或 agent 任务时优先给出具体名称或短 id，说明性上下文保留在 `report` 或条目字段。
+
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
 TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、read-only `/session` 查看命令、`/session restore-backup --dry-run --json` 预览和 `/preflight --dry-run`；会执行 benchmark、完整 preflight、session 改名/导出/强制清理、真实恢复或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。

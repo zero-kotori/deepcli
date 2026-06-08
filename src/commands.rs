@@ -12568,14 +12568,14 @@ fn format_log_file_summary(file: &LogFileSummary) -> String {
 
 fn logs_next_actions(has_logs: bool) -> Vec<String> {
     let mut actions = vec![
-        "inspect session audit with `/trace --limit 30`".to_string(),
-        "summarize latency with `/usage --json`".to_string(),
-        "create a redacted support bundle with `/support`".to_string(),
+        "deepcli trace --limit 30".to_string(),
+        "deepcli usage --json".to_string(),
+        "deepcli support".to_string(),
     ];
     if !has_logs {
         actions.insert(
             0,
-            "run a task or `/diagnose --bundle .deepcli/support/latest` to generate diagnostic artifacts".to_string(),
+            "deepcli diagnose --bundle .deepcli/support/latest".to_string(),
         );
     }
     actions
@@ -17298,10 +17298,10 @@ fn format_timeout_json(
         "path": PROVIDER_TURN_TIMEOUT_CONFIG_PATH,
         "seconds": seconds,
         "nextActions": [
-            "/usage --json",
-            "/trace --limit 30",
-            "/timeout <seconds>",
-            "/timeout reset"
+            "deepcli usage --json",
+            "deepcli trace --limit 30",
+            "deepcli timeout <seconds>",
+            "deepcli timeout reset"
         ],
         "report": report,
     }))?)
@@ -17603,23 +17603,21 @@ fn model_provider_entry_json(
 fn model_next_actions(config: &AppConfig, provider_names: &[String]) -> Vec<String> {
     let mut actions = Vec::new();
     if config.providers.is_empty() {
-        actions.push("configure at least one provider in `.deepcli/config.json`".to_string());
+        actions.push("deepcli config validate --json".to_string());
         return actions;
     }
     if !config.providers.contains_key(&config.default_provider) {
-        actions.push("run `/model set <provider>` with a configured provider".to_string());
+        actions.push("deepcli model set <provider>".to_string());
     }
     for provider in provider_names {
         if let Some(provider_config) = config.providers.get(provider) {
             if provider_config.acceptance_model.is_none() {
-                actions.push(format!(
-                    "run `/model set {provider} <model>` to persist an explicit model"
-                ));
+                actions.push(format!("deepcli model set {provider} <model>"));
             }
         }
     }
     if actions.is_empty() {
-        actions.push("use `/model set <provider> [model]` to switch the active model".to_string());
+        actions.push("deepcli model set <provider> [model]".to_string());
     }
     dedup_preserve_order(actions)
 }
@@ -23931,7 +23929,7 @@ fn format_agent_list_json(
             .iter()
             .map(|task| subagent_task_json(workspace, task))
             .collect::<Vec<_>>(),
-        "nextActions": agent_next_actions(None, tasks.is_empty()),
+        "nextActions": agent_list_next_actions(tasks),
         "report": report,
         "format": "json",
     }))?)
@@ -23987,20 +23985,30 @@ fn subagent_status_label(status: &crate::agents::SubagentStatus) -> &'static str
 
 fn agent_next_actions(task: Option<&SubagentTask>, empty: bool) -> Vec<String> {
     let mut actions = Vec::new();
-    if empty {
-        actions.push("use `/agent spawn <task>` to queue the first sub-agent task".to_string());
+    if let Some(task) = task {
+        actions.push(format!("deepcli agent show {}", short_id(&task.id)));
+    } else if empty {
+        actions.push("deepcli agent spawn <task>".to_string());
     } else {
-        actions.push("use `/agent show <id>` to inspect a sub-agent task descriptor".to_string());
+        actions.push("deepcli agent show <id>".to_string());
     }
     if let Some(task) = task {
         if matches!(task.status, crate::agents::SubagentStatus::Queued) {
-            actions.push(
-                "resume the parent workflow or assign the queued task to an agent runner"
-                    .to_string(),
-            );
+            actions.push("deepcli agent list --json".to_string());
         }
     }
-    actions.push("use `/agent list --json` to feed a TUI agent monitor or automation".to_string());
+    actions.push("deepcli agent list --json".to_string());
+    dedup_preserve_order(actions)
+}
+
+fn agent_list_next_actions(tasks: &[SubagentTask]) -> Vec<String> {
+    let mut actions = Vec::new();
+    if let Some(task) = tasks.first() {
+        actions.push(format!("deepcli agent show {}", short_id(&task.id)));
+    } else {
+        actions.push("deepcli agent spawn <task>".to_string());
+    }
+    actions.push("deepcli agent list --json".to_string());
     dedup_preserve_order(actions)
 }
 
@@ -28863,7 +28871,7 @@ fn format_prompt_list_json(
             .iter()
             .map(|prompt| prompt_summary_json(workspace, prompt))
             .collect::<Vec<_>>(),
-        "nextActions": prompt_next_actions(None),
+        "nextActions": prompt_next_actions(prompts.first().map(|prompt| prompt.name.as_str())),
         "report": report,
         "format": "json",
     }))?)
@@ -28956,15 +28964,13 @@ fn prompt_path_json(workspace: &Path, name: &str, source: &str) -> Value {
 }
 
 fn prompt_next_actions(name: Option<&str>) -> Vec<String> {
+    let target = name.unwrap_or("<name>");
     let mut actions = vec![
-        "use `/prompt render <name> [--file path] key=value` to turn a prompt into task-ready text"
-            .to_string(),
-        "use `/prompt save <name> <body>` to add or override a project prompt".to_string(),
+        format!("deepcli prompt render {target} --file <path> key=value"),
+        "deepcli prompt save <name> <body>".to_string(),
     ];
     if let Some(name) = name {
-        actions.push(format!(
-            "use `/prompt get {name}` to inspect the prompt body"
-        ));
+        actions.push(format!("deepcli prompt get {name}"));
     }
     dedup_preserve_order(actions)
 }
@@ -29163,7 +29169,7 @@ fn format_skill_list_json(
             .iter()
             .map(|skill| skill_metadata_json(workspace, skill))
             .collect::<Vec<_>>(),
-        "nextActions": skill_next_actions(None, skills.is_empty()),
+        "nextActions": skill_next_actions(skills.first().map(|skill| skill.name.as_str()), skills.is_empty()),
         "report": report,
         "format": "json",
     }))?)
@@ -29201,19 +29207,16 @@ fn skill_metadata_json(workspace: &Path, skill: &SkillMetadata) -> Value {
 fn skill_next_actions(name: Option<&str>, empty: bool) -> Vec<String> {
     let mut actions = Vec::new();
     if empty {
-        actions.push(
-            "use `/skill generate <name> <description>` to create the first project skill"
-                .to_string(),
-        );
+        actions.push("deepcli skill generate <name> <description>".to_string());
+    } else if let Some(name) = name {
+        actions.push(format!("deepcli skill run {name}"));
     } else {
-        actions.push("use `/skill run <name>` to read a skill's instructions".to_string());
+        actions.push("deepcli skill run <name>".to_string());
     }
     if let Some(name) = name {
-        actions.push(format!(
-            "apply the `{name}` instructions only when the task matches its trigger"
-        ));
+        actions.push(format!("deepcli skill run {name} --json"));
     }
-    actions.push("use `/skill list --json` to feed a TUI Skill picker or automation".to_string());
+    actions.push("deepcli skill list --json".to_string());
     dedup_preserve_order(actions)
 }
 
@@ -35359,11 +35362,11 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with(&format!(".deepcli/agents/tasks/{}.json", task.id)));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|item| { item.as_str().unwrap().contains("/agent show <id>") }));
+            .any(|action| action == &format!("deepcli agent show {}", short_id(&task.id))));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/agents.json")).unwrap();
         assert_eq!(written, output);
@@ -36043,6 +36046,14 @@ mod tests {
                     && prompt["source"] == "custom"
                     && prompt["bodyPreview"].as_str().unwrap().contains("Review")
             }));
+        let list_next_actions = json_string_array(&list_value["nextActions"]);
+        assert_executable_deepcli_actions(&list_next_actions);
+        assert!(list_next_actions
+            .iter()
+            .any(|action| action.starts_with("deepcli prompt render ")));
+        assert!(list_next_actions
+            .iter()
+            .any(|action| action == "deepcli prompt save <name> <body>"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/prompts.json")).unwrap();
         assert_eq!(written, list_output);
 
@@ -36065,6 +36076,11 @@ mod tests {
         assert_eq!(get_value["prompt"]["source"], "custom");
         assert_eq!(get_value["prompt"]["body"], "Review {{file}} for {{task}}");
         assert_eq!(get_value["report"], "Review {{file}} for {{task}}");
+        let get_next_actions = json_string_array(&get_value["nextActions"]);
+        assert_executable_deepcli_actions(&get_next_actions);
+        assert!(get_next_actions
+            .iter()
+            .any(|action| action == "deepcli prompt get reviewer"));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/reviewer.json")).unwrap();
         assert_eq!(written, get_output);
@@ -36176,11 +36192,11 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("compiler - SysY compiler workflow"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|item| { item.as_str().unwrap().contains("/skill run <name>") }));
+            .any(|action| action == "deepcli skill run compiler"));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/skills.json")).unwrap();
         assert_eq!(written, output);
@@ -36834,11 +36850,11 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["truncated"], true);
         assert!(value["lines"][0].as_str().unwrap().contains("<redacted>"));
         assert_eq!(value["lines"][1], "last");
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/support")));
+            .any(|action| action == "deepcli support"));
         assert!(!output.contains("sk-log-secret"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/logs.json")).unwrap();
         assert_eq!(written, output);
@@ -36851,11 +36867,12 @@ diff --git a/docs/b.md b/docs/b.md
         let empty_value: Value = serde_json::from_str(&empty).unwrap();
         assert_eq!(empty_value["schema"], "deepcli.logs.v1");
         assert_eq!(empty_value["status"], "no_logs");
-        assert!(empty_value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| action.as_str().unwrap().contains("/diagnose --bundle")));
+        let empty_next_actions = json_string_array(&empty_value["nextActions"]);
+        assert_executable_deepcli_actions(&empty_next_actions);
+        assert_eq!(
+            empty_next_actions[0],
+            "deepcli diagnose --bundle .deepcli/support/latest"
+        );
 
         fs::create_dir_all(dir.path().join(".deepcli/logs")).unwrap();
         fs::write(dir.path().join(".deepcli/logs/first.log"), "one\n").unwrap();
@@ -38818,6 +38835,12 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["action"], "set");
         assert_eq!(value["seconds"], 45);
         assert_eq!(value["path"], "agent.providerTurnTimeoutSeconds");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(next_actions[0], "deepcli usage --json");
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli timeout reset"));
 
         let raw = fs::read_to_string(dir.path().join(".deepcli/config.json")).unwrap();
         let config_value: Value = serde_json::from_str(&raw).unwrap();
@@ -42189,6 +42212,11 @@ diff --git a/docs/skip.md b/docs/skip.md
             .as_str()
             .unwrap()
             .contains("default provider: deepseek"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli model set <provider> [model]"));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/model.json")).unwrap();
         assert_eq!(written, output);
@@ -42219,11 +42247,11 @@ diff --git a/docs/skip.md b/docs/skip.md
             .unwrap()
             .iter()
             .any(|provider| provider["provider"] == "deepseek" && provider["isDefault"] == true));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|item| { item.as_str().unwrap().contains("/model set kimi <model>") }));
+            .any(|action| action == "deepcli model set kimi <model>"));
 
         let active_output = handle_model_read_command(
             dir.path(),
