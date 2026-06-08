@@ -10589,7 +10589,7 @@ fn install_completion_script_in(
     }
     let parent_created =
         !dry_run && !parent_existed && target_path.parent().is_some_and(Path::exists);
-    let next_actions = completion_install_next_actions(shell, &target_path, dry_run);
+    let next_actions = completion_install_next_actions(shell, dry_run);
     let mut lines = vec![
         "deepcli completion install".to_string(),
         format!("shell: {}", completion_shell_name(shell)),
@@ -10676,16 +10676,17 @@ fn completion_status_report_in(
 }
 
 fn completion_status_next_actions(shell: CompletionFormat, status: &str) -> Vec<String> {
+    let shell_name = completion_shell_name(shell);
     match status {
-        "up_to_date" => vec!["completion is installed and up to date".to_string()],
-        "stale" => vec![format!(
-            "refresh with `deepcli completion install {} --force`",
-            completion_shell_name(shell)
-        )],
-        _ => vec![format!(
-            "install with `deepcli completion install {} --force`",
-            completion_shell_name(shell)
-        )],
+        "up_to_date" => vec![
+            "deepcli doctor shell --json".to_string(),
+            format!("deepcli completion status {shell_name} --json"),
+        ],
+        "stale" | "missing" => vec![
+            format!("deepcli completion install {shell_name} --force"),
+            format!("deepcli completion status {shell_name} --json"),
+        ],
+        _ => vec![format!("deepcli completion status {shell_name} --json")],
     }
 }
 
@@ -10709,35 +10710,15 @@ fn completion_install_target(home: &Path, shell: CompletionFormat) -> Result<Pat
     })
 }
 
-fn completion_install_next_actions(
-    shell: CompletionFormat,
-    target_path: &Path,
-    dry_run: bool,
-) -> Vec<String> {
-    let install_action = if dry_run {
-        Some(format!(
-            "install with `deepcli completion install {} --force`",
-            completion_shell_name(shell)
-        ))
-    } else {
-        None
-    };
-    let reload_action = match shell {
-        CompletionFormat::Zsh => {
-            "restart your shell, or run `autoload -Uz compinit && compinit`".to_string()
-        }
-        CompletionFormat::Bash => {
-            format!(
-                "restart your shell, or run `source {}`",
-                target_path.display()
-            )
-        }
-        CompletionFormat::Fish => "restart fish, or open a new fish shell".to_string(),
-        CompletionFormat::Guide | CompletionFormat::Json => "restart your shell".to_string(),
-    };
-    let mut actions = install_action.into_iter().collect::<Vec<_>>();
-    actions.push(reload_action);
-    actions
+fn completion_install_next_actions(shell: CompletionFormat, dry_run: bool) -> Vec<String> {
+    let shell_name = completion_shell_name(shell);
+    let mut actions = Vec::new();
+    if dry_run {
+        actions.push(format!("deepcli completion install {shell_name} --force"));
+    }
+    actions.push(format!("deepcli completion status {shell_name} --json"));
+    actions.push("deepcli doctor shell --json".to_string());
+    dedup_preserve_order(actions)
 }
 
 fn format_completion_install_json(report: &CompletionInstallReport) -> Result<String> {
@@ -35221,6 +35202,7 @@ mod tests {
             .next_actions
             .iter()
             .any(|action| action.contains("--force")));
+        assert_executable_deepcli_actions(&dry_run.next_actions);
 
         let installed =
             install_completion_script_in(home.path(), CompletionFormat::Zsh, &script, true, false)
@@ -35229,11 +35211,13 @@ mod tests {
         assert!(!installed.dry_run);
         assert!(installed.parent_created);
         assert_eq!(fs::read_to_string(&installed.target_path).unwrap(), script);
+        assert_executable_deepcli_actions(&installed.next_actions);
 
         let up_to_date =
             install_completion_script_in(home.path(), CompletionFormat::Zsh, &script, true, false)
                 .unwrap();
         assert_eq!(up_to_date.status, "up_to_date");
+        assert_executable_deepcli_actions(&up_to_date.next_actions);
 
         let value: Value =
             serde_json::from_str(&format_completion_install_json(&installed).unwrap()).unwrap();
@@ -35261,7 +35245,8 @@ mod tests {
         assert!(missing
             .next_actions
             .iter()
-            .any(|action| action.contains("install")));
+            .any(|action| action == "deepcli completion install zsh --force"));
+        assert_executable_deepcli_actions(&missing.next_actions);
 
         let target = completion_install_target(home.path(), CompletionFormat::Zsh).unwrap();
         fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -35275,7 +35260,8 @@ mod tests {
         assert!(stale
             .next_actions
             .iter()
-            .any(|action| action.contains("refresh")));
+            .any(|action| action == "deepcli completion install zsh --force"));
+        assert_executable_deepcli_actions(&stale.next_actions);
 
         fs::write(&target, &script).unwrap();
         let up_to_date =
@@ -35283,11 +35269,14 @@ mod tests {
         assert_eq!(up_to_date.status, "up_to_date");
         assert!(up_to_date.installed);
         assert!(up_to_date.up_to_date);
+        assert_executable_deepcli_actions(&up_to_date.next_actions);
 
         let value: Value =
             serde_json::from_str(&format_completion_status_json(&up_to_date).unwrap()).unwrap();
         assert_eq!(value["schema"], "deepcli.completion.status.v1");
         assert_eq!(value["shell"], "zsh");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
         assert_eq!(value["status"], "up_to_date");
         assert_eq!(value["installed"], true);
         assert_eq!(value["upToDate"], true);

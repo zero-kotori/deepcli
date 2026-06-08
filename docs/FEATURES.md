@@ -79,7 +79,7 @@ deepcli 当前面向 DeepSeek-compatible providers，并内置 DeepSeek/Kimi 相
 - `deepcli provider [provider] [model]`
 - `deepcli providers --json`
 
-Status、Usage、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
+Status、Usage、Completion、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
 
 凭据相关命令都在本地执行，不需要先创建会话或调用 provider：
 
@@ -124,7 +124,7 @@ deepcli 内置多层本地检查能力：
 - `deepcli completion status zsh --json`
 - `deepcli completion install zsh --force`
 
-`install` 默认 dry-run，只有显式 `--force` 才写入用户 HOME 下的 allowlisted completion 文件。
+`install` 默认 dry-run，只有显式 `--force` 才写入用户 HOME 下的 allowlisted completion 文件。`status --json` 与 `install --json` 的顶层 `nextActions` 会给出可直接执行的 `deepcli completion ...` 和 `deepcli doctor shell --json` 命令；reload 或重启 shell 的说明保留在 report 中。
 
 ## 环境与工具链
 
