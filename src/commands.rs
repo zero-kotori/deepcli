@@ -792,7 +792,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits an editable `deepcli.benchmark.baseline.v1` JSON file with `status=needs_values`, `nextActions`, and `report`, and writes it to a workspace-contained path when `--output` is supplied; add `--from-current` to prefill required cases from the latest local benchmark artifacts and produce a compare-ready baseline when evidence is complete. `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied. While an agent task is running in the TUI, read-only benchmark reports such as `status`, `summary`, `trends`, `compare`, `list`, `show`, `presets`, and scorecard compatibility are allowed; benchmark-producing `run`, `run-suite`, `record`, `baseline-template`, and cleanup actions should wait until the task is stopped or finished."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits an editable `deepcli.benchmark.baseline.v1` JSON file with `status=needs_values`, `nextActions`, and `report`, and writes it to a workspace-contained path when `--output` is supplied; add `--from-current` to prefill required cases from the latest local benchmark artifacts and produce a compare-ready baseline when evidence is complete. `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `status`, `summary`, `trends`, and `compare` JSON include `checklist[]` labels for executable benchmark next actions, while manual edit guidance remains in `nextActions` and `report`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied. While an agent task is running in the TUI, read-only benchmark reports such as `status`, `summary`, `trends`, `compare`, `list`, `show`, `presets`, and scorecard compatibility are allowed; benchmark-producing `run`, `run-suite`, `record`, `baseline-template`, and cleanup actions should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/round",
@@ -3321,6 +3321,37 @@ fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
             })
         })
         .collect()
+}
+
+fn benchmark_action_checklist(actions: &[String]) -> Vec<Value> {
+    actions
+        .iter()
+        .filter(|action| {
+            action.starts_with("deepcli ") && !action.contains('<') && !action.contains('>')
+        })
+        .enumerate()
+        .map(|(index, command)| {
+            json!({
+                "step": index + 1,
+                "label": benchmark_checklist_label(command),
+                "command": command,
+            })
+        })
+        .collect()
+}
+
+fn benchmark_checklist_label(command: &str) -> &'static str {
+    if command.starts_with("deepcli benchmark compare --baseline") {
+        "Compare benchmark baseline"
+    } else {
+        match command {
+            "deepcli benchmark list --json" => "List benchmark artifacts",
+            "deepcli benchmark show latest --json" => "Show latest benchmark artifact",
+            "deepcli benchmark clean --dry-run --json" => "Preview benchmark cleanup",
+            "deepcli scorecard --json" => "Inspect product gaps",
+            _ => scorecard_checklist_label(command),
+        }
+    }
 }
 
 fn scorecard_checklist_label(command: &str) -> &'static str {
@@ -6275,6 +6306,8 @@ fn format_benchmark_status_json(
     workspace: &Path,
     report: &BenchmarkStatusReport,
 ) -> Result<String> {
+    let next_actions = &report.next_actions;
+    let checklist = benchmark_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": BENCHMARK_STATUS_SCHEMA,
         "status": report.status,
@@ -6313,7 +6346,8 @@ fn format_benchmark_status_json(
         "latestMeaningfulAgeSeconds": report.latest_meaningful_age_seconds,
         "freshness": benchmark_freshness_json(report),
         "gaps": report.gaps,
-        "nextActions": report.next_actions,
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": format_benchmark_status_text(workspace, report),
     }))?)
 }
@@ -8012,6 +8046,8 @@ fn format_benchmark_compare_json(
     baseline: &BenchmarkBaselineReport,
     comparisons: &[BenchmarkCaseComparison],
 ) -> Result<String> {
+    let next_actions = benchmark_compare_next_actions(baseline, artifacts.is_empty());
+    let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.compare.v1",
         "status": benchmark_compare_status(artifacts.len(), baseline, comparisons),
@@ -8023,7 +8059,8 @@ fn format_benchmark_compare_json(
             .iter()
             .map(benchmark_case_comparison_json)
             .collect::<Vec<_>>(),
-        "nextActions": benchmark_compare_next_actions(baseline, artifacts.is_empty()),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": format_benchmark_compare_text(workspace, artifacts.len(), baseline, comparisons),
     }))?)
 }
@@ -8146,6 +8183,8 @@ fn format_benchmark_summary_json(
     artifacts: &[BenchmarkArtifact],
     summaries: &[BenchmarkCaseSummary],
 ) -> Result<String> {
+    let next_actions = benchmark_summary_next_actions();
+    let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.summary.v1",
         "status": "ok",
@@ -8154,20 +8193,26 @@ fn format_benchmark_summary_json(
         "caseCount": summaries.len(),
         "totals": benchmark_summary_totals_json(summaries),
         "cases": summaries.iter().map(benchmark_case_summary_json).collect::<Vec<_>>(),
-        "nextActions": [
-            "deepcli benchmark presets --json",
-            "deepcli benchmark run-suite --json --fail-on-command",
-            "deepcli benchmark run --preset cargo-test --json --fail-on-command",
-            "deepcli benchmark status --json",
-            "deepcli benchmark trends --json",
-            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json",
-            "deepcli benchmark list --json",
-            "deepcli benchmark show latest --json",
-            "deepcli benchmark clean --dry-run --json",
-            "deepcli scorecard --json",
-        ],
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": format_benchmark_summary_text(workspace, artifacts.len(), summaries),
     }))?)
+}
+
+fn benchmark_summary_next_actions() -> Vec<String> {
+    vec![
+        "deepcli benchmark presets --json".to_string(),
+        "deepcli benchmark run-suite --json --fail-on-command".to_string(),
+        "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
+        "deepcli benchmark status --json".to_string(),
+        "deepcli benchmark trends --json".to_string(),
+        "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+            .to_string(),
+        "deepcli benchmark list --json".to_string(),
+        "deepcli benchmark show latest --json".to_string(),
+        "deepcli benchmark clean --dry-run --json".to_string(),
+        "deepcli scorecard --json".to_string(),
+    ]
 }
 
 fn format_benchmark_trends_json(
@@ -8176,15 +8221,19 @@ fn format_benchmark_trends_json(
     trends: &[BenchmarkCaseTrend],
     recent_limit: usize,
 ) -> Result<String> {
+    let status = benchmark_trends_status(artifacts.len(), trends);
+    let next_actions = benchmark_trends_next_actions(status);
+    let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.trends.v1",
-        "status": benchmark_trends_status(artifacts.len(), trends),
+        "status": status,
         "workspace": workspace.display().to_string(),
         "artifactCount": artifacts.len(),
         "caseCount": trends.len(),
         "recentLimit": recent_limit,
         "trends": trends.iter().map(benchmark_case_trend_json).collect::<Vec<_>>(),
-        "nextActions": benchmark_trends_next_actions(benchmark_trends_status(artifacts.len(), trends)),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": format_benchmark_trends_text(workspace, artifacts.len(), trends, recent_limit),
     }))?)
 }
@@ -36424,6 +36473,157 @@ mod tests {
     }
 
     #[test]
+    fn benchmark_json_reports_expose_executable_action_checklists() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let now = Utc::now();
+
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990101T000000Z-product-cargo-test.json",
+            now + chrono::Duration::seconds(1),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+            120,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990102T000000Z-product-preflight-quick.json",
+            now + chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+            250,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990103T000000Z-product-selftest.json",
+            now + chrono::Duration::seconds(3),
+            "selftest",
+            "selftest",
+            "passed",
+            30,
+        );
+        write_benchmark_status_test_artifact_with_duration(
+            dir.path(),
+            "20990104T000000Z-product-scorecard.json",
+            now + chrono::Duration::seconds(4),
+            "scorecard",
+            "scorecard",
+            "passed",
+            10,
+        );
+
+        let status = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["status".into(), "--json".into()],
+        )
+        .unwrap();
+        let status_value: Value = serde_json::from_str(&status).unwrap();
+        let status_next_actions = json_string_array(&status_value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(&status_value, &status_next_actions);
+        assert!(status_value["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["label"] == "Run benchmark suite"
+                    && item["command"] == "deepcli benchmark run-suite --json --fail-on-command"
+            }));
+
+        let summary = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["summary".into(), "--json".into()],
+        )
+        .unwrap();
+        let summary_value: Value = serde_json::from_str(&summary).unwrap();
+        let summary_next_actions = json_string_array(&summary_value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(
+            &summary_value,
+            &summary_next_actions,
+        );
+        assert!(summary_value["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["label"] == "Run benchmark suite"
+                    && item["command"] == "deepcli benchmark run-suite --json --fail-on-command"
+            }));
+
+        let trends = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["trends".into(), "--json".into()],
+        )
+        .unwrap();
+        let trends_value: Value = serde_json::from_str(&trends).unwrap();
+        let trends_next_actions = json_string_array(&trends_value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(&trends_value, &trends_next_actions);
+        assert!(trends_value["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["label"] == "Refresh benchmark evidence"
+                    && item["command"] == "deepcli round --json --run-benchmark --fail-on-command"
+            }));
+
+        let baseline = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "baseline-template".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/baselines/competitor.json".into(),
+            ],
+        )
+        .unwrap();
+        let baseline_value: Value = serde_json::from_str(&baseline).unwrap();
+        assert_eq!(baseline_value["status"], "needs_values");
+
+        let compare = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "compare".into(),
+                "--json".into(),
+                "--baseline".into(),
+                ".deepcli/baselines/competitor.json".into(),
+            ],
+        )
+        .unwrap();
+        let compare_value: Value = serde_json::from_str(&compare).unwrap();
+        let compare_next_actions = json_string_array(&compare_value["nextActions"]);
+        assert!(compare_next_actions
+            .iter()
+            .any(|action| action.starts_with("edit status and durationMs values")));
+        assert_benchmark_checklist_matches_executable_actions(
+            &compare_value,
+            &compare_next_actions,
+        );
+        assert!(!compare_value["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["command"]
+                    .as_str()
+                    .is_some_and(|command| command.starts_with("edit status"))
+            }));
+    }
+
+    #[test]
     fn benchmark_trends_report_status_and_duration_regressions() {
         let dir = tempdir().unwrap();
         let config = AppConfig::default();
@@ -41821,6 +42021,28 @@ diff --git a/docs/b.md b/docs/b.md
             .iter()
             .map(|item| item.as_str().expect("expected string").to_string())
             .collect()
+    }
+
+    fn assert_benchmark_checklist_matches_executable_actions(value: &Value, actions: &[String]) {
+        let checklist = value["checklist"]
+            .as_array()
+            .expect("benchmark JSON should expose checklist");
+        let executable_actions = actions
+            .iter()
+            .filter(|action| {
+                action.starts_with("deepcli ") && !action.contains('<') && !action.contains('>')
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            checklist.len(),
+            executable_actions.len(),
+            "benchmark checklist should mirror executable nextActions"
+        );
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"].as_str().unwrap(), executable_actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
     }
 
     fn assert_executable_deepcli_actions(actions: &[String]) {
