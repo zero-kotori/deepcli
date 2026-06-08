@@ -390,7 +390,9 @@ impl CommandRouter {
             SlashCommand::Env { args } => {
                 handle_env(context.workspace, context.executor, args).await
             }
-            SlashCommand::Git { args } => handle_git(context.executor, args).await,
+            SlashCommand::Git { args } => {
+                handle_git(context.workspace, context.executor, args).await
+            }
             SlashCommand::Web { args } => handle_web(context.executor, args).await,
             SlashCommand::Prompt { args } => {
                 handle_prompt(context.workspace, context.executor, args).await
@@ -1589,24 +1591,26 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/git",
-            listing: "/git status|diff|branch|message [--json]|create-branch <name>|commit <message>",
+            listing: "/git status|diff|branch|message [--json] [--output path]|create-branch <name>|commit <message>",
             summary: "Run common Git inspection and controlled write operations.",
             usage: &[
-                "/git status [--json]",
-                "/git diff [--staged|--cached] [--json]",
-                "/git branch [--json]",
-                "/git message [--json]",
+                "/git status [--json] [--output path]",
+                "/git diff [--staged|--cached] [--json] [--output path]",
+                "/git branch [--json] [--output path]",
+                "/git message [--json] [--output path]",
                 "/git create-branch <name>",
                 "/git commit <message>",
             ],
             examples: &[
                 "/git status --json",
                 "/git diff --staged --json",
+                "/git status --json --output .deepcli/exports/git-status.json",
                 "/git message",
                 "deepcli git status --json",
             ],
             notes: &[
                 "Read-only Git commands support the stable `deepcli.git.inspect.v1` JSON schema with executable next actions.",
+                "`--output` writes the selected read-only Git output to a workspace-contained file.",
                 "Unknown read-only Git options are rejected instead of being silently ignored.",
                 "Branch creation and commits go through the permission policy.",
             ],
@@ -28696,12 +28700,17 @@ fn format_discovered_test(command: &DiscoveredTestCommand) -> String {
     )
 }
 
-async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String> {
+async fn handle_git(
+    workspace: &Path,
+    executor: &ToolExecutor,
+    args: Vec<String>,
+) -> Result<String> {
     let options = parse_git_options(&args)?;
     match options.action.as_str() {
         "status" => {
             let output = executor.execute("git_status", json!({})).await?;
             Ok(format_git_read_output(
+                workspace,
                 &options,
                 "git status --short",
                 output.content,
@@ -28718,6 +28727,7 @@ async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String
                 .execute("git_diff", json!({"staged": options.staged}))
                 .await?;
             Ok(format_git_read_output(
+                workspace,
                 &options,
                 command,
                 output.content,
@@ -28727,6 +28737,7 @@ async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String
         "branch" => {
             let output = executor.execute("git_branch", json!({})).await?;
             Ok(format_git_read_output(
+                workspace,
                 &options,
                 "git branch --show-current && git branch --list",
                 output.content,
@@ -28737,6 +28748,7 @@ async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String
             let output = executor.execute("git_commit_message", json!({})).await?;
             let command = "git status --short && git diff --name-only && git diff --stat";
             Ok(format_git_read_output(
+                workspace,
                 &options,
                 command,
                 output.content,
@@ -28768,6 +28780,7 @@ struct GitOptions {
     action: String,
     json_output: bool,
     staged: bool,
+    output_path: Option<String>,
 }
 
 fn parse_git_options(args: &[String]) -> Result<GitOptions> {
@@ -28786,17 +28799,37 @@ fn parse_git_options(args: &[String]) -> Result<GitOptions> {
             action: action.to_string(),
             json_output: false,
             staged: false,
+            output_path: None,
         });
     }
 
     let start = usize::from(args.first().is_some_and(|value| !value.starts_with('-')));
     let mut json_output = false;
     let mut staged = false;
-    for arg in &args[start..] {
-        match arg.as_str() {
-            "--json" => json_output = true,
-            "--staged" | "--cached" if action == "diff" => staged = true,
-            "--staged" | "--cached" => bail!("unsupported /git {action} option `{arg}`"),
+    let mut output_path = None;
+    let mut index = start;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" => {
+                let raw = args
+                    .get(index + 1)
+                    .ok_or_else(|| anyhow::anyhow!("/git {action} --output requires a path"))?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            "--staged" | "--cached" if action == "diff" => {
+                staged = true;
+                index += 1;
+            }
+            "--staged" | "--cached" => bail!("unsupported /git {action} option `{}`", args[index]),
             value if value.starts_with('-') => bail!("unsupported /git {action} option `{value}`"),
             value => bail!("unexpected /git {action} argument `{value}`"),
         }
@@ -28805,20 +28838,25 @@ fn parse_git_options(args: &[String]) -> Result<GitOptions> {
         action: action.to_string(),
         json_output,
         staged,
+        output_path,
     })
 }
 
 fn format_git_read_output(
+    workspace: &Path,
     options: &GitOptions,
     command: &str,
     content: String,
     raw: Value,
 ) -> Result<String> {
     if !options.json_output {
+        if let Some(output_path) = &options.output_path {
+            write_command_output(workspace, output_path, &content)?;
+        }
         return Ok(content);
     }
     let report = format_git_read_report(&options.action, command, &content, &raw);
-    Ok(serde_json::to_string_pretty(&json!({
+    let output = serde_json::to_string_pretty(&json!({
         "schema": "deepcli.git.inspect.v1",
         "status": if git_raw_exit_code(&raw) == Some(0) { "ok" } else { "failed" },
         "kind": options.action,
@@ -28830,7 +28868,11 @@ fn format_git_read_output(
         "raw": raw,
         "nextActions": git_read_next_actions(&options.action),
         "report": report,
-    }))?)
+    }))?;
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
 }
 
 fn format_git_read_report(kind: &str, command: &str, content: &str, raw: &Value) -> String {
@@ -31991,6 +32033,7 @@ mod tests {
         let git_help = CommandRouter::help_for(&["git".to_string()]).unwrap();
         assert!(git_help.contains("/git status --json"));
         assert!(git_help.contains("/git diff --staged --json"));
+        assert!(git_help.contains("--output .deepcli/exports/git-status.json"));
         assert!(git_help.contains("deepcli.git.inspect.v1"));
 
         let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
@@ -35849,9 +35892,13 @@ mod tests {
         .unwrap();
         let executor = test_executor(dir.path());
 
-        let output = handle_git(&executor, vec!["status".into(), "--json".into()])
-            .await
-            .unwrap();
+        let output = handle_git(
+            dir.path(),
+            &executor,
+            vec!["status".into(), "--json".into()],
+        )
+        .await
+        .unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
 
         assert_eq!(value["schema"], "deepcli.git.inspect.v1");
@@ -35873,11 +35920,62 @@ mod tests {
             .iter()
             .any(|action| action == "deepcli git message --json"));
 
-        let error = handle_git(&executor, vec!["status".into(), "--bogus".into()])
-            .await
-            .unwrap_err()
-            .to_string();
+        let error = handle_git(
+            dir.path(),
+            &executor,
+            vec!["status".into(), "--bogus".into()],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
         assert!(error.contains("unsupported /git status option `--bogus`"));
+    }
+
+    #[tokio::test]
+    async fn git_read_json_output_can_be_written_and_rejects_path_traversal() {
+        let dir = tempdir().unwrap();
+        write_minimal_cargo_project(dir.path());
+        init_git_repo_with_baseline(dir.path());
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn ok() -> bool { true }\npub fn changed() -> bool { ok() }\n",
+        )
+        .unwrap();
+        let executor = test_executor(dir.path());
+
+        let output = handle_git(
+            dir.path(),
+            &executor,
+            vec![
+                "status".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/git-status.json".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.git.inspect.v1");
+        assert_eq!(value["kind"], "status");
+        let written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/git-status.json")).unwrap();
+        assert_eq!(written, output);
+
+        let error = handle_git(
+            dir.path(),
+            &executor,
+            vec![
+                "status".into(),
+                "--json".into(),
+                "--output=../git.json".into(),
+            ],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("path traversal is not allowed"));
+        assert!(!dir.path().join("../git.json").exists());
     }
 
     fn run_git(dir: &Path, args: &[&str]) {
