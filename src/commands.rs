@@ -9564,7 +9564,7 @@ fn build_preflight_report(workspace: &Path, options: &PreflightOptions) -> Resul
         "ok"
     }
     .to_string();
-    let next_actions = preflight_next_actions(&status, &checks);
+    let next_actions = preflight_next_actions(&status, &checks, options);
     let report = format_preflight_text(workspace, &status, options, &checks, &next_actions);
 
     Ok(PreflightReport {
@@ -9640,11 +9640,16 @@ fn build_preflight_specs(
         "doctor",
         &["/doctor", "--quick", "--json"],
     ));
+    let privacy_args = if options.quick {
+        vec!["/privacy", "--json", "--fail-on-findings", "--no-history"]
+    } else {
+        vec!["/privacy", "--json", "--fail-on-findings"]
+    };
     specs.push(deepcli_preflight_spec(
         workspace,
         &deepcli,
         "privacy",
-        &["/privacy", "--json", "--fail-on-findings"],
+        &privacy_args,
     ));
     if options.quick {
         specs.push(skipped_preflight_spec(
@@ -9818,11 +9823,27 @@ fn preflight_output_summary(stdout: &str, stderr: &str) -> Option<String> {
     ))
 }
 
-fn preflight_next_actions(status: &str, checks: &[PreflightCheckResult]) -> Vec<String> {
+fn preflight_run_command(options: &PreflightOptions) -> String {
+    let mut parts = vec!["deepcli", "preflight"];
+    if options.quick {
+        parts.push("--quick");
+    }
+    if options.fail_fast {
+        parts.push("--fail-fast");
+    }
+    parts.push("--json");
+    parts.join(" ")
+}
+
+fn preflight_next_actions(
+    status: &str,
+    checks: &[PreflightCheckResult],
+    options: &PreflightOptions,
+) -> Vec<String> {
     let mut actions = Vec::new();
     match status {
         "planned" => {
-            actions.push("run `/preflight --json` to execute the planned checks".to_string());
+            actions.push(preflight_run_command(options));
         }
         "failed" => {
             for check in checks
@@ -9830,19 +9851,13 @@ fn preflight_next_actions(status: &str, checks: &[PreflightCheckResult]) -> Vec<
                 .filter(|check| check.required && check.status == "failed")
                 .take(4)
             {
-                actions.push(format!(
-                    "fix `{}` by rerunning `{}` and addressing the output",
-                    check.name, check.command
-                ));
+                actions.push(check.command.clone());
             }
-            actions.push("rerun `/preflight --json` after fixing failed checks".to_string());
+            actions.push(preflight_run_command(options));
         }
         _ => {
-            actions.push("run `/handoff --pr` to prepare a final handoff summary".to_string());
-            actions.push(
-                "commit only after confirming the preflight report matches expectations"
-                    .to_string(),
-            );
+            actions.push("deepcli handoff --pr".to_string());
+            actions.push("git status --short".to_string());
         }
     }
     dedup_preserve_order(actions)
@@ -34937,11 +34952,9 @@ mod tests {
                 .iter()
                 .any(|check| check["name"] == expected && check["status"] == "planned"));
         }
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|action| action.as_str().unwrap().contains("/preflight --json")));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(next_actions[0], "deepcli preflight --json");
         assert!(!dir.path().join(".deepcli/sessions").exists());
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/preflight.json")).unwrap();
@@ -34960,6 +34973,17 @@ mod tests {
 
         assert_eq!(value["status"], "planned");
         assert_eq!(value["mode"], "quick");
+        let commands = value["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|check| check["command"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert!(commands.contains(&"deepcli privacy --json --fail-on-findings --no-history"));
+        assert!(!commands.contains(&"deepcli privacy --json --fail-on-findings"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(next_actions[0], "deepcli preflight --quick --json");
         assert!(value["checks"]
             .as_array()
             .unwrap()
@@ -35032,7 +35056,7 @@ mod tests {
             },
         ];
         let options = PreflightOptions::default();
-        let next_actions = preflight_next_actions("failed", &checks);
+        let next_actions = preflight_next_actions("failed", &checks, &options);
         let report_text =
             format_preflight_text(dir.path(), "failed", &options, &checks, &next_actions);
         let report = PreflightReport {
