@@ -11584,13 +11584,13 @@ fn status_u128_value(value: u128) -> Value {
 fn status_next_actions(short: &str, has_next_action_signals: bool) -> Vec<String> {
     if has_next_action_signals {
         vec![
-            format!("run `/next {short}`"),
-            format!("run `/session diagnose {short}`"),
+            format!("deepcli next {short}"),
+            format!("deepcli session diagnose {short}"),
         ]
     } else {
         vec![
-            format!("run `/usage {short}`"),
-            format!("run `/trace --limit 20 {short}`"),
+            format!("deepcli usage {short}"),
+            format!("deepcli trace --limit 20 {short}"),
         ]
     }
 }
@@ -37051,16 +37051,67 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["session"]["title"], "status json");
         assert_eq!(value["session"]["activity"]["messages"], 1);
         assert_eq!(value["session"]["usage"]["totalTokens"], 9);
-        assert!(value["session"]["nextActions"][0]
-            .as_str()
-            .unwrap()
-            .contains("/usage"));
+        let short = value["session"]["shortId"].as_str().unwrap();
+        let next_actions = json_string_array(&value["session"]["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(
+            next_actions,
+            vec![
+                format!("deepcli usage {short}"),
+                format!("deepcli trace --limit 20 {short}")
+            ]
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
             .contains("latest session:"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/status.json")).unwrap();
         assert_eq!(written, output);
+    }
+
+    #[test]
+    fn status_json_session_actions_are_executable_for_next_action_signals() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let executor = test_executor(dir.path());
+        let store = SessionStore::new(dir.path());
+        let mut session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session.append_message("user", "needs next action").unwrap();
+        session.set_state(SessionState::WaitingUser).unwrap();
+
+        let output = handle_status(
+            CommandContext {
+                workspace: dir.path(),
+                config: &config,
+                registry: &registry,
+                executor: &executor,
+                session_id: None,
+                provider_override: None,
+            },
+            vec!["--json".into()],
+        )
+        .unwrap();
+
+        let value: Value = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["schema"], "deepcli.status.v1");
+        assert_eq!(value["session"]["nextActionSignals"], true);
+        let short = value["session"]["shortId"].as_str().unwrap();
+        let next_actions = json_string_array(&value["session"]["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(
+            next_actions,
+            vec![
+                format!("deepcli next {short}"),
+                format!("deepcli session diagnose {short}")
+            ]
+        );
     }
 
     #[test]
