@@ -1410,7 +1410,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/gate --path src --test-command 'cargo test'",
                 "deepcli gate --json",
             ],
-            notes: &["`/gate` maps to `/verify --run-tests --fail-on-blockers` unless an explicit test command is provided. With no current or explicit session it uses workspace-only fresh test evidence instead of falling back to stale session records. It is intended for CI, release checks, and final handoff scripts that need a non-zero exit when acceptance blockers remain."],
+            notes: &["`/gate` maps to `/verify --run-tests --fail-on-blockers` unless an explicit test command is provided. With no current or explicit session it uses workspace-only fresh test evidence instead of falling back to stale session records. It is intended for CI, release checks, and final handoff scripts that need a non-zero exit when acceptance blockers remain. JSON output includes `checklist[]` labels for the executable verification next actions."],
         },
         CommandHelp {
             name: "/verify",
@@ -1430,7 +1430,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/verify --current",
             ],
             examples: &["/verify", "/verify --path src/commands.rs --test-command 'cargo test'", "/verify --run-tests", "/verify --test-command 'cargo test'", "/verify --env-check docker --json --output .deepcli/exports/verify.json --fail-on-blockers", "/verify --current"],
-            notes: &["`/verify` does not claim acceptance automatically. It highlights missing or weak tests, failed tools, pending approvals, open by-the-way questions, optional environment readiness, and the next commands needed before handoff. Repeat `--path` to scope diff review to one or more workspace-relative path prefixes. Without a current or explicit session, a requested test run uses workspace-only fresh evidence instead of falling back to stale session records. Use `--env-check docker` or `--env-check compiler` to include read-only Docker/compiler environment evidence as a blocker when not ready. Use `--json` for machine-readable status, blockers, environment evidence, and next actions. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a script or CI job should exit non-zero if blockers remain."],
+            notes: &["`/verify` does not claim acceptance automatically. It highlights missing or weak tests, failed tools, pending approvals, open by-the-way questions, optional environment readiness, and the next commands needed before handoff. Repeat `--path` to scope diff review to one or more workspace-relative path prefixes. Without a current or explicit session, a requested test run uses workspace-only fresh evidence instead of falling back to stale session records. Use `--env-check docker` or `--env-check compiler` to include read-only Docker/compiler environment evidence as a blocker when not ready. Use `--json` for machine-readable status, blockers, environment evidence, next actions, and a top-level `checklist[]` that labels those actions for UIs. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a script or CI job should exit non-zero if blockers remain."],
         },
         CommandHelp {
             name: "/handoff",
@@ -1461,7 +1461,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/handoff --json --fail-on-blockers",
                 "/handoff --limit 10 --current",
             ],
-            notes: &["`/handoff` is read-only unless `--output` is provided. It is intended for final user/PR summaries and highlights missing or weak evidence instead of claiming acceptance automatically. Use `--env-check docker` or `--env-check compiler` to include read-only environment readiness in the final handoff and PR description. Use `--markdown` for a report, `--pr` for a pull-request description template, and `--json` for scripts or automation. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a handoff gate should exit non-zero if blockers remain."],
+            notes: &["`/handoff` is read-only unless `--output` is provided. It is intended for final user/PR summaries and highlights missing or weak evidence instead of claiming acceptance automatically. Use `--env-check docker` or `--env-check compiler` to include read-only environment readiness in the final handoff and PR description. Use `--markdown` for a report, `--pr` for a pull-request description template, and `--json` for scripts or automation; JSON includes `checklist[]` labels for the executable handoff next actions. Use `--output` to also write the selected output format to a workspace-contained file. Use `--fail-on-blockers` when a handoff gate should exit non-zero if blockers remain."],
         },
         CommandHelp {
             name: "/test",
@@ -27745,12 +27745,14 @@ fn format_handoff_report_json(
 ) -> Result<String> {
     let blockers = handoff_report_blockers(report);
     let next_actions = handoff_report_next_actions(report);
+    let checklist = delivery_action_checklist(&next_actions);
     let value = json!({
         "schema": "deepcli.handoff.v1",
         "status": if blockers.is_empty() { "ok" } else { "blocked" },
         "hasBlockers": !blockers.is_empty(),
         "blockers": blockers,
         "nextActions": next_actions,
+        "checklist": checklist,
         "workspace": handoff_report_prefixed_value(report, "- workspace: "),
         "session": handoff_report_prefixed_value(report, "- session: "),
         "gitStatus": handoff_report_prefixed_value(report, "- git: "),
@@ -27846,12 +27848,14 @@ fn format_verification_report_json(
 ) -> Result<String> {
     let blockers = verification_report_blockers(report);
     let next_actions = verification_report_next_actions(report);
+    let checklist = delivery_action_checklist(&next_actions);
     let value = json!({
         "schema": "deepcli.verify.v1",
         "status": if blockers.is_empty() { "ok" } else { "blocked" },
         "hasBlockers": !blockers.is_empty(),
         "blockers": blockers,
         "nextActions": next_actions,
+        "checklist": checklist,
         "workspace": verification_report_prefixed_value(report, "workspace: "),
         "session": verification_report_prefixed_value(report, "session: "),
         "gitStatus": verification_report_prefixed_value(report, "git status: "),
@@ -27861,6 +27865,52 @@ fn format_verification_report_json(
         "report": report,
     });
     Ok(serde_json::to_string_pretty(&value)?)
+}
+
+fn delivery_action_checklist(actions: &[String]) -> Vec<Value> {
+    actions
+        .iter()
+        .enumerate()
+        .map(|(index, command)| {
+            json!({
+                "step": index + 1,
+                "label": delivery_action_label(command),
+                "command": command,
+            })
+        })
+        .collect()
+}
+
+fn delivery_action_label(command: &str) -> &'static str {
+    if command.starts_with("deepcli verify --test-command") {
+        "Record cargo test evidence"
+    } else if command.starts_with("deepcli verify --run-tests") {
+        "Run discovered tests"
+    } else if command.starts_with("deepcli verify --env-check docker") {
+        "Verify Docker environment"
+    } else if command.starts_with("deepcli verify --env-check compiler") {
+        "Verify compiler environment"
+    } else if command.starts_with("deepcli handoff --env-check docker") {
+        "Prepare handoff with Docker evidence"
+    } else if command.starts_with("deepcli handoff --env-check compiler") {
+        "Prepare handoff with compiler evidence"
+    } else if command.starts_with("deepcli handoff") {
+        "Prepare handoff report"
+    } else if command.starts_with("deepcli session diffs") {
+        "Inspect session diffs"
+    } else if command.starts_with("deepcli review") {
+        "Review current diff"
+    } else if command.starts_with("deepcli diff --stat") {
+        "Review diff summary"
+    } else if command.starts_with("deepcli diff") {
+        "Review current diff"
+    } else if command.starts_with("git status") {
+        "Inspect Git status"
+    } else if command.starts_with("cargo test") {
+        "Run cargo test"
+    } else {
+        generic_recipe_command_label(command)
+    }
 }
 
 fn verification_report_blockers(report: &str) -> Vec<String> {
@@ -43964,8 +44014,10 @@ diff --git a/docs/skip.md b/docs/skip.md
         let exit = error.downcast_ref::<CommandExit>().unwrap();
         let value: Value = serde_json::from_str(&exit.output).unwrap();
         let actions = value["nextActions"].as_array().unwrap();
+        let checklist = value["checklist"].as_array().unwrap();
 
         assert!(!actions.is_empty(), "expected verify next actions");
+        assert_eq!(checklist.len(), actions.len());
         for action in actions {
             let action = action.as_str().unwrap();
             assert!(
@@ -43979,6 +44031,15 @@ diff --git a/docs/skip.md b/docs/skip.md
                 "verify next action should not be explanatory prose: {action}"
             );
         }
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"], actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        assert!(checklist
+            .iter()
+            .any(|item| item["label"] == "Record cargo test evidence"
+                || item["label"] == "Run discovered tests"));
     }
 
     #[tokio::test]
@@ -43997,8 +44058,10 @@ diff --git a/docs/skip.md b/docs/skip.md
         let exit = error.downcast_ref::<CommandExit>().unwrap();
         let value: Value = serde_json::from_str(&exit.output).unwrap();
         let actions = value["nextActions"].as_array().unwrap();
+        let checklist = value["checklist"].as_array().unwrap();
 
         assert!(!actions.is_empty(), "expected handoff next actions");
+        assert_eq!(checklist.len(), actions.len());
         for action in actions {
             let action = action.as_str().unwrap();
             assert!(
@@ -44012,6 +44075,15 @@ diff --git a/docs/skip.md b/docs/skip.md
                 "handoff next action should not contain prose markup or placeholders: {action}"
             );
         }
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"], actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        assert!(checklist
+            .iter()
+            .any(|item| item["label"] == "Prepare handoff report"
+                || item["label"] == "Record cargo test evidence"));
     }
 
     #[tokio::test]
