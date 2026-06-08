@@ -2553,6 +2553,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Usage { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/usage")?;
                 handle_usage(&active.workspace, Some(active.session_id.clone()), args)
             });
             true
@@ -2563,16 +2564,21 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Trace { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/trace")?;
                 handle_trace(&active.workspace, Some(active.session_id.clone()), args)
             });
             true
         }
         SlashCommand::Logs { args } => {
-            push_running_command_result(state, |active| handle_logs(&active.workspace, args));
+            push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/logs")?;
+                handle_logs(&active.workspace, args)
+            });
             true
         }
         SlashCommand::Privacy { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/privacy")?;
                 let config = AppConfig::load_effective(&active.workspace, None)?;
                 handle_privacy_scan(&active.workspace, &config, args)
             });
@@ -2580,12 +2586,14 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Fork { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/fork")?;
                 handle_fork(&active.workspace, Some(active.session_id.clone()), args)
             });
             true
         }
         SlashCommand::Recipes { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/recipes")?;
                 let (config, registry) = running_local_product_context(&active.workspace)?;
                 handle_recipes(&active.workspace, &config, &registry, args)
             });
@@ -2593,6 +2601,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Scorecard { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/scorecard")?;
                 let (config, registry) = running_local_product_context(&active.workspace)?;
                 handle_scorecard(&active.workspace, &config, &registry, args)
             });
@@ -2600,6 +2609,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Round { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/round")?;
                 ensure_running_round_is_read_only(&args)?;
                 let (config, registry) = running_local_product_context(&active.workspace)?;
                 handle_round(&active.workspace, &config, &registry, args)
@@ -2608,6 +2618,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Benchmark { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/benchmark")?;
                 ensure_running_benchmark_is_read_only(&args)?;
                 let (config, registry) = running_local_product_context(&active.workspace)?;
                 handle_benchmark(&active.workspace, &config, &registry, args)
@@ -2616,12 +2627,14 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Selftest { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/selftest")?;
                 handle_selftest_local(&active.workspace, args)
             });
             true
         }
         SlashCommand::Preflight { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/preflight")?;
                 ensure_running_preflight_is_planned(&args)?;
                 handle_preflight(&active.workspace, args)
             });
@@ -2629,12 +2642,14 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
         }
         SlashCommand::Completion { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/completion")?;
                 handle_completion_local(&active.workspace, args)
             });
             true
         }
         SlashCommand::Approval { args } => {
             push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/approval")?;
                 handle_approval(&active.workspace, Some(active.session_id.clone()), args)
             });
             true
@@ -2677,7 +2692,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`；运行中旁路命令不写 `--output` artifact。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
@@ -2691,6 +2706,20 @@ fn running_local_product_context(workspace: &Path) -> Result<(AppConfig, ToolReg
         AppConfig::load_effective(workspace, None)?,
         ToolRegistry::mvp(),
     ))
+}
+
+fn running_args_include_output(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| matches!(arg.as_str(), "--output" | "-o") || arg.starts_with("--output="))
+}
+
+fn ensure_running_no_output(args: &[String], command: &str) -> Result<()> {
+    if running_args_include_output(args) {
+        anyhow::bail!(
+            "stop or wait for the running task before executing `{command} ... --output`; it writes a file"
+        );
+    }
+    Ok(())
 }
 
 fn ensure_running_round_is_read_only(args: &[String]) -> Result<()> {
@@ -2939,6 +2968,7 @@ fn format_tui_running_status(active: &ActiveSessionRef) -> Result<String> {
 }
 
 fn handle_tui_running_btw(active: &ActiveSessionRef, args: Vec<String>) -> Result<String> {
+    ensure_running_no_output(&args, "/btw")?;
     let session = SessionStore::new(&active.workspace).load(&active.session_id)?;
     match args.first().map(String::as_str) {
         None | Some("list") => {
@@ -2985,6 +3015,7 @@ fn handle_tui_running_btw(active: &ActiveSessionRef, args: Vec<String>) -> Resul
 }
 
 fn handle_tui_running_terminal(active: &ActiveSessionRef, args: Vec<String>) -> Result<String> {
+    ensure_running_no_output(&args, "/terminal")?;
     let config = AppConfig::load_effective(&active.workspace, None)?;
     let session = SessionStore::new(&active.workspace).load(&active.session_id)?;
     let permissions = PermissionEngine::new(
@@ -3149,7 +3180,7 @@ fn submit_tui_input(
         state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content:
-                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
+                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项；需要写 `--output` artifact 时请等待任务结束或先 `/stop`。"
                     .to_string(),
         });
         state.last_event = "input deferred while running".to_string();
@@ -8952,6 +8983,162 @@ mod tests {
                     .content
                     .contains("stop or wait for the running task before executing")
         }));
+    }
+
+    #[test]
+    fn running_tui_blocks_artifact_output_for_local_side_commands() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".deepcli/logs")).unwrap();
+        fs::write(
+            dir.path().join(".deepcli/logs/deepcli.log"),
+            "provider ok\n",
+        )
+        .unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        session
+            .append_audit_event(
+                "provider_turn_completed",
+                serde_json::json!({
+                    "iteration": 1,
+                    "elapsed_ms": 1200,
+                    "tool_calls": 0,
+                    "usage": {
+                        "total_tokens": 42
+                    }
+                }),
+            )
+            .unwrap();
+        session.enqueue_side_question("answer after tests").unwrap();
+        session
+            .enqueue_approval_request(
+                "write_file",
+                PermissionDecision {
+                    outcome: DecisionOutcome::RequiresUserApproval,
+                    risk: RiskLevel::Medium,
+                    reason: "write requires approval".to_string(),
+                },
+            )
+            .unwrap();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/usage --json"
+        ));
+        assert!(state
+            .chat
+            .last()
+            .is_some_and(|line| line.content.contains("deepcli.usage.v1")));
+
+        for (command, output_path) in [
+            (
+                "/usage --json --output .deepcli/exports/usage.json",
+                ".deepcli/exports/usage.json",
+            ),
+            (
+                "/trace --json --output=.deepcli/exports/trace.json",
+                ".deepcli/exports/trace.json",
+            ),
+            (
+                "/logs --json --output .deepcli/exports/logs.json",
+                ".deepcli/exports/logs.json",
+            ),
+            (
+                "/privacy --json --no-history --output .deepcli/exports/privacy.json",
+                ".deepcli/exports/privacy.json",
+            ),
+            (
+                "/recipes sota --json --output .deepcli/exports/recipes.json",
+                ".deepcli/exports/recipes.json",
+            ),
+            (
+                "/scorecard --json --output .deepcli/exports/scorecard.json",
+                ".deepcli/exports/scorecard.json",
+            ),
+            (
+                "/round --json --output .deepcli/exports/round.json",
+                ".deepcli/exports/round.json",
+            ),
+            (
+                "/benchmark status --json --output .deepcli/exports/benchmark-status.json",
+                ".deepcli/exports/benchmark-status.json",
+            ),
+            (
+                "/selftest --json --output .deepcli/exports/selftest.json",
+                ".deepcli/exports/selftest.json",
+            ),
+            (
+                "/preflight --dry-run --json --output .deepcli/exports/preflight.json",
+                ".deepcli/exports/preflight.json",
+            ),
+            (
+                "/completion json --output .deepcli/exports/commands.json",
+                ".deepcli/exports/commands.json",
+            ),
+            (
+                "/approval list --json --output .deepcli/exports/approvals.json",
+                ".deepcli/exports/approvals.json",
+            ),
+            (
+                "/btw list --json --output .deepcli/exports/btw.json",
+                ".deepcli/exports/btw.json",
+            ),
+            (
+                "/terminal --dry-run --json --output .deepcli/exports/terminal.json",
+                ".deepcli/exports/terminal.json",
+            ),
+            (
+                "/fork --current --dry-run --json --output .deepcli/exports/fork.json",
+                ".deepcli/exports/fork.json",
+            ),
+        ] {
+            assert!(handle_running_tui_local_command(&mut state, command));
+            assert!(
+                state.chat.last().is_some_and(|line| {
+                    line.role == "error"
+                        && line.content.contains("writes a file")
+                        && line.content.contains("stop or wait for the running task")
+                }),
+                "{command} should be rejected while the agent is running"
+            );
+            assert!(
+                !dir.path().join(output_path).exists(),
+                "{output_path} should not be written while the agent is running"
+            );
+        }
     }
 
     #[test]
