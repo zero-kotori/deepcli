@@ -11985,8 +11985,8 @@ fn format_usage_session_json(usage: &UsageSessionReport) -> Result<Value> {
         "failedTests": count_failed_test_events(&usage.audits),
         "summaryPreview": summary_preview,
         "nextActions": vec![
-            format!("run `/trace --limit 20 {}`", short_id(&usage.session.id())),
-            format!("run `/session diagnose {}`", short_id(&usage.session.id())),
+            format!("deepcli trace --limit 20 {}", short_id(&usage.session.id())),
+            format!("deepcli session diagnose {}", short_id(&usage.session.id())),
         ],
     }))
 }
@@ -37290,6 +37290,16 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["session"]["failedTools"], 1);
         assert_eq!(value["session"]["failedTests"], 1);
         assert_eq!(value["session"]["summaryPreview"], "latency investigation");
+        let short = value["session"]["shortId"].as_str().unwrap();
+        let next_actions = json_string_array(&value["session"]["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_eq!(
+            next_actions,
+            vec![
+                format!("deepcli trace --limit 20 {short}"),
+                format!("deepcli session diagnose {short}")
+            ]
+        );
         let diagnostics = value["session"]["diagnostics"].as_array().unwrap();
         assert!(diagnostics.iter().any(|item| {
             item.as_str()
