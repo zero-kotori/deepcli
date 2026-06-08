@@ -134,6 +134,8 @@ deepcli env test compiler --json
 
 `approval list --json` 和 `btw list --json` 也输出顶层可执行 `nextActions`：审批队列存在 pending 项时会给出具体 approve/deny 命令；空审批或旁路队列仍给出 `--all --json` 复查和帮助入口，避免外部 UI 或脚本遇到空队列后没有下一步。
 
+`approval approve|deny|clear --json` 输出稳定 `deepcli.approval.action.v1`，`btw answer|clear --json` 输出稳定 `deepcli.btw.action.v1`，处理后会返回 session、item 或 cleared count、nextActions 和 report；`--output` 可把结果写入 workspace 内 artifact，便于外部 UI 执行动作后立即刷新队列。
+
 `deepcli --help` 的 Usage 区也会直接展示 approval approve/deny/clear 与 btw answer/clear，用户从顶层帮助即可发现协作队列的处理闭环。
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。

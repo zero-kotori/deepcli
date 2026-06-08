@@ -1680,29 +1680,38 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/btw",
-            listing: "/btw ask <question>|list [--json] [--output path] [session_id|--current] [--all]|answer <id> [--current] <answer>|clear [session_id|--current]",
+            listing: "/btw ask <question>|list [--json] [--output path] [session_id|--current] [--all]|answer <id> [--current] [--json] [--output path] <answer>|clear [session_id|--current] [--json] [--output path]",
             summary: "Queue and answer by-the-way questions without interrupting the main task.",
             usage: &[
                 "/btw ask <question>",
                 "/btw list [--json] [--output path] [session_id|--current] [--all]",
-                "/btw answer <id> [--current] <answer>",
-                "/btw clear [session_id|--current]",
+                "/btw answer <id> [--current] [--json] [--output path] <answer>",
+                "/btw clear [session_id|--current] [--json] [--output path]",
             ],
-            examples: &["/btw ask should I use v4-flash if v4-pro is slow?", "/btw list", "/btw list --json --output .deepcli/exports/btw.json"],
-            notes: &["Without an explicit session, list and answer can find the latest matching open question. Use `--json` for the stable `deepcli.btw.list.v1` schema and `--output` to write the selected format to a workspace-contained file."],
+            examples: &[
+                "/btw ask should I use v4-flash if v4-pro is slow?",
+                "/btw list",
+                "/btw list --json --output .deepcli/exports/btw.json",
+                "/btw answer 1a2b3c4d --json --output .deepcli/exports/btw-answer.json after tests",
+            ],
+            notes: &["Without an explicit session, list and answer can find the latest matching open question. Use `--json` for the stable `deepcli.btw.list.v1` read schema or `deepcli.btw.action.v1` action schema, and `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/approval",
-            listing: "/approval list [--json] [--output path] [session_id|--current] [--all]|approve <id> [--current]|deny <id> [--current]|clear [session_id|--current]",
+            listing: "/approval list [--json] [--output path] [session_id|--current] [--all]|approve <id> [--current] [--json] [--output path]|deny <id> [--current] [--json] [--output path]|clear [session_id|--current] [--json] [--output path]",
             summary: "Inspect and resolve pending approval requests.",
             usage: &[
                 "/approval list [--json] [--output path] [session_id|--current] [--all]",
-                "/approval approve <id> [--current]",
-                "/approval deny <id> [--current]",
-                "/approval clear [session_id|--current]",
+                "/approval approve <id> [--current] [--json] [--output path]",
+                "/approval deny <id> [--current] [--json] [--output path]",
+                "/approval clear [session_id|--current] [--json] [--output path]",
             ],
-            examples: &["/approval list", "/approval list --json --output .deepcli/exports/approvals.json", "/approval approve req-123"],
-            notes: &["Without an explicit session, list finds the latest matching pending approval request and approve/deny can locate unique ids across recent sessions. Use `--json` for the stable `deepcli.approval.list.v1` schema and `--output` to write the selected format to a workspace-contained file."],
+            examples: &[
+                "/approval list",
+                "/approval list --json --output .deepcli/exports/approvals.json",
+                "/approval approve 1a2b3c4d --json --output .deepcli/exports/approval-approve.json",
+            ],
+            notes: &["Without an explicit session, list finds the latest matching pending approval request and approve/deny can locate unique ids across recent sessions. Use `--json` for the stable `deepcli.approval.list.v1` read schema or `deepcli.approval.action.v1` action schema, and `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/session",
@@ -22103,23 +22112,6 @@ fn parse_limit_and_session_selection(
     Ok((limit.clamp(1, 100), session_id, explicit))
 }
 
-fn parse_optional_session_arg(
-    args: &[String],
-    current: Option<String>,
-    usage: &str,
-) -> Result<(String, bool)> {
-    match args {
-        [] => current.map(|id| (id, false)).ok_or_else(|| {
-            anyhow::anyhow!("missing session id and no active session is available")
-        }),
-        [arg] if arg == "--current" => current
-            .map(|id| (id, true))
-            .ok_or_else(|| anyhow::anyhow!("no active session is available")),
-        [id] if !id.trim().is_empty() => Ok((id.to_string(), true)),
-        _ => bail!("usage: {usage} [session_id|--current]"),
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 struct SessionNextOptions {
     session_id: Option<String>,
@@ -22449,30 +22441,169 @@ struct ScopedListOptions {
     output_path: Option<String>,
 }
 
-fn parse_current_only_flag(args: &[String], usage: &str) -> Result<bool> {
-    match args {
-        [] => Ok(false),
-        [arg] if arg == "--current" => Ok(true),
-        _ => bail!("usage: {usage}"),
-    }
+#[derive(Debug, PartialEq, Eq)]
+struct QueueActionOptions {
+    current_only: bool,
+    json_output: bool,
+    output_path: Option<String>,
 }
 
-fn parse_btw_answer_args(args: &[String], usage: &str) -> Result<(bool, String)> {
+fn parse_queue_action_options(args: &[String], usage: &str) -> Result<QueueActionOptions> {
+    let mut options = QueueActionOptions {
+        current_only: false,
+        json_output: false,
+        output_path: None,
+    };
+    let usage = format!("usage: {usage}");
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--current" => {
+                options.current_only = true;
+                index += 1;
+            }
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            _ => bail!("{usage}"),
+        }
+    }
+    Ok(options)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ScopedActionOptions {
+    session_id: String,
+    explicit_session: bool,
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+fn parse_scoped_action_args(
+    args: &[String],
+    current: Option<String>,
+    usage: &str,
+) -> Result<ScopedActionOptions> {
+    let mut session_id = None;
+    let mut explicit_session = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let usage = format!("usage: {usage}");
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            "--current" => {
+                if session_id.is_some() {
+                    bail!("{usage}");
+                }
+                session_id = Some(
+                    current
+                        .clone()
+                        .ok_or_else(|| anyhow::anyhow!("no active session is available"))?,
+                );
+                explicit_session = true;
+                index += 1;
+            }
+            value if value.starts_with('-') => bail!("unsupported action option `{value}`"),
+            value => {
+                if session_id.is_some() {
+                    bail!("{usage}");
+                }
+                session_id = Some(value.to_string());
+                explicit_session = true;
+                index += 1;
+            }
+        }
+    }
+    let session_id = session_id
+        .or(current)
+        .ok_or_else(|| anyhow::anyhow!("missing session id and no active session is available"))?;
+    Ok(ScopedActionOptions {
+        session_id,
+        explicit_session,
+        json_output,
+        output_path,
+    })
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct BtwAnswerOptions {
+    current_only: bool,
+    json_output: bool,
+    output_path: Option<String>,
+    answer: String,
+}
+
+fn parse_btw_answer_args(args: &[String], usage: &str) -> Result<BtwAnswerOptions> {
     if args.is_empty() {
         bail!("usage: {usage}");
     }
-    let (current_only, answer_start) = if args.first().map(String::as_str) == Some("--current") {
-        (true, 1)
-    } else {
-        (false, 0)
-    };
-    let answer = args
-        .iter()
-        .skip(answer_start)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(" ");
-    Ok((current_only, answer))
+    let mut current_only = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut answer = Vec::new();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--current" => {
+                current_only = true;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            "--" => {
+                answer.extend(args.iter().skip(index + 1).cloned());
+                break;
+            }
+            value => {
+                answer.push(value.to_string());
+                index += 1;
+            }
+        }
+    }
+    Ok(BtwAnswerOptions {
+        current_only,
+        json_output,
+        output_path,
+        answer: answer.join(" "),
+    })
 }
 
 fn resolve_session_for_approval_action(
@@ -23689,52 +23820,86 @@ pub(crate) fn handle_approval(
         }
         Some("approve") => {
             let approval_id = required_arg(&args, 1, "approval request id")?;
-            let current_only =
-                parse_current_only_flag(&args[2..], "/approval approve <id> [--current]")?;
+            let options = parse_queue_action_options(
+                &args[2..],
+                "/approval approve <id> [--current] [--json] [--output path]",
+            )?;
             let session = resolve_session_for_approval_action(
                 &store,
                 current.as_deref(),
                 approval_id,
-                current_only,
+                options.current_only,
             )?;
             let item = session.update_approval_request(approval_id, ApprovalStatus::Approved)?;
-            Ok(format!(
+            let report = format!(
                 "approved request {} in session {}",
                 short_id(&item.id),
                 session.id()
-            ))
+            );
+            let output = if options.json_output {
+                format_approval_action_json(workspace, &session, "approve", &item, &report)?
+            } else {
+                report
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
         }
         Some("deny") => {
             let approval_id = required_arg(&args, 1, "approval request id")?;
-            let current_only =
-                parse_current_only_flag(&args[2..], "/approval deny <id> [--current]")?;
+            let options = parse_queue_action_options(
+                &args[2..],
+                "/approval deny <id> [--current] [--json] [--output path]",
+            )?;
             let session = resolve_session_for_approval_action(
                 &store,
                 current.as_deref(),
                 approval_id,
-                current_only,
+                options.current_only,
             )?;
             let item = session.update_approval_request(approval_id, ApprovalStatus::Denied)?;
-            Ok(format!(
+            let report = format!(
                 "denied request {} in session {}",
                 short_id(&item.id),
                 session.id()
-            ))
+            );
+            let output = if options.json_output {
+                format_approval_action_json(workspace, &session, "deny", &item, &report)?
+            } else {
+                report
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
         }
         Some("clear") => {
-            let (id, explicit) =
-                parse_optional_session_arg(&args[1..], current, "/approval clear")?;
+            let options = parse_scoped_action_args(
+                &args[1..],
+                current,
+                "/approval clear [--json] [--output path] [session_id|--current]",
+            )?;
             let (session, _note) = resolve_session_for_inspection(
                 &store,
-                &id,
-                explicit,
+                &options.session_id,
+                options.explicit_session,
                 SessionFallbackKind::PendingApprovalRequests,
             )?;
             let cleared = session.clear_pending_approval_requests()?;
-            Ok(format!(
+            let report = format!(
                 "cleared {cleared} pending approval request(s) in session {}",
                 session.id()
-            ))
+            );
+            let output = if options.json_output {
+                format_approval_clear_json(workspace, &session, cleared, &report)?
+            } else {
+                report
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
         }
         Some(other) => bail!("unsupported /approval action `{other}`"),
     }
@@ -23818,6 +23983,54 @@ fn approval_list_next_actions(
     }
     actions.push("deepcli help approval".to_string());
     dedup_preserve_order(actions)
+}
+
+fn approval_action_next_actions(session: &Session) -> Vec<String> {
+    let session_id = session.id().to_string();
+    vec![
+        format!("deepcli approval list {session_id} --json"),
+        format!("deepcli approval list {session_id} --all --json"),
+        "deepcli help approval".to_string(),
+    ]
+}
+
+fn format_approval_action_json(
+    workspace: &Path,
+    session: &Session,
+    action: &str,
+    item: &ApprovalRequest,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.approval.action.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "action": action,
+        "session": session_inspect_metadata_json(session),
+        "approval": approval_request_json(item),
+        "clearedCount": Value::Null,
+        "nextActions": approval_action_next_actions(session),
+        "report": report,
+    }))?)
+}
+
+fn format_approval_clear_json(
+    workspace: &Path,
+    session: &Session,
+    cleared: usize,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.approval.action.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "action": "clear",
+        "session": session_inspect_metadata_json(session),
+        "approval": Value::Null,
+        "clearedCount": cleared,
+        "nextActions": approval_action_next_actions(session),
+        "report": report,
+    }))?)
 }
 
 fn approval_request_json(item: &ApprovalRequest) -> Value {
@@ -23906,37 +24119,61 @@ fn handle_btw(workspace: &Path, current: Option<String>, args: Vec<String>) -> R
         }
         Some("answer") => {
             let question_id = required_arg(&args, 1, "side question id")?;
-            let (current_only, answer) =
-                parse_btw_answer_args(&args[2..], "/btw answer <id> [--current] <answer>")?;
-            if answer.trim().is_empty() {
+            let options = parse_btw_answer_args(
+                &args[2..],
+                "/btw answer <id> [--current] [--json] [--output path] <answer>",
+            )?;
+            if options.answer.trim().is_empty() {
                 bail!("/btw answer requires an answer");
             }
             let session = resolve_session_for_side_question_action(
                 &store,
                 current.as_deref(),
                 question_id,
-                current_only,
+                options.current_only,
             )?;
-            let item = session.answer_side_question(question_id, answer.trim())?;
-            Ok(format!(
+            let item = session.answer_side_question(question_id, options.answer.trim())?;
+            let report = format!(
                 "answered by-the-way question {} in session {}",
                 short_id(&item.id),
                 session.id()
-            ))
+            );
+            let output = if options.json_output {
+                format_btw_action_json(workspace, &session, "answer", &item, &report)?
+            } else {
+                report
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
         }
         Some("clear") => {
-            let (id, explicit) = parse_optional_session_arg(&args[1..], current, "/btw clear")?;
+            let options = parse_scoped_action_args(
+                &args[1..],
+                current,
+                "/btw clear [--json] [--output path] [session_id|--current]",
+            )?;
             let (session, _note) = resolve_session_for_inspection(
                 &store,
-                &id,
-                explicit,
+                &options.session_id,
+                options.explicit_session,
                 SessionFallbackKind::OpenSideQuestions,
             )?;
             let cleared = session.clear_side_questions()?;
-            Ok(format!(
+            let report = format!(
                 "cleared {cleared} open by-the-way question(s) in session {}",
                 session.id()
-            ))
+            );
+            let output = if options.json_output {
+                format_btw_clear_json(workspace, &session, cleared, &report)?
+            } else {
+                report
+            };
+            if let Some(output_path) = &options.output_path {
+                write_command_output(workspace, output_path, &output)?;
+            }
+            Ok(output)
         }
         Some(other) => bail!("unsupported /btw action `{other}`"),
     }
@@ -24008,6 +24245,54 @@ fn btw_list_next_actions(session: &Session, include_all: bool) -> Vec<String> {
     }
     actions.push("deepcli help btw".to_string());
     dedup_preserve_order(actions)
+}
+
+fn btw_action_next_actions(session: &Session) -> Vec<String> {
+    let session_id = session.id().to_string();
+    vec![
+        format!("deepcli btw list {session_id} --json"),
+        format!("deepcli btw list {session_id} --all --json"),
+        "deepcli help btw".to_string(),
+    ]
+}
+
+fn format_btw_action_json(
+    workspace: &Path,
+    session: &Session,
+    action: &str,
+    item: &SideQuestion,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.btw.action.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "action": action,
+        "session": session_inspect_metadata_json(session),
+        "question": side_question_json(item),
+        "clearedCount": Value::Null,
+        "nextActions": btw_action_next_actions(session),
+        "report": report,
+    }))?)
+}
+
+fn format_btw_clear_json(
+    workspace: &Path,
+    session: &Session,
+    cleared: usize,
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.btw.action.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "action": "clear",
+        "session": session_inspect_metadata_json(session),
+        "question": Value::Null,
+        "clearedCount": cleared,
+        "nextActions": btw_action_next_actions(session),
+        "report": report,
+    }))?)
 }
 
 fn side_question_json(item: &SideQuestion) -> Value {
@@ -32566,11 +32851,17 @@ mod tests {
         let approval_help = CommandRouter::help_for(&["approval".to_string()]).unwrap();
         assert!(approval_help.contains("/approval list [--json] [--output path]"));
         assert!(approval_help.contains("deepcli.approval.list.v1"));
+        assert!(approval_help.contains("deepcli.approval.action.v1"));
+        assert!(
+            approval_help.contains("/approval approve <id> [--current] [--json] [--output path]")
+        );
         assert!(approval_help.contains("workspace-contained file"));
 
         let btw_help = CommandRouter::help_for(&["btw".to_string()]).unwrap();
         assert!(btw_help.contains("/btw list [--json] [--output path]"));
         assert!(btw_help.contains("deepcli.btw.list.v1"));
+        assert!(btw_help.contains("deepcli.btw.action.v1"));
+        assert!(btw_help.contains("/btw answer <id> [--current] [--json] [--output path] <answer>"));
         assert!(btw_help.contains("workspace-contained file"));
 
         let session_help = CommandRouter::help_for(&["session".to_string()]).unwrap();
@@ -39586,7 +39877,7 @@ diff --git a/docs/b.md b/docs/b.md
 
         let approved = handle_approval(
             dir.path(),
-            current_id,
+            current_id.clone(),
             vec!["approve".into(), request.id.to_string()[..8].to_string()],
         )
         .unwrap();
@@ -39597,6 +39888,86 @@ diff --git a/docs/b.md b/docs/b.md
             loaded.load_approval_requests().unwrap()[0].status,
             ApprovalStatus::Approved
         );
+
+        let second_request = with_approval
+            .enqueue_approval_request(
+                "run_shell",
+                crate::permissions::PermissionDecision {
+                    outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+                    risk: crate::permissions::RiskLevel::High,
+                    reason: "shell requires approval api_key = sk-second-approval-secret"
+                        .to_string(),
+                },
+            )
+            .unwrap();
+        let approved_json = handle_approval(
+            dir.path(),
+            current_id,
+            vec![
+                "approve".into(),
+                second_request.id.to_string()[..8].to_string(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/approval-approve.json".into(),
+            ],
+        )
+        .unwrap();
+        let approved_value: Value = serde_json::from_str(&approved_json).unwrap();
+        assert_eq!(approved_value["schema"], "deepcli.approval.action.v1");
+        assert_eq!(approved_value["status"], "ok");
+        assert_eq!(approved_value["action"], "approve");
+        assert_eq!(
+            approved_value["session"]["id"],
+            with_approval.id().to_string()
+        );
+        assert_eq!(
+            approved_value["approval"]["id"],
+            second_request.id.to_string()
+        );
+        assert_eq!(approved_value["approval"]["status"], "approved");
+        assert!(!approved_json.contains("sk-second-approval-secret"));
+        let approved_next_actions = json_string_array(&approved_value["nextActions"]);
+        assert_executable_deepcli_actions(&approved_next_actions);
+        assert!(approved_next_actions.iter().any(|action| action
+            == &format!("deepcli approval list {} --all --json", with_approval.id())));
+        let approved_written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/approval-approve.json")).unwrap();
+        assert_eq!(approved_written, approved_json);
+
+        with_approval
+            .enqueue_approval_request(
+                "delete_file",
+                crate::permissions::PermissionDecision {
+                    outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+                    risk: crate::permissions::RiskLevel::High,
+                    reason: "delete requires approval api_key = sk-clear-approval-secret"
+                        .to_string(),
+                },
+            )
+            .unwrap();
+        let clear_json = handle_approval(
+            dir.path(),
+            Some(current_empty.id().to_string()),
+            vec![
+                "clear".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/approval-clear.json".into(),
+            ],
+        )
+        .unwrap();
+        let clear_value: Value = serde_json::from_str(&clear_json).unwrap();
+        assert_eq!(clear_value["schema"], "deepcli.approval.action.v1");
+        assert_eq!(clear_value["action"], "clear");
+        assert_eq!(clear_value["session"]["id"], with_approval.id().to_string());
+        assert_eq!(clear_value["approval"], Value::Null);
+        assert_eq!(clear_value["clearedCount"], 1);
+        assert!(!clear_json.contains("sk-clear-approval-secret"));
+        let clear_next_actions = json_string_array(&clear_value["nextActions"]);
+        assert_executable_deepcli_actions(&clear_next_actions);
+        let clear_written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/approval-clear.json")).unwrap();
+        assert_eq!(clear_written, clear_json);
     }
 
     #[test]
@@ -39720,6 +40091,47 @@ diff --git a/docs/b.md b/docs/b.md
             SideQuestionStatus::Answered
         );
 
+        let second_question = with_question
+            .enqueue_side_question("pick model later api_key = sk-second-btw-secret")
+            .unwrap();
+        let answered_json = handle_btw(
+            dir.path(),
+            current_id.clone(),
+            vec![
+                "answer".into(),
+                second_question.id.to_string()[..8].to_string(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/btw-answer.json".into(),
+                "after".into(),
+                "tests".into(),
+            ],
+        )
+        .unwrap();
+        let answered_value: Value = serde_json::from_str(&answered_json).unwrap();
+        assert_eq!(answered_value["schema"], "deepcli.btw.action.v1");
+        assert_eq!(answered_value["status"], "ok");
+        assert_eq!(answered_value["action"], "answer");
+        assert_eq!(
+            answered_value["session"]["id"],
+            with_question.id().to_string()
+        );
+        assert_eq!(
+            answered_value["question"]["id"],
+            second_question.id.to_string()
+        );
+        assert_eq!(answered_value["question"]["status"], "answered");
+        assert_eq!(answered_value["question"]["answer"], "after tests");
+        assert!(!answered_json.contains("sk-second-btw-secret"));
+        let answered_next_actions = json_string_array(&answered_value["nextActions"]);
+        assert_executable_deepcli_actions(&answered_next_actions);
+        assert!(answered_next_actions.iter().any(
+            |action| action == &format!("deepcli btw list {} --all --json", with_question.id())
+        ));
+        let answered_written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/btw-answer.json")).unwrap();
+        assert_eq!(answered_written, answered_json);
+
         let queued = handle_btw(
             dir.path(),
             current_id,
@@ -39728,7 +40140,30 @@ diff --git a/docs/b.md b/docs/b.md
         .unwrap();
         assert!(queued.contains(&with_question.id().to_string()));
         let reloaded = store.load(&with_question.id().to_string()).unwrap();
-        assert_eq!(reloaded.load_side_questions().unwrap().len(), 2);
+        assert_eq!(reloaded.load_side_questions().unwrap().len(), 3);
+
+        let clear_json = handle_btw(
+            dir.path(),
+            Some(current_empty.id().to_string()),
+            vec![
+                "clear".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/btw-clear.json".into(),
+            ],
+        )
+        .unwrap();
+        let clear_value: Value = serde_json::from_str(&clear_json).unwrap();
+        assert_eq!(clear_value["schema"], "deepcli.btw.action.v1");
+        assert_eq!(clear_value["action"], "clear");
+        assert_eq!(clear_value["session"]["id"], with_question.id().to_string());
+        assert_eq!(clear_value["question"], Value::Null);
+        assert_eq!(clear_value["clearedCount"], 1);
+        let clear_next_actions = json_string_array(&clear_value["nextActions"]);
+        assert_executable_deepcli_actions(&clear_next_actions);
+        let clear_written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/btw-clear.json")).unwrap();
+        assert_eq!(clear_written, clear_json);
     }
 
     #[test]

@@ -198,12 +198,16 @@ Usage:
                                    Inspect Git state, diffs, branch, or commit message suggestions
   deepcli approval list [--json] [--output path]
                                    Inspect pending approval requests
-  deepcli approval approve <id>|deny <id>|clear [session_id|--current]
-                                   Resolve or clear pending approval requests
+  deepcli approval approve <id>|deny <id> [--current] [--json] [--output path]
+                                   Resolve pending approval requests
+  deepcli approval clear [session_id|--current] [--json] [--output path]
+                                   Clear pending approval requests
   deepcli btw ask <question>|list [--json] [--output path]
                                    Queue or inspect by-the-way questions
-  deepcli btw answer <id> [--current] <answer>|clear [session_id|--current]
-                                   Answer or clear by-the-way questions
+  deepcli btw answer <id> [--current] [--json] [--output path] <answer>
+                                   Answer by-the-way questions
+  deepcli btw clear [session_id|--current] [--json] [--output path]
+                                   Clear by-the-way questions
   deepcli doctor [--quick] [--json] [--output path]
                                    Run /doctor without typing the slash
   deepcli doctor shell [--json]    Check PATH, legacy commands, and completion install
@@ -357,12 +361,12 @@ Examples:
   deepcli session history --json --output .deepcli/exports/session-history.json
   deepcli session tools --failed --json --output .deepcli/exports/session-tools.json
   deepcli approval list --json --output .deepcli/exports/approvals.json
-  deepcli approval approve 1a2b3c4d
+  deepcli approval approve 1a2b3c4d --json --output .deepcli/exports/approval-approve.json
   deepcli approval deny 1a2b3c4d
-  deepcli approval clear --current
+  deepcli approval clear --current --json --output .deepcli/exports/approval-clear.json
   deepcli btw list --json --output .deepcli/exports/btw.json
-  deepcli btw answer 1a2b3c4d 'use v4-pro unless timeout repeats'
-  deepcli btw clear --current
+  deepcli btw answer 1a2b3c4d --json --output .deepcli/exports/btw-answer.json 'use v4-pro unless timeout repeats'
+  deepcli btw clear --current --json --output .deepcli/exports/btw-clear.json
   deepcli verify
   deepcli accept --json --output .deepcli/exports/acceptance.json
   deepcli gate --json --output .deepcli/exports/gate.json

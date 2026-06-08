@@ -187,9 +187,16 @@ fn wrapper_usage_lists_collaboration_queues_where_they_are_routable() {
         run.stdout
     );
     assert!(
-        run.stdout
-            .contains("deepcli approval approve <id>|deny <id>|clear [session_id|--current]"),
+        run.stdout.contains(
+            "deepcli approval approve <id>|deny <id> [--current] [--json] [--output path]"
+        ),
         "top-level help should advertise approval resolution commands: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli approval clear [session_id|--current] [--json] [--output path]"),
+        "top-level help should advertise approval clear command: {}",
         run.stdout
     );
     assert!(
@@ -200,8 +207,14 @@ fn wrapper_usage_lists_collaboration_queues_where_they_are_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli btw answer <id> [--current] <answer>|clear [session_id|--current]"),
+            .contains("deepcli btw answer <id> [--current] [--json] [--output path] <answer>"),
         "top-level help should advertise by-the-way resolution commands: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli btw clear [session_id|--current] [--json] [--output path]"),
+        "top-level help should advertise by-the-way clear command: {}",
         run.stdout
     );
     assert!(
@@ -606,6 +619,26 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         ]
     ));
 
+    let approval_approve = run_wrapper(&[
+        "approval",
+        "approve",
+        "1a2b3c4d",
+        "--json",
+        "--output",
+        ".deepcli/exports/approval-approve.json",
+    ]);
+    assert!(ends_with_args(
+        &approval_approve.args,
+        &[
+            "/approval",
+            "approve",
+            "1a2b3c4d",
+            "--json",
+            "--output",
+            ".deepcli/exports/approval-approve.json",
+        ]
+    ));
+
     let credentials = run_wrapper(&[
         "credentials",
         "status",
@@ -934,6 +967,30 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
             "--json",
             "--output",
             ".deepcli/exports/btw.json",
+        ]
+    ));
+
+    let btw_answer = run_wrapper(&[
+        "btw",
+        "answer",
+        "1a2b3c4d",
+        "--json",
+        "--output",
+        ".deepcli/exports/btw-answer.json",
+        "after",
+        "tests",
+    ]);
+    assert!(ends_with_args(
+        &btw_answer.args,
+        &[
+            "/btw",
+            "answer",
+            "1a2b3c4d",
+            "--json",
+            "--output",
+            ".deepcli/exports/btw-answer.json",
+            "after",
+            "tests",
         ]
     ));
 }

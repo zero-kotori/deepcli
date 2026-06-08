@@ -513,6 +513,11 @@
    - 行为：不改变既有路由；`deepcli approval approve <id>`、`deepcli approval deny <id>`、`deepcli approval clear --current`、`deepcli btw answer <id> ...` 和 `deepcli btw clear --current` 仍按原有 wrapper 规则转成对应 slash command。
    - 目的：上轮让 JSON 消费方可以拿到处理动作，本轮让人工用户从顶层帮助就能发现队列处理闭环，不必先知道 `/help approval` 或 `/help btw`。
 
+101. 协作队列处理结果结构化
+   - 结果：`approval approve|deny|clear --json` 输出 `deepcli.approval.action.v1`，`btw answer|clear --json` 输出 `deepcli.btw.action.v1`。
+   - 行为：action JSON 包含 workspace、action、session、处理后的 approval/question 或 clearedCount、可执行 `nextActions` 和 report；`--output` 继续限制在 workspace 内 artifact。默认文本输出不变，wrapper 会原样转发 action JSON 参数。
+   - 目的：让外部 UI 和脚本从 list JSON 拿到处理命令后，执行处理命令也能获得稳定结构化结果并立即刷新队列，而不是解析纯文本。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 `--from-current`、手工 baseline template 或 baseline compare；如果默认 competitor baseline 缺失且本地 artifact 可完整捕获，会先提示 `baseline-template --from-current` 生成 `status=ready` 的 compare-ready baseline，再提示手工 competitor baseline template。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
@@ -545,8 +550,10 @@ DEEPCLI_TERMINAL_APP=iTerm2 ./scripts/deepcli terminal --dry-run --json
 ./scripts/deepcli --help | rg 'approval list|approval approve|btw ask|btw answer'
 ./scripts/deepcli approval list --json
 ./scripts/deepcli approval list --json | jq '.nextActions'
+./scripts/deepcli help approval | rg 'deepcli.approval.action.v1|approval approve'
 ./scripts/deepcli btw list --json
 ./scripts/deepcli btw list --json | jq '.nextActions'
+./scripts/deepcli help btw | rg 'deepcli.btw.action.v1|btw answer'
 ./scripts/deepcli sessions -h
 ./scripts/deepcli preflight --json
 ./scripts/deepcli review
