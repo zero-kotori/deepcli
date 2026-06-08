@@ -188,8 +188,20 @@ fn wrapper_usage_lists_collaboration_queues_where_they_are_routable() {
     );
     assert!(
         run.stdout
+            .contains("deepcli approval approve <id>|deny <id>|clear [session_id|--current]"),
+        "top-level help should advertise approval resolution commands: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
             .contains("deepcli btw ask <question>|list [--json] [--output path]"),
         "top-level help should advertise by-the-way question workflow: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli btw answer <id> [--current] <answer>|clear [session_id|--current]"),
+        "top-level help should advertise by-the-way resolution commands: {}",
         run.stdout
     );
     assert!(
