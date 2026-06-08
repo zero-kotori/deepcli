@@ -349,8 +349,12 @@ impl ToolExecutor {
     }
 
     pub fn execute_open_terminal_now(&self) -> Result<ToolExecution> {
+        self.execute_open_terminal_app_now("Terminal")
+    }
+
+    pub fn execute_open_terminal_app_now(&self, app: &str) -> Result<ToolExecution> {
         let name = "open_terminal";
-        let original_args = json!({});
+        let original_args = json!({ "app": app });
         if let Some(session) = &self.session {
             self.append_tool_lifecycle(
                 session,
@@ -378,7 +382,7 @@ impl ToolExecutor {
             )?;
         }
 
-        let result = self.open_terminal_now();
+        let result = self.open_terminal_app_now(app);
         if let Some(session) = &self.session {
             let (status, output) = match &result {
                 Ok(execution) => (ToolCallStatus::Succeeded, execution.raw.clone()),
@@ -1022,10 +1026,15 @@ impl ToolExecutor {
     }
 
     fn open_terminal_now(&self) -> Result<ToolExecution> {
+        self.open_terminal_app_now("Terminal")
+    }
+
+    fn open_terminal_app_now(&self, app: &str) -> Result<ToolExecution> {
+        let command = terminal_open_command(app);
         let decision = self.permissions.evaluate(&ToolRequest {
             tool: "open_terminal".to_string(),
             surface: ToolSurface::Terminal,
-            command: Some("open -a Terminal .".to_string()),
+            command: Some(command.clone()),
             path: Some(self.workspace.clone()),
             network_target: None,
             writes_files: false,
@@ -1035,10 +1044,10 @@ impl ToolExecutor {
         });
         self.ensure_allowed("open_terminal", &decision, false)?;
         #[cfg(target_os = "macos")]
-        let output = run_command_blocking(&self.workspace, "open -a Terminal .")?;
+        let output = run_command_blocking(&self.workspace, &command)?;
         #[cfg(not(target_os = "macos"))]
         let output = CommandOutput {
-            command: "open_terminal".to_string(),
+            command,
             exit_code: Some(1),
             stdout: String::new(),
             stderr: "open_terminal is only implemented for macOS".to_string(),
@@ -1353,6 +1362,10 @@ pub struct CommandOutput {
     pub exit_code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+}
+
+fn terminal_open_command(app: &str) -> String {
+    format!("open -a {} .", shell_words::quote(app))
 }
 
 pub async fn run_command(workspace: &Path, command: &str) -> Result<CommandOutput> {

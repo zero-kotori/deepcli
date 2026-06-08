@@ -1320,13 +1320,14 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/fork",
-            listing: "/fork [session_id|--current] [--dry-run|--no-open] [--verify] [--json] [--output path]",
+            listing: "/fork [session_id|--current] [--dry-run|--no-open] [--verify] [--app name] [--json] [--output path]",
             summary: "Clone a saved conversation context and optionally open a new terminal resumed into the clone.",
             usage: &[
                 "/fork",
                 "/fork --current",
                 "/fork <session_id>",
                 "/fork --current --dry-run --json",
+                "/fork --current --app iTerm2 --dry-run --json",
                 "/fork --current --no-open --verify --json",
                 "/fork --current --no-open",
                 "/fork <session_id> --json --output .deepcli/exports/fork.json",
@@ -1334,11 +1335,12 @@ fn help_topics() -> &'static [CommandHelp] {
             examples: &[
                 "/fork --current",
                 "/fork --current --dry-run --json",
+                "/fork --current --app iTerm2 --dry-run --json",
                 "/fork --current --no-open --verify --json",
                 "/fork 6155c14e --no-open",
-                "deepcli fork 6155c14e --no-open --json",
+                "deepcli fork 6155c14e --app iTerm2 --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--app iTerm2` or `--terminal-app iTerm2` when you want the fork launcher and JSON report to target another terminal app; automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -1805,20 +1807,24 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/terminal",
-            listing: "/terminal [--dry-run|--no-open] [--json] [--output path]",
+            listing: "/terminal [--dry-run|--no-open] [--app name] [--json] [--output path]",
             summary: "Open a terminal in the current workspace directory.",
             usage: &[
                 "/terminal",
+                "/terminal --app iTerm2",
                 "/terminal --dry-run",
                 "/terminal --dry-run --json",
+                "/terminal --app iTerm2 --dry-run --json",
                 "/terminal --dry-run --json --output .deepcli/exports/terminal.json",
             ],
             examples: &[
                 "/terminal",
+                "/terminal --app iTerm2",
                 "/terminal --dry-run --json",
+                "deepcli terminal --app iTerm2 --dry-run --json",
                 "deepcli terminal --dry-run --json",
             ],
-            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--dry-run` or `--no-open` to inspect the workspace and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, including `workspaceCommand` for manually entering the same workspace, and `--output` writes the selected format to a workspace-contained file."],
+            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--app iTerm2` or `--terminal-app iTerm2` to choose a macOS terminal app instead of the default Terminal; the command is shell-quoted as `open -a <app> .`. Use `--dry-run` or `--no-open` to inspect the workspace, app, and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, including `app`, `command`, `workspaceCommand` for manually entering the same workspace, and `--output` writes the selected format to a workspace-contained file."],
         },
     ]
 }
@@ -18893,11 +18899,25 @@ fn planning_question_json(question: &PlanningQuestion) -> Value {
     })
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+const DEFAULT_TERMINAL_APP: &str = "Terminal";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TerminalOptions {
     dry_run: bool,
     json_output: bool,
     output_path: Option<String>,
+    app: String,
+}
+
+impl Default for TerminalOptions {
+    fn default() -> Self {
+        Self {
+            dry_run: false,
+            json_output: false,
+            output_path: None,
+            app: DEFAULT_TERMINAL_APP.to_string(),
+        }
+    }
 }
 
 pub(crate) fn handle_terminal(
@@ -18912,23 +18932,31 @@ pub(crate) fn handle_terminal(
         return CommandRouter::help_for(&["terminal".to_string()]);
     }
     let options = parse_terminal_options(&args)?;
-    let command = terminal_open_command();
+    let command = terminal_open_command(&options.app);
     let (status, opened, detail) = if options.dry_run {
         ("dry_run", false, None)
     } else {
-        let output = executor.execute_open_terminal_now()?;
+        let output = executor.execute_open_terminal_app_now(&options.app)?;
         let exit_code = output.raw.get("exit_code").and_then(Value::as_i64);
         let opened = exit_code == Some(0);
         let status = if opened { "opened" } else { "error" };
         (status, opened, Some(output.content))
     };
-    let report = format_terminal_report(workspace, status, opened, command, detail.as_deref());
+    let report = format_terminal_report(
+        workspace,
+        status,
+        opened,
+        &options.app,
+        &command,
+        detail.as_deref(),
+    );
     let output = if options.json_output {
         format_terminal_json(
             workspace,
             status,
             opened,
-            command,
+            &options.app,
+            &command,
             detail.as_deref(),
             &report,
         )?
@@ -18954,6 +18982,19 @@ fn parse_terminal_options(args: &[String]) -> Result<TerminalOptions> {
                 options.json_output = true;
                 index += 1;
             }
+            "--app" | "--terminal-app" => {
+                options.app =
+                    parse_terminal_app_arg(required_arg(args, index + 1, "terminal app")?)?;
+                index += 2;
+            }
+            value if value.starts_with("--app=") => {
+                options.app = parse_terminal_app_arg(value.trim_start_matches("--app="))?;
+                index += 1;
+            }
+            value if value.starts_with("--terminal-app=") => {
+                options.app = parse_terminal_app_arg(value.trim_start_matches("--terminal-app="))?;
+                index += 1;
+            }
             "--output" | "-o" => {
                 let raw = required_arg(args, index + 1, "output path")?;
                 set_command_output_path(&mut options.output_path, raw)?;
@@ -18972,8 +19013,19 @@ fn parse_terminal_options(args: &[String]) -> Result<TerminalOptions> {
     Ok(options)
 }
 
-fn terminal_open_command() -> &'static str {
-    "open -a Terminal ."
+fn parse_terminal_app_arg(raw: &str) -> Result<String> {
+    let app = raw.trim();
+    if app.is_empty() {
+        bail!("terminal app cannot be empty");
+    }
+    if app.chars().any(char::is_control) {
+        bail!("terminal app cannot contain control characters");
+    }
+    Ok(app.to_string())
+}
+
+fn terminal_open_command(app: &str) -> String {
+    format!("open -a {} .", shell_words::quote(app))
 }
 
 fn terminal_supported() -> bool {
@@ -18991,12 +19043,14 @@ fn format_terminal_report(
     workspace: &Path,
     status: &str,
     opened: bool,
+    app: &str,
     command: &str,
     detail: Option<&str>,
 ) -> String {
     let mut lines = vec![
         format!("terminal status: {status}"),
         format!("workspace: {}", workspace.display()),
+        format!("terminal app: {app}"),
         format!("command: {command}"),
         format!(
             "workspace command: {}",
@@ -19009,7 +19063,7 @@ fn format_terminal_report(
         lines.push(redact_sensitive_text(detail));
     }
     lines.push("next actions:".to_string());
-    for action in terminal_next_actions(workspace, opened) {
+    for action in terminal_next_actions(workspace, opened, app) {
         lines.push(format!("  - {action}"));
     }
     lines.join("\n")
@@ -19019,6 +19073,7 @@ fn format_terminal_json(
     workspace: &Path,
     status: &str,
     opened: bool,
+    app: &str,
     command: &str,
     detail: Option<&str>,
     report: &str,
@@ -19029,22 +19084,32 @@ fn format_terminal_json(
         "workspace": workspace.display().to_string(),
         "platform": std::env::consts::OS,
         "supported": terminal_supported(),
+        "app": app,
         "command": command,
         "workspaceCommand": terminal_workspace_command(workspace),
         "opened": opened,
         "detail": detail.map(redact_sensitive_text),
-        "nextActions": terminal_next_actions(workspace, opened),
+        "nextActions": terminal_next_actions(workspace, opened, app),
         "report": report,
     }))?)
 }
 
-fn terminal_next_actions(workspace: &Path, opened: bool) -> Vec<String> {
+fn terminal_app_cli_arg(app: &str) -> String {
+    if app == DEFAULT_TERMINAL_APP {
+        String::new()
+    } else {
+        format!(" --app {}", shell_words::quote(app))
+    }
+}
+
+fn terminal_next_actions(workspace: &Path, opened: bool, app: &str) -> Vec<String> {
+    let app_arg = terminal_app_cli_arg(app);
     let mut actions = vec![
         terminal_workspace_command(workspace),
-        "deepcli terminal --dry-run --json".to_string(),
+        format!("deepcli terminal{app_arg} --dry-run --json"),
     ];
     if !opened {
-        actions.insert(1, "deepcli terminal".to_string());
+        actions.insert(1, format!("deepcli terminal{app_arg}"));
     }
     actions
 }
@@ -19059,6 +19124,7 @@ struct ForkOptions {
     verify: bool,
     json_output: bool,
     output_path: Option<String>,
+    terminal_app: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19067,6 +19133,7 @@ struct ForkReport {
     fork: SessionMetadata,
     terminal_opened: bool,
     terminal_error: Option<String>,
+    terminal_app: String,
     context_copy: ForkContextCopy,
     verification: Option<ForkVerification>,
     next_actions: Vec<String>,
@@ -19109,12 +19176,14 @@ struct ForkCountCheck {
 struct ForkTerminalOutcome<'a> {
     opened: bool,
     error: Option<&'a str>,
+    app: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ForkDryRunFlags {
+struct ForkDryRunFlags<'a> {
     would_open: bool,
     verify_requested: bool,
+    terminal_app: &'a str,
 }
 
 struct ForkReportText<'a> {
@@ -19166,7 +19235,7 @@ pub(crate) fn handle_fork(
     if options.dry_run {
         let context_copy = fork_context_copy(&source.metadata.state);
         let planned_title = planned_fork_title(&source);
-        let next_actions = fork_preview_next_actions(&source, &context_copy);
+        let next_actions = fork_preview_next_actions(&source, &context_copy, &options.terminal_app);
         let report = format_fork_dry_run_report(
             &source,
             note.as_deref(),
@@ -19174,6 +19243,7 @@ pub(crate) fn handle_fork(
             ForkDryRunFlags {
                 would_open: !options.no_open,
                 verify_requested: options.verify,
+                terminal_app: &options.terminal_app,
             },
             &context_copy,
             &next_actions,
@@ -19186,6 +19256,7 @@ pub(crate) fn handle_fork(
                 ForkDryRunFlags {
                     would_open: !options.no_open,
                     verify_requested: options.verify,
+                    terminal_app: &options.terminal_app,
                 },
                 &context_copy,
                 &next_actions,
@@ -19204,7 +19275,7 @@ pub(crate) fn handle_fork(
     let (terminal_opened, terminal_error) = if options.no_open {
         (false, None)
     } else {
-        match open_fork_terminal(workspace, &fork_id) {
+        match open_fork_terminal(workspace, &fork_id, &options.terminal_app) {
             Ok(()) => (true, None),
             Err(error) => (false, Some(error.to_string())),
         }
@@ -19215,6 +19286,7 @@ pub(crate) fn handle_fork(
             "source_session": source.id().to_string(),
             "terminal_opened": terminal_opened,
             "terminal_error": terminal_error,
+            "terminal_app": options.terminal_app.as_str(),
         }),
     )?;
     let context_copy = fork_context_copy(&source.metadata.state);
@@ -19223,7 +19295,7 @@ pub(crate) fn handle_fork(
     } else {
         None
     };
-    let next_actions = fork_next_actions(workspace, &fork_id, &context_copy);
+    let next_actions = fork_next_actions(workspace, &fork_id, &context_copy, &options.terminal_app);
     let report = format_fork_report(ForkReportText {
         workspace,
         source: &source,
@@ -19232,6 +19304,7 @@ pub(crate) fn handle_fork(
         terminal: ForkTerminalOutcome {
             opened: terminal_opened,
             error: terminal_error.as_deref(),
+            app: &options.terminal_app,
         },
         context_copy: &context_copy,
         verification: verification.as_ref(),
@@ -19242,6 +19315,7 @@ pub(crate) fn handle_fork(
         fork: fork.metadata,
         terminal_opened,
         terminal_error,
+        terminal_app: options.terminal_app,
         context_copy,
         verification,
         next_actions,
@@ -19267,6 +19341,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
     let mut json_output = false;
     let mut output_path = None;
     let mut missing_current = false;
+    let mut terminal_app = DEFAULT_TERMINAL_APP.to_string();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -19306,6 +19381,19 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
                 json_output = true;
                 index += 1;
             }
+            "--app" | "--terminal-app" => {
+                terminal_app =
+                    parse_terminal_app_arg(required_arg(args, index + 1, "terminal app")?)?;
+                index += 2;
+            }
+            value if value.starts_with("--app=") => {
+                terminal_app = parse_terminal_app_arg(value.trim_start_matches("--app="))?;
+                index += 1;
+            }
+            value if value.starts_with("--terminal-app=") => {
+                terminal_app = parse_terminal_app_arg(value.trim_start_matches("--terminal-app="))?;
+                index += 1;
+            }
             "--output" | "-o" => {
                 let raw = required_arg(args, index + 1, "output path")?;
                 set_command_output_path(&mut output_path, raw)?;
@@ -19341,6 +19429,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
         verify,
         json_output,
         output_path,
+        terminal_app,
     })
 }
 
@@ -19516,26 +19605,33 @@ fn fork_next_actions(
     workspace: &Path,
     fork_id: &str,
     context_copy: &ForkContextCopy,
+    terminal_app: &str,
 ) -> Vec<String> {
+    let app_arg = terminal_app_cli_arg(terminal_app);
     let mut actions = vec![
         fork_workspace_resume_command(workspace, fork_id),
         format!("deepcli resume {fork_id}"),
     ];
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
-        actions.push("deepcli fork --current".to_string());
+        actions.push(format!("deepcli fork --current{app_arg}"));
     }
     actions
 }
 
-fn fork_preview_next_actions(source: &Session, context_copy: &ForkContextCopy) -> Vec<String> {
+fn fork_preview_next_actions(
+    source: &Session,
+    context_copy: &ForkContextCopy,
+    terminal_app: &str,
+) -> Vec<String> {
+    let app_arg = terminal_app_cli_arg(terminal_app);
     let mut actions = vec![
-        format!("deepcli fork {}", source.id()),
-        format!("deepcli fork {} --no-open --json", source.id()),
+        format!("deepcli fork {}{}", source.id(), app_arg),
+        format!("deepcli fork {}{} --no-open --json", source.id(), app_arg),
     ];
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
-        actions.push("deepcli fork --current".to_string());
+        actions.push(format!("deepcli fork --current{app_arg}"));
     }
     actions
 }
@@ -19583,14 +19679,49 @@ fn format_fork_error_report(message: &str, next_actions: &[String]) -> String {
     lines.join("\n")
 }
 
-fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
+fn fork_terminal_auto_resume_supported(app: &str) -> bool {
+    matches!(
+        terminal_app_kind(app),
+        ForkTerminalAppKind::Terminal | ForkTerminalAppKind::ITerm2
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForkTerminalAppKind {
+    Terminal,
+    ITerm2,
+    Other,
+}
+
+fn terminal_app_kind(app: &str) -> ForkTerminalAppKind {
+    match app
+        .to_ascii_lowercase()
+        .replace([' ', '-', '_'], "")
+        .as_str()
+    {
+        "terminal" => ForkTerminalAppKind::Terminal,
+        "iterm" | "iterm2" => ForkTerminalAppKind::ITerm2,
+        _ => ForkTerminalAppKind::Other,
+    }
+}
+
+fn open_fork_terminal(workspace: &Path, fork_id: &str, app: &str) -> Result<()> {
     let command = fork_workspace_resume_command(workspace, fork_id);
     #[cfg(target_os = "macos")]
     {
-        let script = format!(
-            "tell application \"Terminal\" to do script {}",
-            apple_script_string(&command)
-        );
+        let script = match terminal_app_kind(app) {
+            ForkTerminalAppKind::Terminal => format!(
+                "tell application \"Terminal\" to do script {}",
+                apple_script_string(&command)
+            ),
+            ForkTerminalAppKind::ITerm2 => format!(
+                "tell application \"iTerm2\" to create window with default profile command {}",
+                apple_script_string(&command)
+            ),
+            ForkTerminalAppKind::Other => bail!(
+                "opening a resumed fork is only implemented for Terminal and iTerm2; rerun with --no-open and use `{command}` manually"
+            ),
+        };
         let status = ProcessCommand::new("osascript")
             .arg("-e")
             .arg(script)
@@ -19604,7 +19735,8 @@ fn open_fork_terminal(workspace: &Path, fork_id: &str) -> Result<()> {
     #[cfg(not(target_os = "macos"))]
     {
         let _ = command;
-        bail!("opening a resumed fork is only implemented for macOS Terminal; rerun with --no-open")
+        let _ = app;
+        bail!("opening a resumed fork is only implemented for macOS Terminal or iTerm2; rerun with --no-open")
     }
 }
 
@@ -19643,6 +19775,7 @@ fn format_fork_report(input: ForkReportText<'_>) -> String {
         format!("source state: {}", context_copy.source_state),
         "context copy: persisted session files only".to_string(),
         format!("resume command: deepcli resume {}", fork.id()),
+        format!("terminal app: {}", terminal.app),
     ];
     lines.push(format!(
         "workspace resume command: {}",
@@ -19655,7 +19788,10 @@ fn format_fork_report(input: ForkReportText<'_>) -> String {
         lines.push(format!("note: {note}"));
     }
     if terminal.opened {
-        lines.push("opened new Terminal with the forked conversation".to_string());
+        lines.push(format!(
+            "opened new {} with the forked conversation",
+            terminal.app
+        ));
     } else if let Some(error) = terminal.error {
         let workspace_resume_command =
             fork_workspace_resume_command(workspace, &fork.id().to_string());
@@ -19702,7 +19838,7 @@ fn format_fork_dry_run_report(
     source: &Session,
     note: Option<&str>,
     planned_title: &str,
-    flags: ForkDryRunFlags,
+    flags: ForkDryRunFlags<'_>,
     context_copy: &ForkContextCopy,
     next_actions: &[String],
 ) -> String {
@@ -19715,6 +19851,7 @@ fn format_fork_dry_run_report(
         format!("source state: {}", context_copy.source_state),
         "context copy: persisted session files only".to_string(),
         format!("planned title: {planned_title}"),
+        format!("terminal app: {}", flags.terminal_app),
         format!("would open terminal: {}", flags.would_open),
         "fork not created; rerun without --dry-run to create it".to_string(),
     ];
@@ -19751,6 +19888,8 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
         "terminal": {
             "opened": report.terminal_opened,
             "error": report.terminal_error.as_deref().map(redact_sensitive_text),
+            "app": report.terminal_app.as_str(),
+            "autoResumeSupported": fork_terminal_auto_resume_supported(&report.terminal_app),
             "resumeCommand": format!("deepcli resume {}", report.fork.id),
             "workspaceResumeCommand": fork_workspace_resume_command(workspace, &report.fork.id.to_string()),
         },
@@ -19775,7 +19914,7 @@ fn format_fork_dry_run_json(
     workspace: &Path,
     source: &Session,
     planned_title: &str,
-    flags: ForkDryRunFlags,
+    flags: ForkDryRunFlags<'_>,
     context_copy: &ForkContextCopy,
     next_actions: &[String],
     report: &str,
@@ -19796,6 +19935,8 @@ fn format_fork_dry_run_json(
         "terminal": {
             "opened": false,
             "error": Value::Null,
+            "app": flags.terminal_app,
+            "autoResumeSupported": fork_terminal_auto_resume_supported(flags.terminal_app),
             "resumeCommand": Value::Null,
             "workspaceResumeCommand": Value::Null,
             "wouldOpen": flags.would_open,
@@ -19845,6 +19986,8 @@ fn format_fork_error_json(
         "terminal": {
             "opened": false,
             "error": Value::Null,
+            "app": options.terminal_app.as_str(),
+            "autoResumeSupported": fork_terminal_auto_resume_supported(&options.terminal_app),
             "resumeCommand": Value::Null,
             "workspaceResumeCommand": Value::Null,
             "wouldOpen": !options.no_open,
@@ -31296,6 +31439,46 @@ mod tests {
         assert_eq!(store.list().unwrap().len(), before);
     }
 
+    #[test]
+    fn fork_dry_run_json_preserves_custom_terminal_app() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        session.append_message("user", "continue here").unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--app".to_string(),
+                "iTerm2".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["terminal"]["app"], "iTerm2");
+        assert_eq!(value["terminal"]["wouldOpen"], true);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli fork {} --app iTerm2", session.id())));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("terminal app: iTerm2"));
+        assert_eq!(store.list().unwrap().len(), 1);
+    }
+
     #[tokio::test]
     async fn resume_dry_run_json_previews_session_without_starting_runtime() {
         let dir = tempdir().unwrap();
@@ -31749,9 +31932,53 @@ mod tests {
     }
 
     #[test]
+    fn terminal_dry_run_json_supports_custom_terminal_app() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            config.permissions.clone(),
+            config.sandbox.clone(),
+        );
+        let executor = ToolExecutor::new(
+            dir.path(),
+            permissions,
+            None,
+            config.agent.max_subagent_depth,
+        );
+        let output = handle_terminal(
+            dir.path(),
+            &executor,
+            vec![
+                "--app".to_string(),
+                "iTerm2".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["schema"], "deepcli.terminal.v1");
+        assert_eq!(value["app"], "iTerm2");
+        assert_eq!(value["command"], "open -a iTerm2 .");
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli terminal --app iTerm2"));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli terminal --app iTerm2 --dry-run --json"));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("terminal app: iTerm2"));
+    }
+
+    #[test]
     fn terminal_opened_next_actions_are_still_executable() {
         let dir = tempdir().unwrap();
-        let actions = terminal_next_actions(dir.path(), true);
+        let actions = terminal_next_actions(dir.path(), true, DEFAULT_TERMINAL_APP);
         assert!(!actions.is_empty(), "expected terminal next actions");
         for action in &actions {
             assert!(
