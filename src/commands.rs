@@ -818,7 +818,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli round --json",
                 "deepcli iterate --json",
             ],
-            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. Each JSON gate includes `nextAction` and a gate-level `checklist[]` derived from executable next actions, so UIs can render gate remediation buttons without parsing the report. The top-level `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When all gates pass and the round is ready, `nextActions` keeps preflight/gate and then selects the current baseline step: generate `.deepcli/baselines/competitor.json` if it is missing, or run baseline compare when it exists. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready. While an agent task is running in the TUI, read-only `/round` reports are allowed; benchmark-producing `--run-benchmark`, `--run-suite`, `--preset`, `--presets`, `--fail-on-command`, and `--fail-fast` options should wait until the task is stopped or finished."],
+            notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. The JSON report includes top-level `checklist[]` for the global next-action queue, and each gate includes `nextAction` plus a gate-level `checklist[]`, so UIs can render round-level and gate-level action buttons without parsing the report. The top-level `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When all gates pass and the round is ready, `nextActions` keeps preflight/gate and then selects the current baseline step: generate `.deepcli/baselines/competitor.json` if it is missing, or run baseline compare when it exists. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready. While an agent task is running in the TUI, read-only `/round` reports are allowed; benchmark-producing `--run-benchmark`, `--run-suite`, `--preset`, `--presets`, `--fail-on-command`, and `--fail-fast` options should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/selftest",
@@ -3341,7 +3341,9 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
         "deepcli diagnose --json" => "Collect diagnostics",
         "deepcli version --json" => "Inspect version",
+        "deepcli recipes sota --json" => "Open SOTA product loop recipe",
         "deepcli benchmark presets --json" => "List benchmark presets",
+        "deepcli benchmark status --json" => "Check benchmark evidence",
         "deepcli benchmark run-suite --json --fail-on-command" => "Run benchmark suite",
         "deepcli benchmark run --preset cargo-test --json --fail-on-command" => {
             "Run cargo-test benchmark"
@@ -4149,6 +4151,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         })).collect::<Vec<_>>(),
         "gaps": &report.gaps,
         "nextActions": &report.next_actions,
+        "checklist": scorecard_action_checklist(&report.next_actions),
         "report": &report.report,
     }))?)
 }
@@ -34456,6 +34459,30 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().contains("deepcli benchmark run")));
+        let next_actions = value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action.as_str().unwrap())
+            .collect::<Vec<_>>();
+        let checklist = value["checklist"].as_array().unwrap();
+        assert_eq!(checklist.len(), next_actions.len());
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"].as_str().unwrap(), next_actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        let benchmark_refresh = checklist
+            .iter()
+            .find(|item| {
+                item["command"].as_str()
+                    == Some("deepcli round --json --run-benchmark --fail-on-command")
+            })
+            .unwrap();
+        assert_eq!(
+            benchmark_refresh["label"].as_str(),
+            Some("Refresh benchmark evidence")
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
