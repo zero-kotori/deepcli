@@ -1593,28 +1593,31 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/git",
-            listing: "/git status|diff|branch|message [--json] [--output path]|create-branch <name>|commit <message>",
+            listing: "/git status|diff|branch|message [--json] [--output path]|create-branch <name>|commit <message> [--dry-run] [--json]",
             summary: "Run common Git inspection and controlled write operations.",
             usage: &[
                 "/git status [--json] [--output path]",
                 "/git diff [--staged|--cached] [--json] [--output path]",
                 "/git branch [--json] [--output path]",
                 "/git message [--json] [--output path]",
-                "/git create-branch <name>",
-                "/git commit <message>",
+                "/git create-branch <name> [--dry-run] [--json] [--output path]",
+                "/git commit <message> [--dry-run] [--json] [--output path]",
             ],
             examples: &[
                 "/git status --json",
                 "/git diff --staged --json",
                 "/git status --json --output .deepcli/exports/git-status.json",
                 "/git message",
+                "/git create-branch feature/my-work --dry-run --json",
+                "/git commit checkpoint --dry-run --json",
                 "deepcli git status --json",
             ],
             notes: &[
                 "Read-only Git commands support the stable `deepcli.git.inspect.v1` JSON schema with executable next actions.",
                 "`--output` writes the selected read-only Git output to a workspace-contained file.",
+                "Git write dry-runs support the stable `deepcli.git.action.v1` JSON schema and do not execute Git writes.",
                 "While an agent is running, read-only `/git status|diff|branch|message` is available, but `--output` and Git write actions must wait or use `/stop` first.",
-                "Unknown read-only Git options are rejected instead of being silently ignored.",
+                "Unknown Git options are rejected instead of being silently ignored.",
                 "Branch creation and commits go through the permission policy.",
             ],
         },
@@ -29288,16 +29291,30 @@ pub(crate) async fn handle_git(
             )?)
         }
         "create-branch" => {
-            let name = parse_git_create_branch_args(&args)?;
+            let options = parse_git_create_branch_args(&args)?;
+            let command = git_create_branch_command(&options.subject);
+            if options.dry_run {
+                return format_git_action_output(workspace, &options, "create-branch", &command);
+            }
             Ok(executor
-                .execute("git_create_branch", json!({"name": name, "approved": true}))
+                .execute(
+                    "git_create_branch",
+                    json!({"name": options.subject, "approved": true}),
+                )
                 .await?
                 .content)
         }
         "commit" => {
-            let message = parse_git_commit_message_args(&args)?;
+            let options = parse_git_commit_message_args(&args)?;
+            let command = git_commit_command(&options.subject);
+            if options.dry_run {
+                return format_git_action_output(workspace, &options, "commit", &command);
+            }
             Ok(executor
-                .execute("git_commit", json!({"message": message, "approved": true}))
+                .execute(
+                    "git_commit",
+                    json!({"message": options.subject, "approved": true}),
+                )
                 .await?
                 .content)
         }
@@ -29305,35 +29322,222 @@ pub(crate) async fn handle_git(
     }
 }
 
-fn parse_git_create_branch_args(args: &[String]) -> Result<&str> {
-    let name = required_arg(args, 1, "branch name")?;
-    if name.starts_with('-') {
-        bail!("unsupported /git create-branch option `{name}`");
-    }
-    if let Some(extra) = args.get(2) {
-        bail!("unexpected /git create-branch argument `{extra}`");
-    }
-    Ok(name)
+struct GitWriteOptions {
+    subject: String,
+    dry_run: bool,
+    json_output: bool,
+    output_path: Option<String>,
 }
 
-fn parse_git_commit_message_args(args: &[String]) -> Result<String> {
-    let mut parts = Vec::new();
-    let mut literal_message = false;
-    for value in args.iter().skip(1) {
-        if !literal_message && value == "--" {
-            literal_message = true;
-            continue;
+fn parse_git_create_branch_args(args: &[String]) -> Result<GitWriteOptions> {
+    let mut name = None;
+    let mut dry_run = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut index = 1;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dry-run" | "--preview" => {
+                dry_run = true;
+                index += 1;
+            }
+            "--json" => {
+                json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(&mut output_path, value.trim_start_matches("--output="))?;
+                index += 1;
+            }
+            value if value.starts_with('-') && name.is_none() => {
+                bail!("unsupported /git create-branch option `{value}`");
+            }
+            value => {
+                if name.is_some() {
+                    bail!("unexpected /git create-branch argument `{value}`");
+                }
+                name = Some(value.to_string());
+                index += 1;
+            }
         }
-        if !literal_message && value.starts_with('-') {
-            bail!("unexpected /git commit argument `{value}`");
-        }
-        parts.push(value.as_str());
     }
-    let message = parts.join(" ");
-    if message.trim().is_empty() {
+    let subject =
+        name.ok_or_else(|| anyhow::anyhow!("/git create-branch requires a branch name"))?;
+    validate_git_branch_name(&subject)?;
+    validate_git_write_output_flags("create-branch", dry_run, json_output, output_path.as_ref())?;
+    Ok(GitWriteOptions {
+        subject,
+        dry_run,
+        json_output,
+        output_path,
+    })
+}
+
+fn parse_git_commit_message_args(args: &[String]) -> Result<GitWriteOptions> {
+    let mut parts = Vec::new();
+    let mut dry_run = false;
+    let mut json_output = false;
+    let mut output_path = None;
+    let mut literal_message = false;
+    let mut index = 1;
+    while index < args.len() {
+        let value = args[index].as_str();
+        if !literal_message {
+            match value {
+                "--" => {
+                    literal_message = true;
+                    index += 1;
+                    continue;
+                }
+                "--dry-run" | "--preview" => {
+                    dry_run = true;
+                    index += 1;
+                    continue;
+                }
+                "--json" => {
+                    json_output = true;
+                    index += 1;
+                    continue;
+                }
+                "--output" | "-o" => {
+                    let raw = required_arg(args, index + 1, "output path")?;
+                    set_command_output_path(&mut output_path, raw)?;
+                    index += 2;
+                    continue;
+                }
+                _ if value.starts_with("--output=") => {
+                    set_command_output_path(
+                        &mut output_path,
+                        value.trim_start_matches("--output="),
+                    )?;
+                    index += 1;
+                    continue;
+                }
+                _ if value.starts_with('-') => {
+                    bail!("unexpected /git commit argument `{value}`");
+                }
+                _ => {}
+            }
+        }
+        parts.push(value);
+        index += 1;
+    }
+    let subject = parts.join(" ");
+    if subject.trim().is_empty() {
         bail!("/git commit requires a message");
     }
-    Ok(message)
+    validate_git_write_output_flags("commit", dry_run, json_output, output_path.as_ref())?;
+    Ok(GitWriteOptions {
+        subject,
+        dry_run,
+        json_output,
+        output_path,
+    })
+}
+
+fn validate_git_write_output_flags(
+    action: &str,
+    dry_run: bool,
+    json_output: bool,
+    output_path: Option<&String>,
+) -> Result<()> {
+    if !dry_run && json_output {
+        bail!("/git {action} --json is only supported with --dry-run");
+    }
+    if !dry_run && output_path.is_some() {
+        bail!("/git {action} --output is only supported with --dry-run");
+    }
+    Ok(())
+}
+
+fn validate_git_branch_name(name: &str) -> Result<()> {
+    if name.starts_with('-')
+        || name.contains("..")
+        || name.contains('@')
+        || name.contains('\\')
+        || name.contains(' ')
+        || name.trim().is_empty()
+    {
+        bail!("invalid branch name `{name}`");
+    }
+    Ok(())
+}
+
+fn git_create_branch_command(name: &str) -> String {
+    format!("git switch -c {}", shell_words::quote(name))
+}
+
+fn git_commit_command(message: &str) -> String {
+    format!("git commit -m {}", shell_words::quote(message))
+}
+
+fn format_git_action_output(
+    workspace: &Path,
+    options: &GitWriteOptions,
+    action: &str,
+    command: &str,
+) -> Result<String> {
+    let next_actions = git_action_next_actions(action, &options.subject);
+    let report = format_git_action_report(action, &options.subject, command, &next_actions);
+    let output = if options.json_output {
+        serde_json::to_string_pretty(&json!({
+            "schema": "deepcli.git.action.v1",
+            "status": "dry_run",
+            "dryRun": true,
+            "workspace": workspace.display().to_string(),
+            "action": action,
+            "subject": options.subject,
+            "command": command,
+            "nextActions": next_actions,
+            "report": report,
+        }))?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn format_git_action_report(
+    action: &str,
+    subject: &str,
+    command: &str,
+    next_actions: &[String],
+) -> String {
+    let mut lines = vec![
+        format!("git {action}: dry-run"),
+        format!("subject: {}", redact_sensitive_text(subject)),
+        format!("planned command: {}", redact_sensitive_text(command)),
+        "no git write was executed".to_string(),
+        "next actions:".to_string(),
+    ];
+    lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
+    lines.join("\n")
+}
+
+fn git_action_next_actions(action: &str, subject: &str) -> Vec<String> {
+    let subject = shell_words::quote(subject);
+    let actions = match action {
+        "create-branch" => vec![
+            format!("deepcli git create-branch {subject}"),
+            "deepcli git branch --json".to_string(),
+            "deepcli git status --json".to_string(),
+        ],
+        "commit" => vec![
+            format!("deepcli git commit {subject}"),
+            "deepcli git status --json".to_string(),
+            "deepcli git message --json".to_string(),
+        ],
+        _ => vec!["deepcli git status --json".to_string()],
+    };
+    dedup_preserve_order(actions)
 }
 
 struct GitOptions {
@@ -36743,7 +36947,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn git_write_actions_reject_extra_options_before_execution() {
+    async fn git_write_actions_reject_unknown_options_before_execution() {
         let dir = tempdir().unwrap();
         write_minimal_cargo_project(dir.path());
         init_git_repo_with_baseline(dir.path());
@@ -36760,13 +36964,13 @@ mod tests {
             vec![
                 "create-branch".into(),
                 "feature/safe".into(),
-                "--dry-run".into(),
+                "--bogus".into(),
             ],
         )
         .await
         .unwrap_err()
         .to_string();
-        assert!(branch_error.contains("unexpected /git create-branch argument `--dry-run`"));
+        assert!(branch_error.contains("unexpected /git create-branch argument `--bogus`"));
         let branches = Command::new("git")
             .args(["branch", "--list", "feature/safe"])
             .current_dir(dir.path())
@@ -36784,12 +36988,104 @@ mod tests {
         let commit_error = handle_git(
             dir.path(),
             &executor,
-            vec!["commit".into(), "update".into(), "--json".into()],
+            vec!["commit".into(), "update".into(), "--bogus".into()],
         )
         .await
         .unwrap_err()
         .to_string();
-        assert!(commit_error.contains("unexpected /git commit argument `--json`"));
+        assert!(commit_error.contains("unexpected /git commit argument `--bogus`"));
+        let head_after = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(head_after.status.success());
+        assert_eq!(head_after.stdout, head_before.stdout);
+    }
+
+    #[tokio::test]
+    async fn git_write_dry_run_json_previews_without_execution() {
+        let dir = tempdir().unwrap();
+        write_minimal_cargo_project(dir.path());
+        init_git_repo_with_baseline(dir.path());
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn ok() -> bool { true }\npub fn changed() -> bool { ok() }\n",
+        )
+        .unwrap();
+        let executor = test_executor(dir.path());
+
+        let branch_output = handle_git(
+            dir.path(),
+            &executor,
+            vec![
+                "create-branch".into(),
+                "feature/preview".into(),
+                "--dry-run".into(),
+                "--json".into(),
+                "--output".into(),
+                ".deepcli/exports/git-branch-preview.json".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let branch_value: Value = serde_json::from_str(&branch_output).unwrap();
+        assert_eq!(branch_value["schema"], "deepcli.git.action.v1");
+        assert_eq!(branch_value["status"], "dry_run");
+        assert_eq!(branch_value["action"], "create-branch");
+        assert_eq!(branch_value["dryRun"], true);
+        assert_eq!(branch_value["subject"], "feature/preview");
+        assert_eq!(branch_value["command"], "git switch -c feature/preview");
+        let branch_next_actions = json_string_array(&branch_value["nextActions"]);
+        assert_executable_deepcli_actions(&branch_next_actions);
+        assert!(branch_next_actions
+            .iter()
+            .any(|action| action == "deepcli git create-branch feature/preview"));
+        let branch_written =
+            fs::read_to_string(dir.path().join(".deepcli/exports/git-branch-preview.json"))
+                .unwrap();
+        assert_eq!(branch_written, branch_output);
+        let branches = Command::new("git")
+            .args(["branch", "--list", "feature/preview"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(branches.status.success());
+        assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
+
+        let head_before = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(head_before.status.success());
+        let commit_output = handle_git(
+            dir.path(),
+            &executor,
+            vec![
+                "commit".into(),
+                "preview".into(),
+                "checkpoint".into(),
+                "--dry-run".into(),
+                "--json".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let commit_value: Value = serde_json::from_str(&commit_output).unwrap();
+        assert_eq!(commit_value["schema"], "deepcli.git.action.v1");
+        assert_eq!(commit_value["status"], "dry_run");
+        assert_eq!(commit_value["action"], "commit");
+        assert_eq!(commit_value["subject"], "preview checkpoint");
+        assert_eq!(
+            commit_value["command"],
+            "git commit -m 'preview checkpoint'"
+        );
+        let commit_next_actions = json_string_array(&commit_value["nextActions"]);
+        assert_executable_deepcli_actions(&commit_next_actions);
+        assert!(commit_next_actions
+            .iter()
+            .any(|action| action == "deepcli git commit 'preview checkpoint'"));
         let head_after = Command::new("git")
             .args(["rev-parse", "HEAD"])
             .current_dir(dir.path())

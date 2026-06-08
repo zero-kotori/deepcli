@@ -518,10 +518,10 @@
    - 行为：action JSON 包含 workspace、action、session、处理后的 approval/question 或 clearedCount、可执行 `nextActions` 和 report；`--output` 继续限制在 workspace 内 artifact。默认文本输出不变，wrapper 会原样转发 action JSON 参数。
    - 目的：让外部 UI 和脚本从 list JSON 拿到处理命令后，执行处理命令也能获得稳定结构化结果并立即刷新队列，而不是解析纯文本。
 
-102. Git 写操作参数安全与可发现性
-   - 结果：`deepcli --help` 现在显式展示 `deepcli git create-branch <name>|commit <message>`，和 `/help git` 的能力说明保持一致。
-   - 行为：`/git create-branch` 必须且只能接收一个 branch name；`/git commit` 默认拒绝 option-shaped 额外参数，若提交信息确实需要以 `-` 开头可使用 `--` 分隔。`--dry-run`、`--json` 等不再被 Git 写操作静默忽略或当作普通文本导致误执行。
-   - 目的：避免 shell 用户把 Git 写操作上的 `--dry-run` 或 `--json` 误认为安全预览/结构化输出但实际创建分支或提交，同时让受控 Git 写入口在顶层帮助中可发现。
+102. Git 写操作 dry-run 预览
+   - 结果：`deepcli git create-branch <name> --dry-run --json` 和 `deepcli git commit <message> --dry-run --json` 输出稳定 `deepcli.git.action.v1`。
+   - 行为：dry-run JSON 包含 workspace、action、subject、planned command、可执行 `nextActions` 和 report，并支持 workspace-contained `--output`；预览不会创建分支或提交。未知参数仍会在真实写操作前报错，真实 `create-branch` 和 `commit` 仍走权限策略。
+   - 目的：上一轮只避免了 `--dry-run` 被静默吞掉造成误写；本轮补上用户自然期待的安全预览，让 shell 用户、TUI 和外部 UI 可以先确认 Git 写操作再执行。
 
 ## 当前产品自评
 
@@ -553,7 +553,9 @@ DEEPCLI_TERMINAL_APP=iTerm2 ./scripts/deepcli terminal --dry-run --json
 ./scripts/deepcli --help | rg 'git status'
 ./scripts/deepcli --help | rg 'git create-branch'
 ./scripts/deepcli git status --json
-cargo test git_write_actions_reject_extra_options_before_execution
+cargo test git_write
+./scripts/deepcli git create-branch feature/preview --dry-run --json
+./scripts/deepcli git commit 'preview checkpoint' --dry-run --json
 ./scripts/deepcli --help | rg 'approval list|approval approve|btw ask|btw answer'
 ./scripts/deepcli approval list --json
 ./scripts/deepcli approval list --json | jq '.nextActions'

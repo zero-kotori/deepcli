@@ -159,7 +159,7 @@ fn wrapper_usage_lists_git_workflow_where_it_is_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli git create-branch <name>|commit <message>"),
+            .contains("deepcli git create-branch <name>|commit <message> [--dry-run] [--json]"),
         "top-level help should advertise controlled git write operations: {}",
         run.stdout
     );
