@@ -1,10 +1,10 @@
 use crate::agents::AgentStore;
 use crate::commands::{
-    handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_logs,
-    handle_preflight, handle_privacy_scan, handle_recipes, handle_restore_backup_dry_run,
-    handle_round, handle_scorecard, handle_selftest_local, handle_session, handle_terminal,
-    handle_trace, handle_usage, list_resumable_sessions, CommandHelpSummary, CommandRouter,
-    SlashCommand,
+    handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_git,
+    handle_logs, handle_preflight, handle_privacy_scan, handle_recipes,
+    handle_restore_backup_dry_run, handle_round, handle_scorecard, handle_selftest_local,
+    handle_session, handle_terminal, handle_trace, handle_usage, list_resumable_sessions,
+    CommandHelpSummary, CommandRouter, SlashCommand,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::permissions::PermissionEngine;
@@ -21,7 +21,7 @@ use crate::session::{
 };
 use crate::skills::SkillStore;
 use crate::tools::{ToolExecutor, ToolRegistry};
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -39,6 +39,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use std::env;
+use std::future::Future;
 use std::io::{self, Stdout, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -2638,6 +2639,10 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             });
             true
         }
+        SlashCommand::Git { args } => {
+            push_running_command_result(state, |active| handle_tui_running_git(active, args));
+            true
+        }
         SlashCommand::Session { args } => {
             push_running_command_result(state, |active| {
                 if matches!(
@@ -2672,7 +2677,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
@@ -2786,6 +2791,60 @@ fn ensure_running_session_is_read_only(args: &[String]) -> Result<()> {
         }
         _ => Ok(()),
     }
+}
+
+fn ensure_running_git_is_read_only(args: &[String]) -> Result<()> {
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--output" | "-o") || arg.starts_with("--output="))
+    {
+        anyhow::bail!(
+            "stop or wait for the running task before executing `/git ... --output`; it writes a file"
+        );
+    }
+    let action = args
+        .first()
+        .filter(|value| !value.starts_with('-'))
+        .map(String::as_str)
+        .unwrap_or("status");
+    if matches!(action, "status" | "diff" | "branch" | "message") {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "stop or wait for the running task before executing Git write action `/git {action}`"
+    )
+}
+
+fn handle_tui_running_git(active: &ActiveSessionRef, args: Vec<String>) -> Result<String> {
+    ensure_running_git_is_read_only(&args)?;
+    let config = AppConfig::load_effective(&active.workspace, None)?;
+    let session = SessionStore::new(&active.workspace).load(&active.session_id)?;
+    let permissions = PermissionEngine::new(
+        &active.workspace,
+        config.permissions.clone(),
+        config.sandbox.clone(),
+    );
+    let executor = ToolExecutor::new(
+        &active.workspace,
+        permissions,
+        Some(session),
+        config.agent.max_subagent_depth,
+    );
+    block_on_tui_local_future(handle_git(&active.workspace, &executor, args))
+}
+
+fn block_on_tui_local_future<F>(future: F) -> Result<String>
+where
+    F: Future<Output = Result<String>>,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        return tokio::task::block_in_place(|| handle.block_on(future));
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("failed to create local runtime for running command")?;
+    runtime.block_on(future)
 }
 
 fn push_running_command_result<F>(state: &mut TuiState, action: F)
@@ -3090,7 +3149,7 @@ fn submit_tui_input(
         state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content:
-                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
+                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项。"
                     .to_string(),
         });
         state.last_event = "input deferred while running".to_string();
@@ -6733,6 +6792,7 @@ mod tests {
             "/history",
             "/cleanup",
             "/btw",
+            "/git",
             "/stop",
             "/quit",
             "/terminal",
@@ -8963,6 +9023,109 @@ mod tests {
         assert_eq!(fork.load_messages().unwrap().len(), 2);
         assert_eq!(fork.metadata.state, SessionState::WaitingUser);
         assert!(state.last_event.starts_with("running command ok"));
+    }
+
+    #[test]
+    fn running_tui_allows_read_only_git_inspection_only() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("tracked.txt"), "base\n").unwrap();
+        run_git_for_ui_test(dir.path(), &["init"]);
+        run_git_for_ui_test(dir.path(), &["config", "user.name", "zero-kotori"]);
+        run_git_for_ui_test(
+            dir.path(),
+            &["config", "user.email", "kotorizero8@gmail.com"],
+        );
+        run_git_for_ui_test(dir.path(), &["add", "tracked.txt"]);
+        run_git_for_ui_test(dir.path(), &["commit", "-m", "baseline"]);
+        std::fs::write(dir.path().join("tracked.txt"), "base\nchanged\n").unwrap();
+
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        let mut state = TuiState {
+            runtime: None,
+            active_session: Some(ActiveSessionRef {
+                workspace: dir.path().to_path_buf(),
+                session_id: session.id().to_string(),
+            }),
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 0,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: true,
+            exit_requested: false,
+            last_event: "running".to_string(),
+            worker: None,
+        };
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/git status --json"
+        ));
+        let value: serde_json::Value =
+            serde_json::from_str(&state.chat.last().unwrap().content).unwrap();
+        assert_eq!(value["schema"], "deepcli.git.inspect.v1");
+        assert_eq!(value["kind"], "status");
+        assert!(state.last_event.starts_with("running command ok"));
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/git status --json --output .deepcli/exports/git-status.json"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line
+                    .content
+                    .contains("stop or wait for the running task before executing")
+        }));
+        assert!(!dir.path().join(".deepcli/exports/git-status.json").exists());
+
+        assert!(handle_running_tui_local_command(
+            &mut state,
+            "/git commit running"
+        ));
+        assert!(state.chat.last().is_some_and(|line| {
+            line.role == "error"
+                && line
+                    .content
+                    .contains("stop or wait for the running task before executing")
+        }));
+
+        let git_suggestions = slash_command_suggestions_for_state("/gi", true).unwrap();
+        assert!(git_suggestions
+            .iter()
+            .any(|summary| summary.name == "/git" && summary.running_safe));
+    }
+
+    fn run_git_for_ui_test(dir: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

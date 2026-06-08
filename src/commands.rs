@@ -1611,6 +1611,7 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &[
                 "Read-only Git commands support the stable `deepcli.git.inspect.v1` JSON schema with executable next actions.",
                 "`--output` writes the selected read-only Git output to a workspace-contained file.",
+                "While an agent is running, read-only `/git status|diff|branch|message` is available, but `--output` and Git write actions must wait or use `/stop` first.",
                 "Unknown read-only Git options are rejected instead of being silently ignored.",
                 "Branch creation and commits go through the permission policy.",
             ],
@@ -10986,6 +10987,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/history"
             | "/cleanup"
             | "/btw"
+            | "/git"
             | "/stop"
             | "/quit"
             | "/terminal"
@@ -28700,7 +28702,7 @@ fn format_discovered_test(command: &DiscoveredTestCommand) -> String {
     )
 }
 
-async fn handle_git(
+pub(crate) async fn handle_git(
     workspace: &Path,
     executor: &ToolExecutor,
     args: Vec<String>,
@@ -32035,6 +32037,7 @@ mod tests {
         assert!(git_help.contains("/git diff --staged --json"));
         assert!(git_help.contains("--output .deepcli/exports/git-status.json"));
         assert!(git_help.contains("deepcli.git.inspect.v1"));
+        assert!(git_help.contains("running-safe: yes"));
 
         let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
         assert!(goal_help.contains("/goal <objective>"));

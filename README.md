@@ -130,7 +130,7 @@ deepcli env test compiler --json
 
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
-TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、read-only `/session` 查看命令、`/session restore-backup --dry-run --json` 预览和 `/preflight --dry-run`；会执行 benchmark、完整 preflight、session 改名/导出/强制清理、真实恢复或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
+TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、read-only `/git status|diff|branch|message`、read-only `/session` 查看命令、`/session restore-backup --dry-run --json` 预览和 `/preflight --dry-run`；会执行 benchmark、完整 preflight、Git 写操作、session 改名/导出/强制清理、真实恢复或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
 
 任务观察面板的 quick actions 会按动作类型提示 `Enter run`、`Enter edit` 或 `Enter run/edit`，其中 `(edit)` 动作只会预填 message box。
 
