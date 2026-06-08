@@ -724,7 +724,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli recipes release",
                 "deepcli playbook support",
             ],
-            notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, shell, and sota. `product-loop`, `benchmark`, and `round` are aliases for `sota`. Use `--json` for the stable `deepcli.recipes.v1` schema."],
+            notes: &["`/recipes` is a local command catalog for task-oriented workflows. It does not create a session or call a provider; use it when `/help all` is too broad and `/quickstart` is too introductory. Supported topics are start, code, debug, release, support, environment, shell, and sota. `product-loop`, `benchmark`, and `round` are aliases for `sota`. Use `--json` for the stable `deepcli.recipes.v1` schema, including top-level `title`, `summary`, and `checklist` fields for UIs that want to render the selected workflow without parsing the text report."],
         },
         CommandHelp {
             name: "/scorecard",
@@ -2482,11 +2482,17 @@ fn format_recipes_json(
     next_actions: &[String],
     report: &str,
 ) -> Result<String> {
+    let title = recipes_json_title(topic, recipes);
+    let summary = recipes_json_summary(topic, recipes);
+    let checklist = recipes_checklist(recipes);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.recipes.v1",
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "topic": topic.unwrap_or("all"),
+        "title": title,
+        "summary": summary,
+        "checklist": checklist,
         "availableTopics": recipes_topic_names(),
         "recipes": recipes.iter().map(|recipe| json!({
             "name": recipe.name,
@@ -2498,6 +2504,97 @@ fn format_recipes_json(
         "nextActions": next_actions,
         "report": report,
     }))?)
+}
+
+fn recipes_json_title(topic: Option<&'static str>, recipes: &[Recipe]) -> String {
+    if topic.is_some() && recipes.len() == 1 {
+        recipes[0].title.to_string()
+    } else {
+        "deepcli Recipes".to_string()
+    }
+}
+
+fn recipes_json_summary(topic: Option<&'static str>, recipes: &[Recipe]) -> String {
+    if topic.is_some() && recipes.len() == 1 {
+        recipes[0].summary.to_string()
+    } else {
+        "Task-oriented command recipes for common deepcli workflows.".to_string()
+    }
+}
+
+fn recipes_checklist(recipes: &[Recipe]) -> Vec<Value> {
+    if recipes.len() == 1 {
+        let recipe = recipes[0];
+        return recipe
+            .commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| {
+                json!({
+                    "step": index + 1,
+                    "label": recipe_command_label(recipe.name, command),
+                    "command": command,
+                })
+            })
+            .collect();
+    }
+    recipes
+        .iter()
+        .enumerate()
+        .map(|(index, recipe)| {
+            json!({
+                "step": index + 1,
+                "label": format!("Open {}", recipe.title),
+                "command": format!("deepcli recipes {} --json", recipe.name),
+            })
+        })
+        .collect()
+}
+
+fn recipe_command_label(recipe_name: &str, command: &str) -> String {
+    if recipe_name == "sota" {
+        return sota_recipe_command_label(command).to_string();
+    }
+    generic_recipe_command_label(command).to_string()
+}
+
+fn sota_recipe_command_label(command: &str) -> &'static str {
+    match command {
+        "deepcli recipes sota --json" => "Open SOTA product loop recipe",
+        "deepcli scorecard --json" => "Inspect product gaps",
+        "deepcli round --json" => "Review current product round",
+        "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
+        "deepcli benchmark status --json" => "Check benchmark evidence",
+        "deepcli benchmark trends --json" => "Check benchmark trends",
+        DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION => "Create competitor baseline template",
+        DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION => "Compare against competitor baseline",
+        "deepcli benchmark gate --json" => "Gate benchmark evidence",
+        _ => generic_recipe_command_label(command),
+    }
+}
+
+fn generic_recipe_command_label(command: &str) -> &'static str {
+    if command.contains("preflight") {
+        "Run preflight checks"
+    } else if command.contains("privacy") {
+        "Run privacy scan"
+    } else if command.contains("gate") {
+        "Run delivery gate"
+    } else if command.contains("diagnose") {
+        "Collect diagnostics"
+    } else if command.contains("support") {
+        "Create support bundle"
+    } else if command.contains("completion") {
+        "Manage shell completion"
+    } else if command.contains("env plan") {
+        "Preview environment setup"
+    } else if command.contains("env test") {
+        "Test local environment"
+    } else if command.contains("status") {
+        "Inspect status"
+    } else {
+        "Run command"
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -33583,6 +33680,23 @@ mod tests {
 
         assert_eq!(value["schema"], "deepcli.recipes.v1");
         assert_eq!(value["topic"], "sota");
+        assert_eq!(value["title"], "SOTA Product Loop");
+        assert!(value["summary"]
+            .as_str()
+            .unwrap()
+            .contains("Inspect product gaps"));
+        let checklist = value["checklist"].as_array().unwrap();
+        assert!(checklist.len() >= 6);
+        assert_eq!(checklist[0]["step"], 1);
+        assert_eq!(checklist[0]["label"], "Open SOTA product loop recipe");
+        assert_eq!(checklist[0]["command"], "deepcli recipes sota --json");
+        assert!(checklist.iter().any(|item| {
+            item["label"] == "Refresh benchmark evidence"
+                && item["command"] == "deepcli round --json --run-benchmark --fail-on-command"
+        }));
+        assert!(checklist
+            .iter()
+            .all(|item| { item["command"].as_str().unwrap().starts_with("deepcli ") }));
         assert_eq!(value["recipes"].as_array().unwrap().len(), 1);
         assert_eq!(value["recipes"][0]["name"], "sota");
         let commands = value["recipes"][0]["commands"].as_array().unwrap();
