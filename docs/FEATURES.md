@@ -29,9 +29,9 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli recipes [topic]`：查看任务型工作流命令清单。
 - `deepcli goal [objective...]`：为当前会话写入长期目标契约和验收停止条件。
 - `deepcli plan <rough requirement>`：围绕不成熟需求生成澄清问题、推荐选项和需求草稿。
-- `deepcli fork [session_id|--current] [--dry-run|--no-open] [--verify] [--app name]`：预览或复制已持久化会话上下文，并可打开新终端恢复到副本，在同一历史上下文上独立继续交互；`--app iTerm2` 可选择终端 app，`--verify --json` 会输出 resume 健康检查。
+- `deepcli fork [session_id|--current] [--dry-run|--no-open] [--verify] [--app name]`：预览或复制已持久化会话上下文，并可打开新终端恢复到副本，在同一历史上下文上独立继续交互；`DEEPCLI_TERMINAL_APP=iTerm2` 可设置默认终端 app，`--app iTerm2` 可单次覆盖，`--verify --json` 会输出 resume 健康检查。
 - `deepcli git status|diff|branch|message --json [--output path]`：用稳定 `deepcli.git.inspect.v1` 输出只读 Git 检查结果、原始 stdout/stderr、report 和可执行 next actions，并可写入 workspace 内 artifact；`diff` 支持 `--staged|--cached`，未知只读参数会被拒绝，避免脚本把空输出误判为成功。
-- `deepcli terminal [--dry-run|--no-open] [--app name] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；`--app iTerm2` 可选择 macOS 终端 app，JSON 包含 app、command 和可直接复制的 `workspaceCommand`，并且 dry-run、失败和真实打开成功时的 `nextActions` 都只输出可执行的 `cd <workspace>` 或 `deepcli ...` 命令。
+- `deepcli terminal [--dry-run|--no-open] [--app name] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；`DEEPCLI_TERMINAL_APP` 可设置默认 macOS 终端 app，`--app iTerm2` 可单次覆盖，JSON 包含 app、command 和可直接复制的 `workspaceCommand`，并且 dry-run、失败和真实打开成功时的 `nextActions` 都只输出可执行的 `cd <workspace>` 或 `deepcli ...` 命令。
 - `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard、benchmark status 和最近 goal readiness，输出本轮产品迭代状态、去重后的门禁和下一步动作。
@@ -63,7 +63,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
-- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；`--app iTerm2` 或 `--terminal-app iTerm2` 可选择终端 app，Terminal 和 iTerm2 支持自动执行 resume，其他 app 应配合 `--no-open` 使用 JSON 中的 workspace resume 命令；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题、终端 app 和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code` 和 `nextActions`，shell 中误用 `--current` 时优先给出 `deepcli fork --dry-run --json`，一般 no-source JSON 动作优先给出 `deepcli resume --dry-run --json` 和 `deepcli session list --all --limit 20 --json`，不会输出 `<session_id>` 这类占位动作，方便脚本和外部 UI 不打开 TUI 也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.app`、`terminal.autoResumeSupported` 和 `terminal.workspaceResumeCommand` 中给出终端选择、自动 resume 支持状态和 `cd <workspace> && deepcli resume <new_id>`，并把同一条恢复命令放在顶层 `nextActions[0]`，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
+- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；`DEEPCLI_TERMINAL_APP=iTerm2` 可设置默认终端 app，`--app iTerm2` 或 `--terminal-app iTerm2` 可单次覆盖，Terminal 和 iTerm2 支持自动执行 resume，其他 app 应配合 `--no-open` 使用 JSON 中的 workspace resume 命令；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题、终端 app 和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code` 和 `nextActions`，shell 中误用 `--current` 时优先给出 `deepcli fork --dry-run --json`，一般 no-source JSON 动作优先给出 `deepcli resume --dry-run --json` 和 `deepcli session list --all --limit 20 --json`，不会输出 `<session_id>` 这类占位动作，方便脚本和外部 UI 不打开 TUI 也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.app`、`terminal.autoResumeSupported` 和 `terminal.workspaceResumeCommand` 中给出终端选择、自动 resume 支持状态和 `cd <workspace> && deepcli resume <new_id>`，并把同一条恢复命令放在顶层 `nextActions[0]`，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
 - 源会话处于运行中时，fork JSON 的顶层 `nextActions` 仍只给可执行命令，例如 `deepcli stop` 和 `deepcli fork --current`；不热复制内存任务的说明保留在 `contextCopy.warning` 和 `report`。
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作。
 - `/next --json` 和 `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，解释性原因保留在 `signals` 和 `report`。
@@ -153,10 +153,12 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli plan "做一个需求澄清功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md`
 - `deepcli resume --dry-run --json`
 - `deepcli fork --current --dry-run --json`
+- `DEEPCLI_TERMINAL_APP=iTerm2 deepcli fork --current --dry-run --json`
 - `deepcli fork --current --app iTerm2 --dry-run --json`
 - `deepcli fork --current --no-open --json`
 - `deepcli fork --current --no-open --verify --json`
 - `deepcli terminal --dry-run --json`
+- `DEEPCLI_TERMINAL_APP=iTerm2 deepcli terminal --dry-run --json`
 - `deepcli terminal --app iTerm2 --dry-run --json`
 - `deepcli scorecard --json`
 - `deepcli round --json`

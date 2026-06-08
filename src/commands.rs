@@ -1340,7 +1340,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --app iTerm2 --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Use `--app iTerm2` or `--terminal-app iTerm2` when you want the fork launcher and JSON report to target another terminal app; automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. Set `DEEPCLI_TERMINAL_APP=iTerm2` to make that terminal app the default for fork and terminal commands, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override; explicit flags win over the environment. Automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -1824,7 +1824,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli terminal --app iTerm2 --dry-run --json",
                 "deepcli terminal --dry-run --json",
             ],
-            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Use `--app iTerm2` or `--terminal-app iTerm2` to choose a macOS terminal app instead of the default Terminal; the command is shell-quoted as `open -a <app> .`. Use `--dry-run` or `--no-open` to inspect the workspace, app, and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, including `app`, `command`, `workspaceCommand` for manually entering the same workspace, and `--output` writes the selected format to a workspace-contained file."],
+            notes: &["`/terminal` uses the same local `open_terminal` tool as the agent runtime. Set `DEEPCLI_TERMINAL_APP=iTerm2` to change the default macOS terminal app, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override; the command is shell-quoted as `open -a <app> .`. Use `--dry-run` or `--no-open` to inspect the workspace, app, and command without creating a process. `--json` emits the stable `deepcli.terminal.v1` schema, including `app`, `command`, `workspaceCommand` for manually entering the same workspace, and `--output` writes the selected format to a workspace-contained file."],
         },
     ]
 }
@@ -18970,7 +18970,10 @@ pub(crate) fn handle_terminal(
 }
 
 fn parse_terminal_options(args: &[String]) -> Result<TerminalOptions> {
-    let mut options = TerminalOptions::default();
+    let mut options = TerminalOptions {
+        app: default_terminal_app()?,
+        ..TerminalOptions::default()
+    };
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -19022,6 +19025,17 @@ fn parse_terminal_app_arg(raw: &str) -> Result<String> {
         bail!("terminal app cannot contain control characters");
     }
     Ok(app.to_string())
+}
+
+fn default_terminal_app() -> Result<String> {
+    match std::env::var("DEEPCLI_TERMINAL_APP") {
+        Ok(value) => parse_terminal_app_arg(&value)
+            .context("invalid DEEPCLI_TERMINAL_APP terminal app value"),
+        Err(std::env::VarError::NotPresent) => Ok(DEFAULT_TERMINAL_APP.to_string()),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            bail!("DEEPCLI_TERMINAL_APP must be valid UTF-8")
+        }
+    }
 }
 
 fn terminal_open_command(app: &str) -> String {
@@ -19341,7 +19355,7 @@ fn parse_fork_options(args: &[String], current: Option<String>) -> Result<ForkOp
     let mut json_output = false;
     let mut output_path = None;
     let mut missing_current = false;
-    let mut terminal_app = DEFAULT_TERMINAL_APP.to_string();
+    let mut terminal_app = default_terminal_app()?;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -29714,10 +29728,43 @@ mod tests {
     use crate::session::{Plan, PlanStep};
     use crate::tools::{CommandOutput, EnvironmentCheck};
     use std::collections::BTreeMap;
+    use std::ffi::OsString;
     use std::fs;
     use std::path::PathBuf;
     use std::process::Command;
+    use std::sync::Mutex;
     use tempfile::tempdir;
+
+    static TERMINAL_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
 
     fn write_round_scorecard_ready_fixture(workspace: &Path) {
         fs::create_dir_all(workspace.join("docs/ai")).unwrap();
@@ -31116,6 +31163,8 @@ mod tests {
 
     #[test]
     fn fork_report_warns_when_source_session_is_running() {
+        let _lock = TERMINAL_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::remove("DEEPCLI_TERMINAL_APP");
         let dir = tempdir().unwrap();
         let store = SessionStore::new(dir.path());
         let mut session = store
@@ -31477,6 +31526,45 @@ mod tests {
             .unwrap()
             .contains("terminal app: iTerm2"));
         assert_eq!(store.list().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn fork_dry_run_json_uses_terminal_app_env_default() {
+        let _lock = TERMINAL_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set("DEEPCLI_TERMINAL_APP", "iTerm2");
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        session.append_message("user", "continue here").unwrap();
+
+        let output = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["terminal"]["app"], "iTerm2");
+        assert_eq!(value["terminal"]["autoResumeSupported"], true);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli fork {} --app iTerm2", session.id())));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("terminal app: iTerm2"));
     }
 
     #[tokio::test]
@@ -31896,6 +31984,8 @@ mod tests {
 
     #[test]
     fn terminal_dry_run_json_reports_command_without_opening_terminal() {
+        let _lock = TERMINAL_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::remove("DEEPCLI_TERMINAL_APP");
         let dir = tempdir().unwrap();
         let config = AppConfig::default();
         let permissions = PermissionEngine::new(
@@ -31969,6 +32059,43 @@ mod tests {
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli terminal --app iTerm2 --dry-run --json"));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("terminal app: iTerm2"));
+    }
+
+    #[test]
+    fn terminal_dry_run_json_uses_terminal_app_env_default() {
+        let _lock = TERMINAL_ENV_LOCK.lock().unwrap();
+        let _guard = EnvVarGuard::set("DEEPCLI_TERMINAL_APP", "iTerm2");
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            config.permissions.clone(),
+            config.sandbox.clone(),
+        );
+        let executor = ToolExecutor::new(
+            dir.path(),
+            permissions,
+            None,
+            config.agent.max_subagent_depth,
+        );
+        let output = handle_terminal(
+            dir.path(),
+            &executor,
+            vec!["--dry-run".to_string(), "--json".to_string()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["app"], "iTerm2");
+        assert_eq!(value["command"], "open -a iTerm2 .");
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli terminal --app iTerm2"));
         assert!(value["report"]
             .as_str()
             .unwrap()
