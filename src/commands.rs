@@ -20983,12 +20983,12 @@ fn format_session_prune_empty_json(
 fn session_prune_empty_next_actions(report: &SessionPruneEmptyReport) -> Vec<&'static str> {
     if !report.force && !report.candidates.is_empty() {
         vec![
-            "/session prune-empty --force",
-            "/session list --all",
-            "/history --limit 20",
+            "deepcli cleanup sessions --force",
+            "deepcli session list --all",
+            "deepcli history --limit 20",
         ]
     } else {
-        vec!["/session list", "/history --limit 20"]
+        vec!["deepcli session list", "deepcli history --limit 20"]
     }
 }
 
@@ -38180,7 +38180,32 @@ diff --git a/docs/b.md b/docs/b.md
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("--force")));
+            .any(|item| item.as_str().unwrap() == "deepcli cleanup sessions --force"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap() == "deepcli session list --all"));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item.as_str().unwrap() == "deepcli history --limit 20"));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                action.starts_with("deepcli ") && !action.starts_with("deepcli /")
+            }),
+            "session prune-empty JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                !action.starts_with("/session") && !action.contains("`/")
+            }),
+            "session prune-empty JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
+        );
         assert!(!json_dry_run.contains("sk-empty-secret"));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/prune-empty.json")).unwrap();

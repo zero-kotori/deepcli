@@ -65,7 +65,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作。
 - `/next --json` 和 `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，解释性原因保留在 `signals` 和 `report`。
 - `/session restore-backup latest --dry-run --json` 会输出稳定 `deepcli.session.restore_backup.v1` 预览，包含选中的 backup、目标文件、脱敏 diff 和下一步恢复命令；真实恢复也支持 `--json`/`--output`，但仍通过受控工具执行器写文件并记录新的 backup/diff。Agent 运行中可直接执行不带 `--output` 的 dry-run 预览；`/session rename`、`/session export`、`/session prune-empty --force`、`/session ... --output`、真实恢复和预览 artifact 写入都需要等待任务结束或先 `/stop`。
-- `/cleanup sessions` 可预览或删除空的一次性会话。
+- `/cleanup sessions` 可预览或删除空的一次性会话；JSON 顶层 `nextActions` 使用可直接执行的 `deepcli cleanup sessions --force`、`deepcli session list ...` 和 `deepcli history ...` 命令。
 
 ## Provider、模型与凭据
 
