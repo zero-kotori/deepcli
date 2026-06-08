@@ -206,6 +206,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 支持包会脱敏，便于提交 issue 或内部工单。
 
+`diagnose/support --json` 的顶层 `nextActions` 只输出可直接执行的 `deepcli ...` 命令，例如 `deepcli diagnose --full-env --json`、`deepcli diagnose --probe-provider --json`、`deepcli session diagnose --json` 和 `deepcli support .deepcli/support/latest --json`；解释性 quick links 仍保留在文本 `report` 中。
+
 ## Prompt、Skill 与子 Agent
 
 deepcli 提供可扩展的任务能力库：

@@ -909,7 +909,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/diagnose --json --output .deepcli/exports/diagnose.json",
                 "/diagnose --bundle .deepcli/support/latest",
             ],
-            notes: &["`/diagnose` is designed for first-aid checks and defaults to quick mode so it does not block on Docker or environment setup. `/diagnose docker` and `/diagnose compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `/session diagnose` when you only want a persisted session report. Use `--json` for automation, `--output` to write the selected format to a workspace-contained file, and `--bundle` to write a redacted support bundle with an issue template plus version, diagnose, quickstart, status, usage, trace, logs, and session-list artifacts."],
+            notes: &["`/diagnose` is designed for first-aid checks and defaults to quick mode so it does not block on Docker or environment setup. `/diagnose docker` and `/diagnose compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `/session diagnose` when you only want a persisted session report. Use `--json` for automation; JSON nextActions are directly executable `deepcli ...` commands while explanatory slash quick links stay in the text report. Use `--output` to write the selected format to a workspace-contained file, and `--bundle` to write a redacted support bundle with an issue template plus version, diagnose, quickstart, status, usage, trace, logs, and session-list artifacts."],
         },
         CommandHelp {
             name: "/health",
@@ -953,7 +953,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli support",
                 "deepcli support .deepcli/support/slow-run",
             ],
-            notes: &["`/support` is a shortcut for `/diagnose --bundle`; by default it writes `.deepcli/support/latest` and includes `issue.md`, `manifest.json`, `version.json`, `logs.json`, and redacted diagnostic JSON artifacts. The first non-option argument is treated as the bundle directory; use `/diagnose --bundle <dir> <session_id>` when you need an explicit positional session id. Add `--full-env` only when Docker/compiler readiness matters, and `--probe-provider` only when an online provider check is needed."],
+            notes: &["`/support` is a shortcut for `/diagnose --bundle`; by default it writes `.deepcli/support/latest` and includes `issue.md`, `manifest.json`, `version.json`, `logs.json`, and redacted diagnostic JSON artifacts. JSON nextActions are directly executable `deepcli ...` commands, so support UIs and scripts do not need to parse report quick links. The first non-option argument is treated as the bundle directory; use `/diagnose --bundle <dir> <session_id>` when you need an explicit positional session id. Add `--full-env` only when Docker/compiler readiness matters, and `--probe-provider` only when an online provider check is needed."],
         },
         CommandHelp {
             name: "/next",
@@ -14165,7 +14165,7 @@ fn format_diagnose_report_json(
         "supportBundle": support_bundle
             .map(diagnose_support_bundle_json)
             .unwrap_or(Value::Null),
-        "nextActions": diagnose_report_next_actions(report),
+        "nextActions": diagnose_next_actions(options),
         "report": report,
     }))?)
 }
@@ -14229,7 +14229,6 @@ fn write_diagnose_support_bundle(
                 &directory,
                 input.config,
                 input.options,
-                input.report,
             ))
         },
         &mut files,
@@ -14426,9 +14425,8 @@ fn format_diagnose_issue_template(
     directory: &Path,
     config: &AppConfig,
     options: &DiagnoseOptions,
-    report: &str,
 ) -> String {
-    let next_actions = diagnose_report_next_actions(report);
+    let next_actions = diagnose_next_actions(options);
     let mut lines = vec![
         "# deepcli issue report".to_string(),
         String::new(),
@@ -14524,13 +14522,39 @@ fn workspace_relative_display(workspace: &Path, path: &Path) -> String {
         .unwrap_or_else(|| path.display().to_string())
 }
 
-fn diagnose_report_next_actions(report: &str) -> Vec<String> {
-    report
-        .lines()
-        .skip_while(|line| *line != "quick links:")
-        .skip(1)
-        .filter_map(|line| line.trim().strip_prefix("- ").map(ToString::to_string))
-        .collect()
+fn diagnose_next_actions(options: &DiagnoseOptions) -> Vec<String> {
+    let mut actions = vec![
+        "deepcli quickstart".to_string(),
+        "deepcli init --quick".to_string(),
+        if options.full_environment {
+            "deepcli diagnose --json".to_string()
+        } else {
+            "deepcli diagnose --full-env --json".to_string()
+        },
+    ];
+    if options.probe_provider {
+        actions.push("deepcli diagnose --json".to_string());
+    } else {
+        actions.push("deepcli diagnose --probe-provider --json".to_string());
+    }
+    if let Some(provider) = &options.provider {
+        actions.push(format!(
+            "deepcli diagnose --probe-provider --provider {} --json",
+            shell_words::quote(provider)
+        ));
+    } else {
+        actions.push("deepcli model list --json".to_string());
+    }
+    actions.push("deepcli session diagnose --json".to_string());
+    if options.bundle_dir.is_some() {
+        actions.push("deepcli diagnose --json".to_string());
+    } else {
+        actions.push(format!(
+            "deepcli support {} --json",
+            shell_words::quote(DEFAULT_SUPPORT_BUNDLE_DIR)
+        ));
+    }
+    dedup_preserve_order(actions)
 }
 
 fn format_global_diagnose_session_section(
@@ -39921,11 +39945,14 @@ diff --git a/docs/b.md b/docs/b.md
             .contains("skipped: missing session id"));
         assert!(value["report"].as_str().unwrap().contains("quick links:"));
         assert_eq!(value["supportBundle"], Value::Null);
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|item| { item.as_str().unwrap().contains("/diagnose --full-env") }));
+            .any(|action| action == "deepcli diagnose --full-env --json"));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli support .deepcli/support/latest --json"));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/diagnose.json")).unwrap();
@@ -39976,6 +40003,11 @@ diff --git a/docs/b.md b/docs/b.md
 
         let value: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["schema"], "deepcli.diagnose.v1");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli diagnose --json"));
         assert!(value["supportBundle"]["manifest"]
             .as_str()
             .unwrap()
