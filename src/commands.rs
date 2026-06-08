@@ -1589,18 +1589,27 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/git",
-            listing: "/git status|diff|branch|message|create-branch <name>|commit <message>",
+            listing: "/git status|diff|branch|message [--json]|create-branch <name>|commit <message>",
             summary: "Run common Git inspection and controlled write operations.",
             usage: &[
-                "/git status",
-                "/git diff",
-                "/git branch",
-                "/git message",
+                "/git status [--json]",
+                "/git diff [--staged|--cached] [--json]",
+                "/git branch [--json]",
+                "/git message [--json]",
                 "/git create-branch <name>",
                 "/git commit <message>",
             ],
-            examples: &["/git status", "/git message"],
-            notes: &["Branch creation and commits go through the permission policy."],
+            examples: &[
+                "/git status --json",
+                "/git diff --staged --json",
+                "/git message",
+                "deepcli git status --json",
+            ],
+            notes: &[
+                "Read-only Git commands support the stable `deepcli.git.inspect.v1` JSON schema with executable next actions.",
+                "Unknown read-only Git options are rejected instead of being silently ignored.",
+                "Branch creation and commits go through the permission policy.",
+            ],
         },
         CommandHelp {
             name: "/web",
@@ -28688,22 +28697,60 @@ fn format_discovered_test(command: &DiscoveredTestCommand) -> String {
 }
 
 async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String> {
-    match args.first().map(String::as_str) {
-        None | Some("status") => Ok(executor.execute("git_status", json!({})).await?.content),
-        Some("diff") => Ok(executor.execute("git_diff", json!({})).await?.content),
-        Some("branch") => Ok(executor.execute("git_branch", json!({})).await?.content),
-        Some("message") => Ok(executor
-            .execute("git_commit_message", json!({}))
-            .await?
-            .content),
-        Some("create-branch") => {
+    let options = parse_git_options(&args)?;
+    match options.action.as_str() {
+        "status" => {
+            let output = executor.execute("git_status", json!({})).await?;
+            Ok(format_git_read_output(
+                &options,
+                "git status --short",
+                output.content,
+                output.raw,
+            )?)
+        }
+        "diff" => {
+            let command = if options.staged {
+                "git diff --cached"
+            } else {
+                "git diff"
+            };
+            let output = executor
+                .execute("git_diff", json!({"staged": options.staged}))
+                .await?;
+            Ok(format_git_read_output(
+                &options,
+                command,
+                output.content,
+                output.raw,
+            )?)
+        }
+        "branch" => {
+            let output = executor.execute("git_branch", json!({})).await?;
+            Ok(format_git_read_output(
+                &options,
+                "git branch --show-current && git branch --list",
+                output.content,
+                output.raw,
+            )?)
+        }
+        "message" => {
+            let output = executor.execute("git_commit_message", json!({})).await?;
+            let command = "git status --short && git diff --name-only && git diff --stat";
+            Ok(format_git_read_output(
+                &options,
+                command,
+                output.content,
+                output.raw,
+            )?)
+        }
+        "create-branch" => {
             let name = required_arg(&args, 1, "branch name")?;
             Ok(executor
                 .execute("git_create_branch", json!({"name": name, "approved": true}))
                 .await?
                 .content)
         }
-        Some("commit") => {
+        "commit" => {
             let message = args.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
             if message.trim().is_empty() {
                 bail!("/git commit requires a message");
@@ -28713,8 +28760,140 @@ async fn handle_git(executor: &ToolExecutor, args: Vec<String>) -> Result<String
                 .await?
                 .content)
         }
-        Some(other) => bail!("unsupported /git action `{other}`"),
+        other => bail!("unsupported /git action `{other}`"),
     }
+}
+
+struct GitOptions {
+    action: String,
+    json_output: bool,
+    staged: bool,
+}
+
+fn parse_git_options(args: &[String]) -> Result<GitOptions> {
+    let mut action = args.first().map(String::as_str).unwrap_or("status");
+    if action.starts_with('-') {
+        action = "status";
+    }
+    if !matches!(
+        action,
+        "status" | "diff" | "branch" | "message" | "create-branch" | "commit"
+    ) {
+        bail!("unsupported /git action `{action}`");
+    }
+    if matches!(action, "create-branch" | "commit") {
+        return Ok(GitOptions {
+            action: action.to_string(),
+            json_output: false,
+            staged: false,
+        });
+    }
+
+    let start = usize::from(args.first().is_some_and(|value| !value.starts_with('-')));
+    let mut json_output = false;
+    let mut staged = false;
+    for arg in &args[start..] {
+        match arg.as_str() {
+            "--json" => json_output = true,
+            "--staged" | "--cached" if action == "diff" => staged = true,
+            "--staged" | "--cached" => bail!("unsupported /git {action} option `{arg}`"),
+            value if value.starts_with('-') => bail!("unsupported /git {action} option `{value}`"),
+            value => bail!("unexpected /git {action} argument `{value}`"),
+        }
+    }
+    Ok(GitOptions {
+        action: action.to_string(),
+        json_output,
+        staged,
+    })
+}
+
+fn format_git_read_output(
+    options: &GitOptions,
+    command: &str,
+    content: String,
+    raw: Value,
+) -> Result<String> {
+    if !options.json_output {
+        return Ok(content);
+    }
+    let report = format_git_read_report(&options.action, command, &content, &raw);
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.git.inspect.v1",
+        "status": if git_raw_exit_code(&raw) == Some(0) { "ok" } else { "failed" },
+        "kind": options.action,
+        "command": command,
+        "exitCode": git_raw_exit_code(&raw),
+        "stdout": git_raw_string(&raw, "stdout"),
+        "stderr": git_raw_string(&raw, "stderr"),
+        "output": content,
+        "raw": raw,
+        "nextActions": git_read_next_actions(&options.action),
+        "report": report,
+    }))?)
+}
+
+fn format_git_read_report(kind: &str, command: &str, content: &str, raw: &Value) -> String {
+    let status = if git_raw_exit_code(raw) == Some(0) {
+        "ok"
+    } else {
+        "failed"
+    };
+    let mut lines = vec![
+        format!("git {kind}: {status}"),
+        format!("command: {command}"),
+    ];
+    if content.trim().is_empty() {
+        lines.push("output: clean or empty".to_string());
+    } else {
+        lines.push("output:".to_string());
+        lines.extend(content.lines().map(|line| format!("  {line}")));
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(
+        git_read_next_actions(kind)
+            .iter()
+            .map(|action| format!("  - {action}")),
+    );
+    lines.join("\n")
+}
+
+fn git_read_next_actions(kind: &str) -> Vec<String> {
+    let mut actions = match kind {
+        "status" => vec![
+            "deepcli git diff --json".to_string(),
+            "deepcli git message --json".to_string(),
+            "deepcli review".to_string(),
+        ],
+        "diff" => vec![
+            "deepcli git status --json".to_string(),
+            "deepcli git message --json".to_string(),
+            "deepcli review".to_string(),
+        ],
+        "branch" => vec![
+            "deepcli git status --json".to_string(),
+            "deepcli git message --json".to_string(),
+        ],
+        "message" => vec![
+            "deepcli git status --json".to_string(),
+            "deepcli git diff --json".to_string(),
+            "deepcli gate --json".to_string(),
+        ],
+        _ => vec!["deepcli git status --json".to_string()],
+    };
+    actions.push("deepcli help git".to_string());
+    dedup_preserve_order(actions)
+}
+
+fn git_raw_exit_code(raw: &Value) -> Option<i64> {
+    raw.get("exit_code").and_then(Value::as_i64)
+}
+
+fn git_raw_string(raw: &Value, key: &str) -> String {
+    raw.get(key)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
 }
 
 async fn handle_web(executor: &ToolExecutor, args: Vec<String>) -> Result<String> {
@@ -31808,6 +31987,11 @@ mod tests {
         assert!(providers_help.contains("/providers - "));
         assert!(providers_help.contains("/model list"));
         assert!(providers_help.contains("/model set <provider>"));
+
+        let git_help = CommandRouter::help_for(&["git".to_string()]).unwrap();
+        assert!(git_help.contains("/git status --json"));
+        assert!(git_help.contains("/git diff --staged --json"));
+        assert!(git_help.contains("deepcli.git.inspect.v1"));
 
         let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
         assert!(goal_help.contains("/goal <objective>"));
@@ -35651,6 +35835,49 @@ mod tests {
 
         assert!(error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../tests.json").exists());
+    }
+
+    #[tokio::test]
+    async fn git_status_json_outputs_structured_report_and_rejects_unknown_options() {
+        let dir = tempdir().unwrap();
+        write_minimal_cargo_project(dir.path());
+        init_git_repo_with_baseline(dir.path());
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn ok() -> bool { true }\npub fn changed() -> bool { ok() }\n",
+        )
+        .unwrap();
+        let executor = test_executor(dir.path());
+
+        let output = handle_git(&executor, vec!["status".into(), "--json".into()])
+            .await
+            .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.git.inspect.v1");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["kind"], "status");
+        assert_eq!(value["command"], "git status --short");
+        assert_eq!(value["exitCode"], 0);
+        assert!(value["stdout"].as_str().unwrap().contains("src/lib.rs"));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("git status --short"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli git diff --json"));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli git message --json"));
+
+        let error = handle_git(&executor, vec!["status".into(), "--bogus".into()])
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("unsupported /git status option `--bogus`"));
     }
 
     fn run_git(dir: &Path, args: &[&str]) {
