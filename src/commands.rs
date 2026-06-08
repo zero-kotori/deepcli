@@ -746,7 +746,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli benchmark scorecard --json",
                 "deepcli deepseek scorecard --json",
             ],
-            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, and baseline compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
+            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema; top-level `checklist[]` labels the global next-action queue while `categories[].checklist[]` labels category-specific actions. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, and baseline compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -3305,8 +3305,11 @@ fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) 
 }
 
 fn scorecard_category_checklist(category: &ScorecardCategory) -> Vec<Value> {
-    category
-        .next_actions
+    scorecard_action_checklist(&category.next_actions)
+}
+
+fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
+    actions
         .iter()
         .filter(|action| action.starts_with("deepcli ") && !action.contains('<'))
         .enumerate()
@@ -3346,6 +3349,9 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli benchmark gate --json" => "Gate benchmark evidence",
         "deepcli benchmark summary --json" => "Review benchmark summary",
         "deepcli benchmark trends --json" => "Check benchmark trends",
+        DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION => "Capture current benchmark baseline",
+        DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION => "Create competitor baseline template",
+        DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION => "Compare against competitor baseline",
         "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
         SCORECARD_ROUND_REPORT_ACTION => "Review current product round",
         _ => generic_recipe_command_label(command),
@@ -3465,6 +3471,7 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
         })).collect::<Vec<_>>(),
         "gaps": report.gaps,
         "nextActions": report.next_actions,
+        "checklist": scorecard_action_checklist(&report.next_actions),
         "report": report.report,
     }))?)
 }
@@ -34193,6 +34200,21 @@ mod tests {
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
+        );
+        let checklist = value["checklist"].as_array().unwrap();
+        assert_eq!(checklist.len(), next_actions.len());
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"].as_str().unwrap(), next_actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        assert_eq!(
+            checklist[0]["label"].as_str(),
+            Some("Refresh benchmark evidence")
+        );
+        assert_eq!(
+            checklist[6]["label"].as_str(),
+            Some("Capture current benchmark baseline")
         );
 
         let command_discovery_category = value["categories"]
