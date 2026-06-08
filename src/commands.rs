@@ -3093,33 +3093,38 @@ fn scorecard_global_next_actions(
         if benchmark_status.status == "ready"
             && round_benchmark_trends_needs_attention(benchmark_trends_status)
         {
-            let mut actions = vec![
+            let mut actions = benchmark_freshness_next_actions(benchmark_status);
+            actions.extend([
                 round_benchmark_trends_next_action(benchmark_trends_status),
                 "deepcli recipes sota --json".to_string(),
                 "deepcli benchmark trends --json".to_string(),
                 "deepcli benchmark status --json".to_string(),
                 "deepcli preflight --json".to_string(),
                 "deepcli gate --json".to_string(),
-            ];
+            ]);
             actions.extend(sota_baseline_next_actions(workspace));
             return dedup_preserve_order(actions);
         }
-        let mut actions = vec![
+        let mut actions = benchmark_freshness_next_actions(benchmark_status);
+        actions.extend([
             SCORECARD_ROUND_REPORT_ACTION.to_string(),
             "deepcli preflight --json".to_string(),
             "deepcli gate --json".to_string(),
             "deepcli recipes sota --json".to_string(),
             "deepcli benchmark trends --json".to_string(),
             "deepcli benchmark status --json".to_string(),
-        ];
+        ]);
         actions.extend(sota_baseline_next_actions(workspace));
-        return actions;
+        return dedup_preserve_order(actions);
     }
 
-    let mut next_actions = categories
-        .iter()
-        .flat_map(|category| category.priority_next_actions.clone())
-        .collect::<Vec<_>>();
+    let mut next_actions = benchmark_freshness_next_actions(benchmark_status);
+    next_actions.extend(
+        categories
+            .iter()
+            .flat_map(|category| category.priority_next_actions.clone())
+            .collect::<Vec<_>>(),
+    );
     next_actions.extend(
         categories
             .iter()
@@ -3645,6 +3650,9 @@ fn build_round_report(
     };
 
     let mut next_actions = Vec::new();
+    if benchmark_ready {
+        next_actions.extend(benchmark_freshness_next_actions(&benchmark));
+    }
     if !scorecard_threshold_ready || scorecard_has_standalone_round_gaps(&scorecard) {
         next_actions.push("deepcli scorecard --json".to_string());
     }
@@ -5783,10 +5791,7 @@ fn build_benchmark_status_report(
 }
 
 fn benchmark_status_next_actions(report: &BenchmarkStatusReport) -> Vec<String> {
-    let mut actions = Vec::new();
-    if benchmark_freshness_refresh_recommended(report) {
-        actions.push(SCORECARD_BENCHMARK_REMEDIATION_ACTION.to_string());
-    }
+    let mut actions = benchmark_freshness_next_actions(report);
     actions.extend([
         "deepcli recipes sota --json".to_string(),
         "deepcli benchmark presets --json".to_string(),
@@ -5801,6 +5806,12 @@ fn benchmark_status_next_actions(report: &BenchmarkStatusReport) -> Vec<String> 
     }
     actions.push("deepcli scorecard --json".to_string());
     dedup_preserve_order(actions)
+}
+
+fn benchmark_freshness_next_actions(report: &BenchmarkStatusReport) -> Vec<String> {
+    benchmark_freshness_refresh_action(report)
+        .map(|action| vec![action.to_string()])
+        .unwrap_or_default()
 }
 
 fn classify_benchmark_status(report: &BenchmarkStatusReport) -> &'static str {
@@ -33696,6 +33707,10 @@ mod tests {
             round_value["benchmarkStatus"]["freshness"]["status"],
             "aging"
         );
+        assert_eq!(
+            round_value["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
         assert!(round_value["gates"].as_array().unwrap().iter().any(|gate| {
             gate["id"] == "benchmark_evidence"
                 && gate["summary"]
@@ -33707,6 +33722,27 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("benchmark: status=ready ready=true artifacts=4 freshness=aging age=2d"));
+
+        let scorecard =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let scorecard_value: Value = serde_json::from_str(&scorecard).unwrap();
+        assert_eq!(
+            scorecard_value["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+
+        let recipes = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["sota".into(), "--json".into()],
+        )
+        .unwrap();
+        let recipes_value: Value = serde_json::from_str(&recipes).unwrap();
+        assert_eq!(
+            recipes_value["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
     }
 
     #[test]
