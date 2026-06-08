@@ -14349,11 +14349,12 @@ fn write_diagnose_support_bundle(
             "session": input.options.session_id.as_deref(),
         },
         "files": files.iter().map(diagnose_support_bundle_file_json).collect::<Vec<_>>(),
-        "nextActions": [
+        "nextActions": diagnose_support_bundle_next_actions(workspace, &directory),
+        "notes": [
             "attach this support bundle when reporting a deepcli issue",
             "start from issue.md when drafting a bug report or support request",
             "inspect diagnose.json first for workspace and session next actions",
-            "run `/diagnose --full-env --bundle <dir>` when environment readiness matters",
+            "run the full-environment next action when Docker, compiler, or local environment readiness matters",
         ],
     }))?;
     fs::write(&manifest_path, manifest)
@@ -14493,6 +14494,16 @@ fn diagnose_support_bundle_file_json(file: &DiagnoseSupportBundleFile) -> Value 
         "bytes": file.bytes,
         "error": file.error.as_deref(),
     })
+}
+
+fn diagnose_support_bundle_next_actions(workspace: &Path, directory: &Path) -> Vec<String> {
+    let bundle_dir = workspace_relative_display(workspace, directory);
+    let quoted_bundle_dir = shell_words::quote(&bundle_dir);
+    vec![
+        "deepcli diagnose --json".to_string(),
+        format!("deepcli support {quoted_bundle_dir} --json"),
+        format!("deepcli diagnose --full-env --bundle {quoted_bundle_dir} --json"),
+    ]
 }
 
 fn workspace_relative_display(workspace: &Path, path: &Path) -> String {
@@ -40027,11 +40038,13 @@ diff --git a/docs/b.md b/docs/b.md
         let manifest_value: Value = serde_json::from_str(&manifest).unwrap();
         assert_eq!(manifest_value["schema"], "deepcli.support_bundle.v1");
         assert_eq!(manifest_value["files"].as_array().unwrap().len(), 10);
-        assert!(manifest_value["nextActions"]
-            .as_array()
-            .unwrap()
+        let manifest_next_actions = json_string_array(&manifest_value["nextActions"]);
+        assert_executable_deepcli_actions(&manifest_next_actions);
+        assert!(manifest_next_actions
             .iter()
-            .any(|item| item.as_str().unwrap().contains("issue.md")));
+            .any(|action| action == "deepcli diagnose --json"));
+        assert!(manifest_next_actions.iter().any(|action| action
+            == "deepcli diagnose --full-env --bundle .deepcli/support/latest --json"));
 
         let issue =
             fs::read_to_string(dir.path().join(".deepcli/support/latest/issue.md")).unwrap();
