@@ -23792,8 +23792,32 @@ fn format_approval_list_json(
             .filter(|item| item.status == ApprovalStatus::Pending)
             .count(),
         "approvals": items,
+        "nextActions": approval_list_next_actions(session, include_all, requests),
         "report": report,
     }))?)
+}
+
+fn approval_list_next_actions(
+    session: &Session,
+    include_all: bool,
+    requests: &[ApprovalRequest],
+) -> Vec<String> {
+    let session_id = session.id().to_string();
+    let mut actions = Vec::new();
+    if let Some(item) = requests
+        .iter()
+        .find(|item| item.status == ApprovalStatus::Pending)
+    {
+        let short = short_id(&item.id);
+        actions.push(format!("deepcli approval approve {short}"));
+        actions.push(format!("deepcli approval deny {short}"));
+    }
+    actions.push(format!("deepcli approval list {session_id} --json"));
+    if !include_all {
+        actions.push(format!("deepcli approval list {session_id} --all --json"));
+    }
+    actions.push("deepcli help approval".to_string());
+    dedup_preserve_order(actions)
 }
 
 fn approval_request_json(item: &ApprovalRequest) -> Value {
@@ -23971,8 +23995,19 @@ fn format_btw_list_json(
             .filter(|item| item.status == SideQuestionStatus::Open)
             .count(),
         "questions": items,
+        "nextActions": btw_list_next_actions(session, include_all),
         "report": report,
     }))?)
+}
+
+fn btw_list_next_actions(session: &Session, include_all: bool) -> Vec<String> {
+    let session_id = session.id().to_string();
+    let mut actions = vec![format!("deepcli btw list {session_id} --json")];
+    if !include_all {
+        actions.push(format!("deepcli btw list {session_id} --all --json"));
+    }
+    actions.push("deepcli help btw".to_string());
+    dedup_preserve_order(actions)
 }
 
 fn side_question_json(item: &SideQuestion) -> Value {
@@ -39494,6 +39529,20 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .contains("<redacted>"));
         assert!(!list_json.contains("sk-approval-secret"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        let request_short_id = request.id.to_string()[..8].to_string();
+        assert!(next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli approval approve {request_short_id}")));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli approval deny {request_short_id}")));
+        assert!(next_actions.iter().any(|action| action
+            == &format!("deepcli approval list {} --all --json", with_approval.id())));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli help approval"));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/approvals.json")).unwrap();
         assert_eq!(written, list_json);
@@ -39514,6 +39563,26 @@ diff --git a/docs/b.md b/docs/b.md
         )
         .unwrap();
         assert_eq!(current_list, "no approval requests");
+        let current_list_json = handle_approval(
+            dir.path(),
+            current_id.clone(),
+            vec!["list".into(), "--current".into(), "--json".into()],
+        )
+        .unwrap();
+        let current_value: Value = serde_json::from_str(&current_list_json).unwrap();
+        let current_next_actions = json_string_array(&current_value["nextActions"]);
+        assert_executable_deepcli_actions(&current_next_actions);
+        assert!(current_next_actions.iter().any(|action| action
+            == &format!("deepcli approval list {} --all --json", current_empty.id())));
+        assert!(current_next_actions
+            .iter()
+            .any(|action| action == "deepcli help approval"));
+        assert!(!current_next_actions
+            .iter()
+            .any(|action| action.contains(" approve ")));
+        assert!(!current_next_actions
+            .iter()
+            .any(|action| action.contains(" deny ")));
 
         let approved = handle_approval(
             dir.path(),
@@ -39586,6 +39655,14 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .contains("explain later"));
         assert!(!list_json.contains("sk-btw-secret"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions.iter().any(
+            |action| action == &format!("deepcli btw list {} --all --json", with_question.id())
+        ));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli help btw"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/btw.json")).unwrap();
         assert_eq!(written, list_json);
 
@@ -39605,6 +39682,24 @@ diff --git a/docs/b.md b/docs/b.md
         )
         .unwrap();
         assert_eq!(current_list, "no by-the-way questions");
+        let current_list_json = handle_btw(
+            dir.path(),
+            current_id.clone(),
+            vec!["list".into(), "--current".into(), "--json".into()],
+        )
+        .unwrap();
+        let current_value: Value = serde_json::from_str(&current_list_json).unwrap();
+        let current_next_actions = json_string_array(&current_value["nextActions"]);
+        assert_executable_deepcli_actions(&current_next_actions);
+        assert!(current_next_actions.iter().any(
+            |action| action == &format!("deepcli btw list {} --all --json", current_empty.id())
+        ));
+        assert!(current_next_actions
+            .iter()
+            .any(|action| action == "deepcli help btw"));
+        assert!(!current_next_actions
+            .iter()
+            .any(|action| action.contains(" answer ")));
 
         let answered = handle_btw(
             dir.path(),

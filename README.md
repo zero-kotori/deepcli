@@ -132,6 +132,8 @@ deepcli env test compiler --json
 
 `status --json`、`usage --json`、`diagnose/support --json`、support bundle `manifest.json`、`completion status/install --json`、`git status|diff|branch|message --json`、`verify/gate/handoff --json`、`model show/list --json`、`timeout --json`、`logs --json`、`test discover|run --json`、`prompt list|get|render --json`、`skill list|run --json` 和 `agent list|show --json` 也遵守同一原则：结构化 `nextActions` 只输出可直接复制执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`git` 只读 JSON 使用稳定 `deepcli.git.inspect.v1`，包含执行命令、exit code、stdout/stderr、raw、report 和后续 Git/验收动作，支持 `--output` 写入 workspace 内 artifact，并会拒绝未知只读参数而不是静默忽略；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，support bundle 的人工说明保留在 manifest `notes` 中，当前已有 prompt、skill、agent 任务或测试命令时优先给出具体名称、短 id 或 shell-quoted command，说明性上下文保留在 `report`、help 或条目字段。
 
+`approval list --json` 和 `btw list --json` 也输出顶层可执行 `nextActions`：审批队列存在 pending 项时会给出具体 approve/deny 命令；空审批或旁路队列仍给出 `--all --json` 复查和帮助入口，避免外部 UI 或脚本遇到空队列后没有下一步。
+
 无当前会话时，`accept` / `gate` 会使用本次 workspace 测试证据，不会被历史 session 的旧失败记录污染。
 
 TUI 中 Agent 运行时仍可执行本地观察命令，包括 `/privacy`、`/fork`、`/terminal --dry-run`、`/recipes`、`/scorecard`、read-only `/round`、read-only `/benchmark` 报告子命令、read-only `/git status|diff|branch|message`、read-only `/session` 查看命令、`/session restore-backup --dry-run --json` 预览和 `/preflight --dry-run`；会执行 benchmark、完整 preflight、Git 写操作、shell completion 安装、session 改名/导出/强制清理、真实恢复、`--output` artifact 写入或 artifact 维护的动作需要等待当前任务结束或先 `/stop`。
