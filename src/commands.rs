@@ -1336,7 +1336,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. No-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -19516,11 +19516,11 @@ fn fork_source_error(
     code: &str,
     message: &str,
 ) -> Result<String> {
-    if !options.json_output {
-        bail!("{}", message);
-    }
-    let next_actions = fork_error_next_actions();
+    let next_actions = fork_error_next_actions(code);
     let report = format_fork_error_report(message, &next_actions);
+    if !options.json_output {
+        bail!("{}", report);
+    }
     let output = format_fork_error_json(workspace, options, code, message, &next_actions, &report)?;
     if let Some(output_path) = &options.output_path {
         write_command_output(workspace, output_path, &output)?;
@@ -19528,12 +19528,17 @@ fn fork_source_error(
     Err(CommandExit::new(output, 1).into())
 }
 
-fn fork_error_next_actions() -> Vec<String> {
-    vec![
+fn fork_error_next_actions(code: &str) -> Vec<String> {
+    let mut actions = Vec::new();
+    if code == "no_active_session" {
+        actions.push("deepcli fork --dry-run --json".to_string());
+    }
+    actions.extend([
         "deepcli resume --dry-run --json".to_string(),
         "deepcli session list --all --limit 20 --json".to_string(),
         "deepcli sessions --all --limit 20".to_string(),
-    ]
+    ]);
+    dedup_preserve_order(actions)
 }
 
 fn format_fork_error_report(message: &str, next_actions: &[String]) -> String {
@@ -30829,6 +30834,7 @@ mod tests {
         .unwrap_err();
 
         assert!(error.to_string().contains("omit `--current`"));
+        assert!(error.to_string().contains("deepcli fork --dry-run --json"));
         assert!(error
             .to_string()
             .contains("deepcli resume --dry-run --json"));
@@ -30866,7 +30872,12 @@ mod tests {
         assert_eq!(value["source"], Value::Null);
         assert_eq!(value["fork"], Value::Null);
         assert_eq!(value["error"]["code"], "no_active_session");
-        assert_eq!(value["nextActions"][0], "deepcli resume --dry-run --json");
+        assert_eq!(value["nextActions"][0], "deepcli fork --dry-run --json");
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli resume --dry-run --json")));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
