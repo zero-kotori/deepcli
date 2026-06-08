@@ -3283,6 +3283,53 @@ fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) 
     category.next_actions = dedup_preserve_order(actions);
 }
 
+fn scorecard_category_checklist(category: &ScorecardCategory) -> Vec<Value> {
+    category
+        .next_actions
+        .iter()
+        .filter(|action| action.starts_with("deepcli ") && !action.contains('<'))
+        .enumerate()
+        .map(|(index, command)| {
+            json!({
+                "step": index + 1,
+                "label": scorecard_checklist_label(command),
+                "command": command,
+            })
+        })
+        .collect()
+}
+
+fn scorecard_checklist_label(command: &str) -> &'static str {
+    match command {
+        "deepcli quickstart --json" => "Open quickstart readiness",
+        "deepcli recipes" => "Open workflow recipes",
+        "deepcli completion json" => "Export command catalog",
+        "deepcli status --json" => "Inspect current status",
+        "deepcli review" => "Review current diff",
+        "deepcli test discover --json" => "Discover test commands",
+        "deepcli resume" => "Resume saved work",
+        "deepcli sessions --all --limit 20" => "List saved sessions",
+        "deepcli next --json" => "Inspect recovery actions",
+        "deepcli handoff --pr" => "Prepare PR handoff",
+        "deepcli permissions show --json" => "Inspect permissions",
+        "deepcli credentials status --json" => "Inspect credentials",
+        "deepcli model list --json" => "List configured models",
+        "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
+        "deepcli diagnose --json" => "Collect diagnostics",
+        "deepcli version --json" => "Inspect version",
+        "deepcli benchmark presets --json" => "List benchmark presets",
+        "deepcli benchmark run-suite --json --fail-on-command" => "Run benchmark suite",
+        "deepcli benchmark run --preset cargo-test --json --fail-on-command" => {
+            "Run cargo-test benchmark"
+        }
+        "deepcli benchmark gate --json" => "Gate benchmark evidence",
+        "deepcli benchmark trends --json" => "Check benchmark trends",
+        "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
+        SCORECARD_ROUND_REPORT_ACTION => "Review current product round",
+        _ => generic_recipe_command_label(command),
+    }
+}
+
 fn scorecard_percent(score: u16, max_score: u16) -> u8 {
     if max_score == 0 {
         return 0;
@@ -3392,6 +3439,7 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
             "evidence": category.evidence,
             "gaps": category.gaps,
             "nextActions": category.next_actions,
+            "checklist": scorecard_category_checklist(category),
         })).collect::<Vec<_>>(),
         "gaps": report.gaps,
         "nextActions": report.next_actions,
@@ -5605,6 +5653,7 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
             "percent": scorecard_percent(category.score, category.max_score),
             "gaps": category.gaps,
             "nextActions": category.next_actions,
+            "checklist": scorecard_category_checklist(category),
         })).collect::<Vec<_>>(),
     })
 }
@@ -33903,6 +33952,39 @@ mod tests {
             .unwrap()
             .iter()
             .any(|category| category["id"] == "verification_delivery"));
+        let categories = value["categories"].as_array().unwrap();
+        for category in categories {
+            let checklist = category["checklist"].as_array().unwrap();
+            assert!(
+                !checklist.is_empty(),
+                "scorecard category should expose checklist items: {category:?}"
+            );
+            for (index, item) in checklist.iter().enumerate() {
+                assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+                assert!(item["label"].as_str().unwrap().len() >= 3);
+                let command = item["command"].as_str().unwrap();
+                assert!(
+                    command.starts_with("deepcli "),
+                    "scorecard checklist command should be directly executable: {command}"
+                );
+                assert!(
+                    !command.contains('<'),
+                    "scorecard checklist command should not contain placeholders: {command}"
+                );
+            }
+        }
+        let command_discovery = categories
+            .iter()
+            .find(|category| category["id"] == "command_discovery")
+            .unwrap();
+        assert_eq!(
+            command_discovery["checklist"][0]["command"],
+            "deepcli quickstart --json"
+        );
+        assert_eq!(
+            command_discovery["checklist"][0]["label"],
+            "Open quickstart readiness"
+        );
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
@@ -34218,6 +34300,27 @@ mod tests {
         assert_eq!(
             benchmark_category["nextActions"][0].as_str(),
             Some("deepcli round --json --run-benchmark --fail-on-command")
+        );
+        assert_eq!(
+            benchmark_category["checklist"][0]["command"].as_str(),
+            Some("deepcli round --json --run-benchmark --fail-on-command")
+        );
+        assert_eq!(
+            benchmark_category["checklist"][0]["label"].as_str(),
+            Some("Refresh benchmark evidence")
+        );
+        let cargo_test_benchmark = benchmark_category["checklist"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["command"].as_str()
+                    == Some("deepcli benchmark run --preset cargo-test --json --fail-on-command")
+            })
+            .unwrap();
+        assert_eq!(
+            cargo_test_benchmark["label"].as_str(),
+            Some("Run cargo-test benchmark")
         );
         assert!(value["nextActions"]
             .as_array()
