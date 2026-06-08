@@ -970,7 +970,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/next --json --output .deepcli/exports/next.json",
                 "/session next",
             ],
-            notes: &["`/next` is a shortcut for `/session next`. It aggregates pending approvals, by-the-way questions, failed tools, failed tests, incomplete plan steps, and resume links. Use `--json` for the stable `deepcli.next.v1` schema in TUI panels, external UIs, scripts, or handoff automation. Use `--output` to write the selected format to a workspace-contained file."],
+            notes: &["`/next` is a shortcut for `/session next`. It aggregates pending approvals, by-the-way questions, failed tools, failed tests, incomplete plan steps, and resume links. Use `--json` for the stable `deepcli.next.v1` schema in TUI panels, external UIs, scripts, or handoff automation; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands, while explanatory context remains in `signals` and `report`. Use `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/doctor",
@@ -1709,7 +1709,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/session export [session_id|--current] [path]",
             ],
             examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run --json", "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json", "/session export"],
-            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. Search JSON also includes next actions: resume preview, history, next, and diagnose for the top hit, or list/resume actions when nothing matches. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, `/session` is limited to read-only inspection and restore-backup dry-run preview without `--output`; rename, export, forced cleanup, real restore, and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
+            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. Search JSON also includes next actions: resume preview, history, next, and diagnose for the top hit, or list/resume actions when nothing matches. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema, where `recommendedNextActions` and `quickLinks` also use executable `deepcli ...` commands, and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, `/session` is limited to read-only inspection and restore-backup dry-run preview without `--output`; rename, export, forced cleanup, real restore, and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
         },
         CommandHelp {
             name: "/history",
@@ -22822,10 +22822,98 @@ fn format_session_next_json(
         "note": note,
         "session": session_next_session_json(session)?,
         "signals": session_next_signals_json(session)?,
-        "nextActions": session_next_action_items_from_report(report),
-        "quickLinks": session_quick_link_items_from_report(report),
+        "nextActions": session_next_action_items(session)?,
+        "quickLinks": session_quick_link_items(session),
         "report": report,
     }))?)
+}
+
+fn session_next_action_items(session: &Session) -> Result<Vec<String>> {
+    let short = short_id(&session.id());
+    let mut actions = Vec::new();
+    match session.metadata.state {
+        SessionState::Paused | SessionState::Failed | SessionState::WaitingUser => {
+            push_unique_action(&mut actions, format!("deepcli resume {short}"));
+        }
+        SessionState::AwaitingApproval => {
+            push_unique_action(
+                &mut actions,
+                format!("deepcli approval list {short} --json"),
+            );
+        }
+        _ => {}
+    }
+
+    let approvals = session.load_approval_requests()?;
+    if approvals
+        .iter()
+        .any(|item| item.status == ApprovalStatus::Pending)
+    {
+        push_unique_action(
+            &mut actions,
+            format!("deepcli approval list {short} --json"),
+        );
+    }
+
+    let questions = session.load_side_questions()?;
+    if questions
+        .iter()
+        .any(|item| item.status == SideQuestionStatus::Open)
+    {
+        push_unique_action(&mut actions, format!("deepcli btw list {short} --json"));
+    }
+
+    if !load_recent_failed_tool_calls(session, 5)?.is_empty() {
+        push_unique_action(
+            &mut actions,
+            format!("deepcli session tools --failed --limit 5 {short} --json"),
+        );
+    }
+
+    let tests = session.load_test_runs()?;
+    if tests.iter().any(|item| !item.passed) {
+        push_unique_action(
+            &mut actions,
+            format!("deepcli session tests --limit 5 {short} --json"),
+        );
+    }
+
+    if let Some(plan) = session.load_plan()? {
+        if plan.steps.iter().any(|step| {
+            matches!(
+                step.status,
+                PlanStepStatus::Pending | PlanStepStatus::InProgress | PlanStepStatus::Failed
+            )
+        }) {
+            push_unique_action(&mut actions, format!("deepcli resume {short}"));
+        }
+    }
+
+    if actions.is_empty() {
+        push_unique_action(&mut actions, format!("deepcli status {short} --json"));
+        push_unique_action(&mut actions, format!("deepcli usage {short} --json"));
+        push_unique_action(
+            &mut actions,
+            format!("deepcli trace --limit 30 {short} --json"),
+        );
+    }
+
+    Ok(actions)
+}
+
+fn session_quick_link_items(session: &Session) -> Vec<String> {
+    let short = short_id(&session.id());
+    vec![
+        format!("deepcli resume {short}"),
+        format!("deepcli session history {short} --limit 20 --json"),
+        format!("deepcli usage {short} --json"),
+    ]
+}
+
+fn push_unique_action(actions: &mut Vec<String>, action: String) {
+    if !actions.iter().any(|existing| existing == &action) {
+        actions.push(action);
+    }
 }
 
 fn session_next_session_json(session: &Session) -> Result<Value> {
@@ -23133,7 +23221,6 @@ fn format_session_diagnosis_json(
         let redacted = redact_sensitive_text(summary.trim());
         (!redacted.is_empty()).then(|| truncate_display(&redacted, 600))
     });
-    let next_report = format_session_next_actions(session)?;
 
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.diagnose.v1",
@@ -23184,8 +23271,8 @@ fn format_session_diagnosis_json(
             .as_ref()
             .map(session_diagnosis_plan_json)
             .unwrap_or(Value::Null),
-        "recommendedNextActions": session_next_action_items_from_report(&next_report),
-        "quickLinks": session_quick_link_items_from_report(report),
+        "recommendedNextActions": session_next_action_items(session)?,
+        "quickLinks": session_quick_link_items(session),
         "report": report,
     }))?)
 }
@@ -23283,23 +23370,6 @@ fn session_next_action_items_from_report(report: &str) -> Vec<String> {
         }
     }
     actions
-}
-
-fn session_quick_link_items_from_report(report: &str) -> Vec<String> {
-    let mut in_quick_links = false;
-    let mut links = Vec::new();
-    for line in report.lines() {
-        if line == "quick links:" {
-            in_quick_links = true;
-            continue;
-        }
-        if in_quick_links {
-            if let Some(item) = line.strip_prefix("- ") {
-                links.push(item.to_string());
-            }
-        }
-    }
-    links
 }
 
 fn format_session_diffs(records: &[SessionDiffRecord], limit: usize) -> String {
@@ -37539,16 +37609,39 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["signals"]["failedTests"], 1);
         assert_eq!(value["signals"]["incompletePlanSteps"], 2);
         assert!(value["signals"]["hasNextActionSignals"].as_bool().unwrap());
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let short = short_id(&actionable.id());
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(next_actions
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/approval list")));
-        assert!(value["quickLinks"]
-            .as_array()
-            .unwrap()
+            .all(|item| item.as_str().unwrap().starts_with("deepcli ")));
+        assert!(next_actions
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/resume")));
+            .all(|item| !item.as_str().unwrap().contains("`/")));
+        assert!(next_actions.iter().any(|item| {
+            item.as_str() == Some(&format!("deepcli approval list {short} --json"))
+        }));
+        assert!(next_actions
+            .iter()
+            .any(|item| item.as_str() == Some(&format!("deepcli btw list {short} --json"))));
+        assert!(next_actions.iter().any(|item| {
+            item.as_str()
+                == Some(&format!(
+                    "deepcli session tools --failed --limit 5 {short} --json"
+                ))
+        }));
+        assert!(next_actions.iter().any(|item| {
+            item.as_str() == Some(&format!("deepcli session tests --limit 5 {short} --json"))
+        }));
+        assert!(next_actions
+            .iter()
+            .any(|item| item.as_str() == Some(&format!("deepcli resume {short}"))));
+        let quick_links = value["quickLinks"].as_array().unwrap();
+        assert!(quick_links
+            .iter()
+            .all(|item| item.as_str().unwrap().starts_with("deepcli ")));
+        assert!(quick_links
+            .iter()
+            .any(|item| item.as_str() == Some(&format!("deepcli resume {short}"))));
         assert!(value["report"].as_str().unwrap().contains("next actions:"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/next.json")).unwrap();
         assert_eq!(written, json_output);
@@ -37626,16 +37719,20 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["recentFailures"][0]["output"]["apiKey"], "<redacted>");
         assert_eq!(value["recentTests"][0]["command"], "cargo test");
         assert_eq!(value["plan"]["incomplete"], 2);
-        assert!(value["recommendedNextActions"]
-            .as_array()
-            .unwrap()
+        let recommended = value["recommendedNextActions"].as_array().unwrap();
+        assert!(recommended
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/approval list")));
-        assert!(value["quickLinks"]
-            .as_array()
-            .unwrap()
+            .all(|item| item.as_str().unwrap().starts_with("deepcli ")));
+        assert!(recommended.iter().any(|item| {
+            item.as_str() == Some(&format!("deepcli approval list {short} --json"))
+        }));
+        let quick_links = value["quickLinks"].as_array().unwrap();
+        assert!(quick_links
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/usage")));
+            .all(|item| item.as_str().unwrap().starts_with("deepcli ")));
+        assert!(quick_links
+            .iter()
+            .any(|item| item.as_str() == Some(&format!("deepcli usage {short} --json"))));
         assert!(value["report"]
             .as_str()
             .unwrap()
