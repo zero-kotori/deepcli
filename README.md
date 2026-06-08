@@ -250,7 +250,7 @@ TERM_PROGRAM=iTerm.app ./scripts/deepcli terminal --dry-run --json
 
 `quickstart --json`、`selftest --json`、`version/about --json` 和 `health/doctor --json` 的顶层 `nextActions` 都是可直接复制到 shell 的命令；首次引导和诊断说明继续放在 `steps`、`report`、`environment`、`shell` 等解释性字段中，外部 UI 或脚本不需要解析 `run \`/...\`` 文本才能推进下一步。
 
-`preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 可跳过较慢的 clippy/gate，并将 privacy 计划切换为 `privacy --no-history` 以加快本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；文本和 JSON 报告会汇总总耗时、最慢检查、最大输出检查和失败的 required check，便于快速定位发布前检查慢或噪声大的原因。
+`preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 可跳过较慢的 clippy/gate，并将 privacy 计划切换为 `privacy --no-history` 以加快本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；JSON 顶层 `checklist[]` 会把检查队列结构化为 `step`、`label`、`command`、`status` 和 `required`，让 TUI、外部 UI 或脚本不必解析 `checks[]` 或 report 文本即可渲染发布检查清单；文本和 JSON 报告会汇总总耗时、最慢检查、最大输出检查和失败的 required check，便于快速定位发布前检查慢或噪声大的原因。
 
 `privacy.allowedEmails` / `privacy.allowedEmailDomains` 可声明公开或允许的邮箱，让 `deepcli privacy` 将这些命中记录为 suppressed findings，而不是阻断开源前检查；只想允许提交元数据时可使用 `privacy.allowedCommitEmails` / `privacy.allowedCommitDomains`。
 `privacy.blockedTerms` 可声明项目特定的禁用词，例如旧产品名、公司邮箱、作者姓名或内部代号；`privacy.allowedTerms` 可把确认保留的迁移说明或测试夹具折叠为 suppressed findings。blocked term 的样例输出会显示为 `<blocked-term>`，避免报告再次泄漏原词。

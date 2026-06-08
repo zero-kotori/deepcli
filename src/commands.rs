@@ -859,7 +859,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli release-check --dry-run",
                 "deepcli preflight --quick --json",
             ],
-            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. Text and JSON reports include diagnostics for total measured duration, slowest check, largest output check, and failed required checks. Use `--json` for the stable `deepcli.preflight.v1` schema. While an agent task is running in the TUI, use `/preflight --dry-run --json` for a non-executing plan; full preflight should wait until the task is stopped or finished."],
+            notes: &["`/preflight` keeps release checks local and does not create a session or call a provider. Full mode keeps going across checks and exits non-zero if any required check fails while preserving the report; `--quick` skips slower clippy/gate checks, and `--dry-run` only lists the commands that would run. JSON reports include a top-level `checklist[]` with step, label, command, status, and required fields for UIs that render the release-check queue without parsing `checks[]` or report text. Text and JSON reports include diagnostics for total measured duration, slowest check, largest output check, and failed required checks. Use `--json` for the stable `deepcli.preflight.v1` schema. While an agent task is running in the TUI, use `/preflight --dry-run --json` for a non-executing plan; full preflight should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/completion",
@@ -10183,6 +10183,7 @@ fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<S
             "planned": report.checks.iter().filter(|check| check.status == "planned").count(),
         },
         "diagnostics": preflight_diagnostics_json(&report.checks),
+        "checklist": preflight_checklist(&report.checks),
         "checks": report.checks.iter().map(|check| json!({
             "name": check.name,
             "command": check.command,
@@ -10198,6 +10199,36 @@ fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<S
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
+}
+
+fn preflight_checklist(checks: &[PreflightCheckResult]) -> Vec<Value> {
+    checks
+        .iter()
+        .enumerate()
+        .map(|(index, check)| {
+            json!({
+                "step": index + 1,
+                "name": check.name,
+                "label": preflight_checklist_label(&check.name),
+                "command": check.command,
+                "status": check.status,
+                "required": check.required,
+            })
+        })
+        .collect()
+}
+
+fn preflight_checklist_label(name: &str) -> &'static str {
+    match name {
+        "format" => "Check Rust formatting",
+        "diff-whitespace" => "Check diff whitespace",
+        "clippy" => "Run clippy",
+        "selftest" => "Run deepcli selftest",
+        "doctor" => "Run doctor diagnostics",
+        "privacy" => "Run privacy scan",
+        "gate" => "Run delivery gate",
+        _ => "Run preflight check",
+    }
 }
 
 fn preflight_diagnostics_json(checks: &[PreflightCheckResult]) -> Value {
@@ -36707,6 +36738,18 @@ mod tests {
                 .iter()
                 .any(|check| check["name"] == expected && check["status"] == "planned"));
         }
+        let checks = value["checks"].as_array().unwrap();
+        let checklist = value["checklist"].as_array().unwrap();
+        assert_eq!(checklist.len(), checks.len());
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"], checks[index]["command"]);
+            assert_eq!(item["status"], checks[index]["status"]);
+            assert_eq!(item["required"], checks[index]["required"]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        assert_eq!(checklist[0]["label"], "Check Rust formatting");
+        assert_eq!(checklist[5]["label"], "Run privacy scan");
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
         assert_eq!(next_actions[0], "deepcli preflight --json");
