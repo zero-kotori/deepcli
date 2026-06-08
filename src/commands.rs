@@ -19473,10 +19473,7 @@ fn fork_next_actions(
     ];
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
-        actions.push(
-            "after the current task finishes, run `deepcli fork --current` again if the fork needs final task output"
-                .to_string(),
-        );
+        actions.push("deepcli fork --current".to_string());
     }
     actions
 }
@@ -19488,10 +19485,7 @@ fn fork_preview_next_actions(source: &Session, context_copy: &ForkContextCopy) -
     ];
     if context_copy.running_agent_state {
         actions.push("deepcli stop".to_string());
-        actions.push(
-            "after the current task finishes, run `deepcli fork --current` if the fork needs final task output"
-                .to_string(),
-        );
+        actions.push("deepcli fork --current".to_string());
     }
     actions
 }
@@ -30682,15 +30676,33 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("does not copy the in-memory running agent"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_shell_actions(&next_actions);
+        assert!(next_actions.iter().any(|action| action == "deepcli stop"));
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str() == Some("deepcli stop")));
+            .any(|action| action == "deepcli fork --current"));
         assert!(value["report"]
             .as_str()
             .unwrap()
             .contains("source state: executing"));
+
+        let preview = handle_fork(
+            dir.path(),
+            Some(session.id().to_string()),
+            vec![
+                "--current".to_string(),
+                "--dry-run".to_string(),
+                "--json".to_string(),
+            ],
+        )
+        .unwrap();
+        let preview_value: Value = serde_json::from_str(&preview).unwrap();
+        let preview_next_actions = json_string_array(&preview_value["nextActions"]);
+        assert_executable_deepcli_actions(&preview_next_actions);
+        assert!(preview_next_actions
+            .iter()
+            .any(|action| action == "deepcli fork --current"));
     }
 
     #[test]
@@ -39438,6 +39450,7 @@ diff --git a/docs/b.md b/docs/b.md
         for action in actions {
             assert!(
                 action.starts_with("deepcli ")
+                    || action.starts_with("cd ")
                     || action.starts_with("mkdir ")
                     || action.starts_with("chmod ")
                     || action.starts_with("ln ")
