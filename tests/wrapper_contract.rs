@@ -143,6 +143,35 @@ fn wrapper_usage_lists_terminal_where_it_is_routable() {
 }
 
 #[test]
+fn wrapper_usage_lists_git_inspection_where_it_is_routable() {
+    let run = run_wrapper_raw(&["--help"]);
+
+    assert!(
+        run.status_success,
+        "wrapper help failed: stdout={}\nstderr={}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli git status|diff|branch|message [--json] [--output path]"),
+        "top-level help should advertise read-only git inspection: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|git|"),
+        "kimi provider routable command list should include git: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|"),
+        "deepseek provider routable command list should include git: {}",
+        run.stdout
+    );
+}
+
+#[test]
 fn wrapper_maps_common_top_level_commands_to_slash_commands() {
     let run = run_wrapper(&["doctor", "--quick"]);
     let workspace = run.workspace.path().canonicalize().unwrap();

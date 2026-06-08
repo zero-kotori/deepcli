@@ -194,6 +194,8 @@ Usage:
   deepcli cleanup [sessions] [--json] [--output path] [--force]
                                    Preview or delete empty one-shot sessions
   deepcli session <action> [...]  Run a /session action
+  deepcli git status|diff|branch|message [--json] [--output path]
+                                   Inspect Git state, diffs, branch, or commit message suggestions
   deepcli doctor [--quick] [--json] [--output path]
                                    Run /doctor without typing the slash
   deepcli doctor shell [--json]    Check PATH, legacy commands, and completion install
@@ -248,9 +250,9 @@ Usage:
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|terminal|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|terminal|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
