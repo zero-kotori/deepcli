@@ -27069,11 +27069,11 @@ fn handoff_report_next_actions(report: &str) -> Vec<String> {
         }
         if in_next_actions {
             if let Some(item) = line.strip_prefix("  - ") {
-                actions.push(item.to_string());
+                actions.extend(report_next_action_commands(item));
             }
         }
     }
-    actions
+    dedup_preserve_order(actions)
 }
 
 fn handoff_report_prefixed_value(report: &str, prefix: &str) -> Option<String> {
@@ -27170,11 +27170,64 @@ fn verification_report_next_actions(report: &str) -> Vec<String> {
         }
         if in_next_actions {
             if let Some(item) = line.strip_prefix("- ") {
-                actions.push(item.to_string());
+                actions.extend(report_next_action_commands(item));
             }
         }
     }
-    actions
+    dedup_preserve_order(actions)
+}
+
+fn report_next_action_commands(item: &str) -> Vec<String> {
+    let quoted = backtick_segments(item);
+    let candidates = if quoted.is_empty() {
+        vec![item.trim().to_string()]
+    } else {
+        quoted
+    };
+    candidates
+        .into_iter()
+        .filter_map(|candidate| normalize_report_next_action_command(&candidate))
+        .collect()
+}
+
+fn backtick_segments(text: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut current = String::new();
+    let mut in_segment = false;
+    for ch in text.chars() {
+        if ch == '`' {
+            if in_segment {
+                let value = current.trim();
+                if !value.is_empty() {
+                    segments.push(value.to_string());
+                }
+                current.clear();
+                in_segment = false;
+            } else {
+                in_segment = true;
+            }
+            continue;
+        }
+        if in_segment {
+            current.push(ch);
+        }
+    }
+    segments
+}
+
+fn normalize_report_next_action_command(raw: &str) -> Option<String> {
+    let command = slash_to_deepcli_command(raw.trim());
+    if command.is_empty() || command.contains('<') {
+        return None;
+    }
+    if command.starts_with("deepcli ")
+        || command.starts_with("cargo ")
+        || command.starts_with("git ")
+    {
+        Some(command)
+    } else {
+        None
+    }
 }
 
 fn verification_report_prefixed_value(report: &str, prefix: &str) -> Option<String> {
@@ -42096,6 +42149,72 @@ diff --git a/docs/skip.md b/docs/skip.md
             .as_str()
             .unwrap()
             .contains("verification report"));
+    }
+
+    #[tokio::test]
+    async fn verify_json_next_actions_are_executable_commands() {
+        let dir = tempdir().unwrap();
+        let executor = test_executor(dir.path());
+
+        let error = handle_verify(
+            dir.path(),
+            None,
+            &executor,
+            vec!["--json".into(), "--fail-on-blockers".into()],
+        )
+        .await
+        .unwrap_err();
+        let exit = error.downcast_ref::<CommandExit>().unwrap();
+        let value: Value = serde_json::from_str(&exit.output).unwrap();
+        let actions = value["nextActions"].as_array().unwrap();
+
+        assert!(!actions.is_empty(), "expected verify next actions");
+        for action in actions {
+            let action = action.as_str().unwrap();
+            assert!(
+                action.starts_with("deepcli ")
+                    || action.starts_with("cargo ")
+                    || action.starts_with("git "),
+                "verify next action should be directly executable: {action}"
+            );
+            assert!(
+                !action.contains('`') && !action.starts_with("include "),
+                "verify next action should not be explanatory prose: {action}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn handoff_json_next_actions_are_executable_commands() {
+        let dir = tempdir().unwrap();
+        let executor = test_executor(dir.path());
+
+        let error = handle_handoff(
+            dir.path(),
+            None,
+            &executor,
+            vec!["--json".into(), "--fail-on-blockers".into()],
+        )
+        .await
+        .unwrap_err();
+        let exit = error.downcast_ref::<CommandExit>().unwrap();
+        let value: Value = serde_json::from_str(&exit.output).unwrap();
+        let actions = value["nextActions"].as_array().unwrap();
+
+        assert!(!actions.is_empty(), "expected handoff next actions");
+        for action in actions {
+            let action = action.as_str().unwrap();
+            assert!(
+                action.starts_with("deepcli ")
+                    || action.starts_with("cargo ")
+                    || action.starts_with("git "),
+                "handoff next action should be directly executable: {action}"
+            );
+            assert!(
+                !action.contains('`') && !action.contains('<'),
+                "handoff next action should not contain prose markup or placeholders: {action}"
+            );
+        }
     }
 
     #[tokio::test]

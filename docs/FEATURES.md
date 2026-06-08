@@ -80,7 +80,7 @@ deepcli 当前面向 DeepSeek-compatible providers，并内置 DeepSeek/Kimi 相
 - `deepcli provider [provider] [model]`
 - `deepcli providers --json`
 
-Status、Usage、Completion、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
+Status、Usage、Completion、验收交付、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
 
 凭据相关命令都在本地执行，不需要先创建会话或调用 provider：
 
@@ -177,7 +177,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli handoff --pr`
 - `deepcli preflight --json`
 
-验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。
+验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。`verify/gate/handoff --json` 的顶层 `nextActions` 会从文本报告中的 slash 建议归一成可直接执行的 `deepcli ...` 命令，并过滤 `<message>` 这类占位动作；说明性建议继续留在 `report` 中供人工阅读。
 
 `goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`resume --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，从持久化 session 文件读取 metadata、activity、summary 和最近消息，供外部 UI 或脚本在进入 TUI 前确认将恢复的上下文；无 id 时只在当前 workspace 中选择候选，并跳过只包含工具、测试或审计记录的诊断型 session、只包含低信息输入和本地澄清回复的会话，以及短小已完成的单轮任务会话；当无可恢复候选时保留同一 schema 输出 `status=error`、`selected=null`、`error` 和 `nextActions` 后非零退出。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；无 id 且没有 active session 时，fork 使用同一类可恢复对话候选，避免把空诊断 session 当作默认源；dry-run 报告使用同一 schema、`status=dry_run` 和 `dryRun=true`，且 `fork=null`，用于确认源会话和计划而不创建历史记录；预期源会话选择失败时会使用同一 schema 输出 `status=error`、`source=null`、`fork=null`、`error` 和 `nextActions` 后非零退出，其中 no-source 动作优先给出 `deepcli resume --dry-run --json` 和 `deepcli session list --all --limit 20 --json`；真实 fork 可加 `--verify` 输出 `verification` resume 健康检查，确认副本是否 ready、workspace/provider/model 是否一致、持久化记录计数是否复制一致；`contextCopy` 与 `nextActions` 会明确暴露源会话状态、复制模式、运行中任务限制和恢复命令；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。运行中 `/session` 仅允许 read-only inspection 和不带 `--output` 的 restore-backup dry-run 预览，`rename`、`export`、`prune-empty --force`、真实恢复和任何 `--output` artifact 写入都会提示等待任务结束或先 `/stop`。`terminal` 输出稳定 `deepcli.terminal.v1` JSON，允许外部 UI 或验收脚本在不打开 Terminal 的情况下确认 workspace、命令、平台支持状态和可复制的 `workspaceCommand`。
 
