@@ -24252,40 +24252,50 @@ fn discovered_test_command_json(workspace: &Path, command: Value) -> Value {
 }
 
 fn test_discover_next_actions(raw: &Value) -> Vec<String> {
-    let command_count = raw
+    let commands = raw
         .get("commands")
         .and_then(Value::as_array)
-        .map(Vec::len)
-        .unwrap_or(0);
-    if command_count == 0 {
+        .cloned()
+        .unwrap_or_default();
+    if commands.is_empty() {
         vec![
-            "add a standard test configuration such as Cargo.toml, package.json, pyproject.toml, or Makefile".to_string(),
-            "or run `/test run -- <command>` with an explicit test command".to_string(),
+            "deepcli help test".to_string(),
+            "deepcli quickstart --check --json".to_string(),
         ]
     } else {
-        vec![
-            "run `/test run` to execute the first available discovered test command".to_string(),
-            "run `/test run -- <command>` to execute a specific test command".to_string(),
-        ]
+        let mut actions = vec!["deepcli test run --json".to_string()];
+        if let Some(command) = commands
+            .iter()
+            .filter_map(|command| command.get("command").and_then(Value::as_str))
+            .find(|command| !command.trim().is_empty())
+        {
+            actions.push(format_test_run_command_action(command));
+        }
+        actions.push("deepcli help test".to_string());
+        dedup_preserve_order(actions)
     }
 }
 
 fn test_run_next_actions(passed: bool, command: &str) -> Vec<String> {
+    let mut actions = Vec::new();
     if passed {
-        vec![
-            "include this test evidence in an acceptance report: run `/accept --json`".to_string(),
-            "run a strict acceptance gate with `/gate --json` before handoff".to_string(),
-            format!(
-                "rerun with `/test run -- {}` if you need fresh evidence",
-                command
-            ),
-        ]
+        actions.push("deepcli accept --json".to_string());
+        actions.push("deepcli gate --json".to_string());
     } else {
-        vec![
-            "inspect stdout/stderr and fix the failing test before handoff".to_string(),
-            format!("rerun with `/test run -- {}` after the fix", command),
-        ]
+        actions.push("deepcli test discover --json".to_string());
+        actions.push("deepcli logs --json".to_string());
     }
+    if !command.trim().is_empty() && command != "<unknown>" {
+        actions.push(format_test_run_command_action(command));
+    }
+    dedup_preserve_order(actions)
+}
+
+fn format_test_run_command_action(command: &str) -> String {
+    format!(
+        "deepcli test run --json -- {}",
+        shell_words::quote(&redact_sensitive_text(command))
+    )
 }
 
 async fn handle_env(
@@ -35510,11 +35520,14 @@ mod tests {
         assert_eq!(value["commands"][0]["source"], "Cargo.toml");
         assert_eq!(value["commands"][0]["command"], "cargo test");
         assert_eq!(value["commands"][0]["requiresDocker"], false);
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/test run")));
+            .any(|action| action == "deepcli test run --json"));
+        assert!(next_actions.iter().any(|action| {
+            action.starts_with("deepcli test run --json -- ") && action.contains("cargo test")
+        }));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/tests.json")).unwrap();
         assert_eq!(written, output);
     }
@@ -35547,16 +35560,17 @@ mod tests {
         assert_eq!(value["exitCode"], 0);
         assert_eq!(value["stdout"], "ok");
         assert_eq!(value["stderr"], "");
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/accept --json")));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+            .any(|action| action == "deepcli accept --json"));
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().contains("/gate --json")));
+            .any(|action| action == "deepcli gate --json"));
+        assert!(next_actions.iter().any(|action| {
+            action.starts_with("deepcli test run --json -- ") && action.contains("printf ok")
+        }));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/test-run.json")).unwrap();
         assert_eq!(written, output);
