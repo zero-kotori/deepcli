@@ -62,7 +62,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
-- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code` 和 `nextActions`，且 no-source JSON 动作优先给出 `deepcli resume --dry-run --json` 和 `deepcli session list --all --limit 20 --json`，方便脚本和外部 UI 不打开 TUI 也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.workspaceResumeCommand` 中给出 `cd <workspace> && deepcli resume <new_id>`，并把同一条命令放在顶层 `nextActions[0]`，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
+- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code` 和 `nextActions`，且 no-source JSON 动作优先给出 `deepcli resume --dry-run --json` 和 `deepcli session list --all --limit 20 --json`，不会输出 `<session_id>` 这类占位动作，方便脚本和外部 UI 不打开 TUI 也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.workspaceResumeCommand` 中给出 `cd <workspace> && deepcli resume <new_id>`，并把同一条命令放在顶层 `nextActions[0]`，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
 - 源会话处于运行中时，fork JSON 的顶层 `nextActions` 仍只给可执行命令，例如 `deepcli stop` 和 `deepcli fork --current`；不热复制内存任务的说明保留在 `contextCopy.warning` 和 `report`。
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作。
 - `/next --json` 和 `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，解释性原因保留在 `signals` 和 `report`。
@@ -79,7 +79,7 @@ deepcli 当前面向 DeepSeek-compatible providers，并内置 DeepSeek/Kimi 相
 - `deepcli provider [provider] [model]`
 - `deepcli providers --json`
 
-Status、Usage、模型、超时、日志、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，有具体条目时会优先输出具体 prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report` 或条目字段。
+Status、Usage、模型、超时、日志、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，有具体条目时会优先输出具体 prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
 
 凭据相关命令都在本地执行，不需要先创建会话或调用 provider：
 

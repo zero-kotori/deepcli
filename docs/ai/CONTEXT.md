@@ -355,7 +355,7 @@
 
 69. Fork 无源错误 nextActions 候选发现
    - 结果：`deepcli fork --dry-run --json`、`deepcli fork --current --dry-run --json` 等源会话选择失败路径仍保留 `deepcli.session.fork.v1` 错误 schema，但顶层 `nextActions` 改为先给出非交互候选发现命令。
-   - 行为：no-source 动作从 `deepcli resume` 调整为 `deepcli resume --dry-run --json`、`deepcli session list --all --limit 20 --json`、`deepcli sessions --all --limit 20` 和 `deepcli fork <session_id> --dry-run --json`；非 JSON 错误提示也同步推荐结构化候选发现命令。
+   - 行为：no-source 动作从 `deepcli resume` 调整为 `deepcli resume --dry-run --json`、`deepcli session list --all --limit 20 --json` 和 `deepcli sessions --all --limit 20`；非 JSON 错误提示也同步推荐结构化候选发现命令。
    - 目的：当当前 workspace 没有可恢复 deepcli session 时，外部 UI、脚本和用户不需要进入 TUI 或解析纯文本列表，也能继续发现候选或改用显式 session id fork。
 
 70. Next JSON 动作可执行化
@@ -408,13 +408,23 @@
    - 行为：文本 usage 报告仍保留面向 TUI 的诊断语境；JSON 中的动作保持 shell 可执行。
    - 目的：Usage 面板、支持页和脚本化慢响应诊断可以直接消费动作数组，不需要解析 slash-command prose。
 
+80. Fork no-source actions 去占位符
+   - 结果：`deepcli fork --dry-run --json` 和 `deepcli fork --current --dry-run --json` 在没有可恢复源会话时，顶层 `nextActions` 不再包含 `deepcli fork <session_id> --dry-run --json` 这类占位动作。
+   - 行为：JSON 动作保留 `deepcli resume --dry-run --json`、`deepcli session list --all --limit 20 --json` 和 `deepcli sessions --all --limit 20` 作为可直接执行的候选发现入口；显式 session id 的说明留在错误 message/report 中。
+   - 目的：外部 UI 和脚本可以把 fork no-source 的 nextActions 当作真实命令按钮渲染，不需要识别并过滤 `<session_id>` 占位符。
+
+81. Inspect JSON actions 去占位符
+   - 结果：`deepcli agent list --json`、`deepcli prompt list --json`、`deepcli skill list --json`、`deepcli model show/list --json` 和 `deepcli timeout --json` 的顶层 `nextActions` 不再输出 `deepcli agent spawn <task>`、`deepcli prompt render ... --file <path> key=value`、`deepcli prompt save <name> <body>`、`deepcli skill generate <name> <description>`、`deepcli model set <provider> [model]`、`deepcli model set <provider> <model>` 或 `deepcli timeout <seconds>` 这类模板动作。
+   - 行为：没有具体对象可引用时，JSON 动作改为 `deepcli help ...` 或对应 list 命令；有具体 prompt、skill、agent task 或 provider 时仍优先输出具体 name/short id/provider 的可执行动作。
+   - 目的：Library/Inspect/Settings 面板和脚本可以直接渲染 nextActions，不需要区分“动作按钮”和“需要编辑的命令模板”。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 `--from-current`、手工 baseline template 或 baseline compare；如果默认 competitor baseline 缺失且本地 artifact 可完整捕获，会先提示 `baseline-template --from-current` 生成 `status=ready` 的 compare-ready baseline，再提示手工 competitor baseline template。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
 
 如果 fresh checkout 或清理后缺少本地 benchmark evidence，可通过 `deepcli round --json --run-benchmark --fail-on-command` 重新生成，使本地 `scorecard` 达到 80/80、`benchmark status` 为 ready；这些 `.deepcli/benchmarks/` artifact 仍然只作为本地证据，不进入 Git 提交。
 
-下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、baseline-template 自带后续动作、baseline-template 捕获当前 benchmark、ready 产品循环优先推荐当前 baseline 捕获、fork workspace-aware 恢复命令、Fork nextActions workspace-aware、Resume 空候选 JSON 错误结构化、Session search JSON nextActions、Fork 无源错误 nextActions 候选发现、Next JSON 动作可执行化、Benchmark aging 顶层刷新动作、Quickstart/Selftest JSON 动作可执行化、Cleanup JSON 动作可执行化、Health/Version JSON 动作可执行化、Inspect JSON 动作可执行化、Running Fork JSON 动作可执行化、Quick Preflight 隐私快路径、Status session actions 可执行化、Usage session actions 可执行化、restore-backup 结构化预览、TUI 运行中 restore-backup 安全预览、TUI 运行中 `/session` read-only guard、环境 JSON nextActions 可执行化、Tools 视图工具输出动作可见化、Quick actions run/edit 语义提示、Terminal workspaceCommand、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查、resume dry-run 预览、resume 候选去噪、preflight 运行诊断摘要、benchmark status/summary JSON 内嵌 report、resume 低信息澄清会话去噪、resume 当前 workspace 与短任务去噪、privacy 配置化禁用词扫描、fork 默认候选去噪、fork JSON 错误结构化、benchmark 证据 freshness 可见性、SOTA recipe baseline-aware nextActions、scorecard ready baseline-aware nextActions，以及 round ready baseline-aware nextActions，下一轮可继续关注 TUI 可观测性、恢复历史或环境自动化验收的真实交互阻力。
+下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、baseline-template 自带后续动作、baseline-template 捕获当前 benchmark、ready 产品循环优先推荐当前 baseline 捕获、fork workspace-aware 恢复命令、Fork nextActions workspace-aware、Resume 空候选 JSON 错误结构化、Session search JSON nextActions、Fork 无源错误 nextActions 候选发现、Fork no-source actions 去占位符、Inspect JSON actions 去占位符、Next JSON 动作可执行化、Benchmark aging 顶层刷新动作、Quickstart/Selftest JSON 动作可执行化、Cleanup JSON 动作可执行化、Health/Version JSON 动作可执行化、Inspect JSON 动作可执行化、Running Fork JSON 动作可执行化、Quick Preflight 隐私快路径、Status session actions 可执行化、Usage session actions 可执行化、restore-backup 结构化预览、TUI 运行中 restore-backup 安全预览、TUI 运行中 `/session` read-only guard、环境 JSON nextActions 可执行化、Tools 视图工具输出动作可见化、Quick actions run/edit 语义提示、Terminal workspaceCommand、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查、resume dry-run 预览、resume 候选去噪、preflight 运行诊断摘要、benchmark status/summary JSON 内嵌 report、resume 低信息澄清会话去噪、resume 当前 workspace 与短任务去噪、privacy 配置化禁用词扫描、fork 默认候选去噪、fork JSON 错误结构化、benchmark 证据 freshness 可见性、SOTA recipe baseline-aware nextActions、scorecard ready baseline-aware nextActions，以及 round ready baseline-aware nextActions，下一轮可继续关注 TUI 可观测性、恢复历史或环境自动化验收的真实交互阻力。
 
 ## 常用检查命令
 

@@ -17315,7 +17315,7 @@ fn format_timeout_json(
         "nextActions": [
             "deepcli usage --json",
             "deepcli trace --limit 30",
-            "deepcli timeout <seconds>",
+            "deepcli help timeout",
             "deepcli timeout reset"
         ],
         "report": report,
@@ -17622,17 +17622,22 @@ fn model_next_actions(config: &AppConfig, provider_names: &[String]) -> Vec<Stri
         return actions;
     }
     if !config.providers.contains_key(&config.default_provider) {
-        actions.push("deepcli model set <provider>".to_string());
+        if let Some(provider) = provider_names.first() {
+            actions.push(format!("deepcli model set {provider}"));
+        } else {
+            actions.push("deepcli model list --json".to_string());
+        }
     }
     for provider in provider_names {
         if let Some(provider_config) = config.providers.get(provider) {
             if provider_config.acceptance_model.is_none() {
-                actions.push(format!("deepcli model set {provider} <model>"));
+                actions.push(format!("deepcli model set {provider}"));
             }
         }
     }
     if actions.is_empty() {
-        actions.push("deepcli model set <provider> [model]".to_string());
+        actions.push("deepcli model list --json".to_string());
+        actions.push("deepcli help model".to_string());
     }
     dedup_preserve_order(actions)
 }
@@ -19528,7 +19533,6 @@ fn fork_error_next_actions() -> Vec<String> {
         "deepcli resume --dry-run --json".to_string(),
         "deepcli session list --all --limit 20 --json".to_string(),
         "deepcli sessions --all --limit 20".to_string(),
-        "deepcli fork <session_id> --dry-run --json".to_string(),
     ]
 }
 
@@ -23997,9 +24001,10 @@ fn agent_next_actions(task: Option<&SubagentTask>, empty: bool) -> Vec<String> {
     if let Some(task) = task {
         actions.push(format!("deepcli agent show {}", short_id(&task.id)));
     } else if empty {
-        actions.push("deepcli agent spawn <task>".to_string());
+        actions.push("deepcli help agent".to_string());
     } else {
-        actions.push("deepcli agent show <id>".to_string());
+        actions.push("deepcli agent list --json".to_string());
+        actions.push("deepcli help agent".to_string());
     }
     if let Some(task) = task {
         if matches!(task.status, crate::agents::SubagentStatus::Queued) {
@@ -24015,7 +24020,7 @@ fn agent_list_next_actions(tasks: &[SubagentTask]) -> Vec<String> {
     if let Some(task) = tasks.first() {
         actions.push(format!("deepcli agent show {}", short_id(&task.id)));
     } else {
-        actions.push("deepcli agent spawn <task>".to_string());
+        actions.push("deepcli help agent".to_string());
     }
     actions.push("deepcli agent list --json".to_string());
     dedup_preserve_order(actions)
@@ -28973,14 +28978,14 @@ fn prompt_path_json(workspace: &Path, name: &str, source: &str) -> Value {
 }
 
 fn prompt_next_actions(name: Option<&str>) -> Vec<String> {
-    let target = name.unwrap_or("<name>");
-    let mut actions = vec![
-        format!("deepcli prompt render {target} --file <path> key=value"),
-        "deepcli prompt save <name> <body>".to_string(),
-    ];
+    let mut actions = Vec::new();
     if let Some(name) = name {
         actions.push(format!("deepcli prompt get {name}"));
+        actions.push(format!("deepcli prompt render {name} --json"));
+    } else {
+        actions.push("deepcli prompt list --json".to_string());
     }
+    actions.push("deepcli help prompt".to_string());
     dedup_preserve_order(actions)
 }
 
@@ -29216,11 +29221,12 @@ fn skill_metadata_json(workspace: &Path, skill: &SkillMetadata) -> Value {
 fn skill_next_actions(name: Option<&str>, empty: bool) -> Vec<String> {
     let mut actions = Vec::new();
     if empty {
-        actions.push("deepcli skill generate <name> <description>".to_string());
+        actions.push("deepcli help skill".to_string());
     } else if let Some(name) = name {
         actions.push(format!("deepcli skill run {name}"));
     } else {
-        actions.push("deepcli skill run <name>".to_string());
+        actions.push("deepcli skill list --json".to_string());
+        actions.push("deepcli help skill".to_string());
     }
     if let Some(name) = name {
         actions.push(format!("deepcli skill run {name} --json"));
@@ -30858,6 +30864,8 @@ mod tests {
             .any(|action| {
                 action.as_str() == Some("deepcli session list --all --limit 20 --json")
             }));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
     }
 
     #[test]
@@ -30923,6 +30931,8 @@ mod tests {
             .any(|action| {
                 action.as_str() == Some("deepcli session list --all --limit 20 --json")
             }));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
     }
 
     #[test]
@@ -36089,7 +36099,7 @@ mod tests {
             .any(|action| action.starts_with("deepcli prompt render ")));
         assert!(list_next_actions
             .iter()
-            .any(|action| action == "deepcli prompt save <name> <body>"));
+            .any(|action| action == "deepcli help prompt"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/prompts.json")).unwrap();
         assert_eq!(written, list_output);
 
@@ -39527,6 +39537,10 @@ diff --git a/docs/b.md b/docs/b.md
                 !action.contains("`/") && !action.starts_with("run `"),
                 "next action should not contain slash-command prose: {action}"
             );
+            assert!(
+                !action.contains('<') && !action.contains('>'),
+                "next action should not contain placeholders: {action}"
+            );
         }
     }
 
@@ -39549,6 +39563,10 @@ diff --git a/docs/b.md b/docs/b.md
             assert!(
                 !action.contains("`/") && !action.starts_with("run `"),
                 "next action should not contain slash-command prose: {action}"
+            );
+            assert!(
+                !action.contains('<') && !action.contains('>'),
+                "next action should not contain placeholders: {action}"
             );
         }
     }
@@ -42314,7 +42332,10 @@ diff --git a/docs/skip.md b/docs/skip.md
         assert_executable_deepcli_actions(&next_actions);
         assert!(next_actions
             .iter()
-            .any(|action| action == "deepcli model set <provider> [model]"));
+            .any(|action| action == "deepcli model list --json"));
+        assert!(next_actions
+            .iter()
+            .any(|action| action == "deepcli help model"));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/model.json")).unwrap();
         assert_eq!(written, output);
@@ -42349,7 +42370,7 @@ diff --git a/docs/skip.md b/docs/skip.md
         assert_executable_deepcli_actions(&next_actions);
         assert!(next_actions
             .iter()
-            .any(|action| action == "deepcli model set kimi <model>"));
+            .any(|action| action == "deepcli model set kimi"));
 
         let active_output = handle_model_read_command(
             dir.path(),
