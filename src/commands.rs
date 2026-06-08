@@ -682,6 +682,7 @@ fn help_topics() -> &'static [CommandHelp] {
             ],
             notes: &[
                 "Plain `/quickstart` is authorization-free and only prints this static guide; add `--check`, `--json`, `--output`, or `--fail-on-missing` to inspect the current workspace without creating a session or calling a provider. The check report includes deepcli version, registered slash command count, and provider turn timeout so first-run artifacts are self-contained.",
+                "In JSON mode, top-level `nextActions` are directly executable `deepcli ...` commands; explanatory onboarding remains in `steps` and `report`.",
                 "Use `--fail-on-missing` when CI or an onboarding script should exit non-zero if project config, default provider credentials, or tests are missing.",
                 "Start in any project directory with `deepcli`; use `deepcli deepseek` or `deepcli kimi` to pin a provider/model for the TUI.",
                 "Use `/model list` and `/model set deepseek deepseek-v4-pro` or `/model set kimi kimi-for-coding` to switch models inside a session.",
@@ -833,7 +834,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/selftest --json --output .deepcli/exports/selftest.json",
                 "deepcli selftest --json --fail-on-issues",
             ],
-            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
+            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema; JSON `nextActions` are directly executable `deepcli ...`, `cargo ...`, or `git ...` commands. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
         },
         CommandHelp {
             name: "/preflight",
@@ -8953,26 +8954,23 @@ fn quickstart_next_actions(
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if !project_config_present {
-        actions.push("initialize local project state: run `/init --quick`".to_string());
+        actions.push("deepcli init --quick".to_string());
     }
     if provider_api_key != "configured" {
-        actions.push(format!(
-            "configure provider credentials: run `/credentials set {provider_name}`"
-        ));
+        actions.push(format!("deepcli credentials set {provider_name}"));
     }
-    actions.push("choose a task recipe: run `/recipes` or `/recipes release`".to_string());
-    actions.push("inspect product capability coverage: run `/scorecard --json`".to_string());
-    actions.push("inspect provider/model choices: run `/model list`".to_string());
+    actions.push("deepcli recipes".to_string());
+    actions.push("deepcli recipes release".to_string());
+    actions.push("deepcli scorecard --json".to_string());
+    actions.push("deepcli model list".to_string());
     if tests_missing {
-        actions.push("add or configure tests, then run `/test discover --json`".to_string());
+        actions.push("deepcli test discover --json".to_string());
     } else {
-        actions.push("verify with tests: run `/accept --json`".to_string());
+        actions.push("deepcli accept --json".to_string());
     }
-    actions.push(
-        "for Docker/compiler tasks, preview setup with `/env plan compiler --smoke`".to_string(),
-    );
-    actions.push("run a strict acceptance gate with `/gate --json`".to_string());
-    actions.push("prepare handoff output with `/handoff --pr`".to_string());
+    actions.push("deepcli env plan compiler --smoke".to_string());
+    actions.push("deepcli gate --json".to_string());
+    actions.push("deepcli handoff --pr".to_string());
     dedup_preserve_order(actions)
 }
 
@@ -9337,30 +9335,45 @@ fn selftest_next_actions(
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if !missing_commands.is_empty() {
-        actions.push(
-            "run `cargo test mvp_slash_commands_are_registered` in the deepcli repo".to_string(),
-        );
+        actions.push("cargo test mvp_slash_commands_are_registered".to_string());
     }
     if !project_config_present {
-        actions.push("initialize project state with `/init --quick`".to_string());
+        actions.push("deepcli init --quick".to_string());
     }
     if provider_api_key != "configured" {
-        actions.push(format!(
-            "configure credentials with `/credentials set {provider_name}`"
-        ));
+        actions.push(format!("deepcli credentials set {provider_name}"));
     }
     if tests_missing {
-        actions.push("add or configure tests, then run `/test discover --json`".to_string());
+        actions.push("deepcli test discover --json".to_string());
     }
-    actions.extend(git_identity.next_actions.clone());
-    actions.push("inspect detailed health with `/doctor --quick`".to_string());
-    actions.push("check shell install health with `/doctor shell --json`".to_string());
-    actions.push("create a redacted support bundle with `/support`".to_string());
+    actions.extend(git_identity_executable_next_actions(git_identity));
+    actions.push("deepcli doctor --quick".to_string());
+    actions.push("deepcli doctor shell --json".to_string());
+    actions.push("deepcli support".to_string());
     if ready {
-        actions.push("produce an acceptance report with `/accept --json`".to_string());
-        actions.push("run a strict gate with `/gate --json`".to_string());
+        actions.push("deepcli accept --json".to_string());
+        actions.push("deepcli gate --json".to_string());
     }
     dedup_preserve_order(actions)
+}
+
+fn git_identity_executable_next_actions(identity: &GitIdentityReport) -> Vec<String> {
+    let mut actions = Vec::new();
+    if identity.status == "mismatch" {
+        if let Some(expected) = &identity.expected_name {
+            actions.push(format!(
+                "git config user.name {}",
+                shell_words::quote(expected)
+            ));
+        }
+        if let Some(expected) = &identity.expected_email {
+            actions.push(format!(
+                "git config user.email {}",
+                shell_words::quote(expected)
+            ));
+        }
+    }
+    actions
 }
 
 fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<String> {
@@ -31950,34 +31963,46 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item.as_str().unwrap().contains("/accept --json")));
+        assert!(value["nextActions"].as_array().unwrap().iter().any(
+            |item| item.as_str().unwrap() == "deepcli credentials set missing-provider-2f7c1e"
+        ));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item
-                .as_str()
-                .unwrap()
-                .contains("/credentials set missing-provider-2f7c1e")));
+            .any(|item| item.as_str().unwrap() == "deepcli accept --json"));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/accept --json")));
+            .any(|item| item.as_str().unwrap() == "deepcli recipes"));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/recipes")));
+            .any(|item| item.as_str().unwrap() == "deepcli scorecard --json"));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/scorecard --json")));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item.as_str().unwrap().contains("/gate --json")));
+            .any(|item| item.as_str().unwrap() == "deepcli gate --json"));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                action.starts_with("deepcli ")
+                    || action.starts_with("cargo ")
+                    || action.starts_with("git ")
+            }),
+            "quickstart JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                !action.contains("`/") && !action.starts_with("run `")
+            }),
+            "quickstart JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -34778,12 +34803,29 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/accept --json")));
+            .any(|item| item.as_str().unwrap() == "deepcli accept --json"));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
             .iter()
-            .any(|item| item.as_str().unwrap().contains("/doctor shell --json")));
+            .any(|item| item.as_str().unwrap() == "deepcli doctor shell --json"));
+        let next_actions = value["nextActions"].as_array().unwrap();
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                action.starts_with("deepcli ")
+                    || action.starts_with("cargo ")
+                    || action.starts_with("git ")
+            }),
+            "selftest JSON nextActions should be directly executable commands: {next_actions:?}"
+        );
+        assert!(
+            next_actions.iter().all(|item| {
+                let action = item.as_str().unwrap();
+                !action.contains("`/") && !action.starts_with("run `")
+            }),
+            "selftest JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()

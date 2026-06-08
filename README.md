@@ -231,6 +231,8 @@ git diff --check
 
 `selftest` 和 `doctor` 会读取 `.deepcli/config.json` 中的 `project.gitIdentity`，对比当前 Git 仓库的有效 `user.name` / `user.email`，用于提交前发现错误作者身份。
 
+`quickstart --json` 和 `selftest --json` 的顶层 `nextActions` 都是可直接复制到 shell 的 `deepcli ...`、`cargo ...` 或 `git ...` 命令；首次引导和诊断说明继续放在 `steps`、`report` 等解释性字段中，外部 UI 或脚本不需要解析 `run \`/...\`` 文本才能推进下一步。
+
 `preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查，`--quick` 可跳过较慢的 clippy/gate；文本和 JSON 报告会汇总总耗时、最慢检查、最大输出检查和失败的 required check，便于快速定位发布前检查慢或噪声大的原因。
 
 `privacy.allowedEmails` / `privacy.allowedEmailDomains` 可声明公开或允许的邮箱，让 `deepcli privacy` 将这些命中记录为 suppressed findings，而不是阻断开源前检查；只想允许提交元数据时可使用 `privacy.allowedCommitEmails` / `privacy.allowedCommitDomains`。

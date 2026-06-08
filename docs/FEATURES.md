@@ -100,6 +100,8 @@ deepcli 内置多层本地检查能力：
 
 `selftest` 和 `doctor` 会读取项目配置中的 `project.gitIdentity`，对比当前 Git 仓库有效的 `user.name` / `user.email`，在提交前提示错误作者身份，并给出可复制的 `git config` 修复命令。非 Git 目录只报告 `no_git`，不会读取全局 Git 身份。
 
+`quickstart --json` 和 `selftest --json` 的顶层 `nextActions` 使用可直接执行的 `deepcli ...`、`cargo ...` 或 `git ...` 命令；quickstart 的首次引导说明保留在 `steps` 和 `report`，selftest 的诊断说明保留在 `report`，避免外部 UI、安装脚本或验收脚本解析 slash-command prose。
+
 `doctor shell` 会检查：
 
 - `deepcli` 是否在 PATH。
