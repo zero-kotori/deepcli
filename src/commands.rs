@@ -684,7 +684,7 @@ fn help_topics() -> &'static [CommandHelp] {
             ],
             notes: &[
                 "Plain `/quickstart` is authorization-free and only prints this static guide; add `--check`, `--json`, `--output`, or `--fail-on-missing` to inspect the current workspace without creating a session or calling a provider. The check report includes deepcli version, registered slash command count, and provider turn timeout so first-run artifacts are self-contained.",
-                "In JSON mode, top-level `nextActions` are directly executable `deepcli ...` commands; explanatory onboarding remains in `steps` and `report`.",
+                "In JSON mode, top-level `nextActions` are directly executable `deepcli ...` commands and `checklist[]` labels that action queue; explanatory onboarding remains in `steps` and `report`.",
                 "Use `--fail-on-missing` when CI or an onboarding script should exit non-zero if project config, default provider credentials, or tests are missing.",
                 "Start in any project directory with `deepcli`; use `deepcli deepseek` or `deepcli kimi` to pin a provider/model for the TUI.",
                 "Use `/model list` and `/model set deepseek deepseek-v4-pro` or `/model set kimi kimi-for-coding` to switch models inside a session.",
@@ -836,7 +836,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/selftest --json --output .deepcli/exports/selftest.json",
                 "deepcli selftest --json --fail-on-issues",
             ],
-            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema; JSON `nextActions` are directly executable `deepcli ...`, `cargo ...`, or `git ...` commands. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
+            notes: &["`/selftest` is a local acceptance shortcut for the deepcli product itself. It does not create a session or call a provider; it checks the command registry, project config, configured Git identity, default provider credentials, resumable sessions, local logs, test discovery, and support entrypoints. Use `--json` for the stable `deepcli.selftest.v1` schema; JSON `nextActions` are directly executable `deepcli ...`, `cargo ...`, or `git ...` commands, and `checklist[]` labels that action queue for UIs and scripts. Use `--fail-on-issues` in install scripts or CI when missing setup should fail fast."],
         },
         CommandHelp {
             name: "/preflight",
@@ -3323,6 +3323,27 @@ fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
         .collect()
 }
 
+fn local_action_checklist(actions: &[String]) -> Vec<Value> {
+    actions
+        .iter()
+        .filter(|action| {
+            (action.starts_with("deepcli ")
+                || action.starts_with("cargo ")
+                || action.starts_with("git "))
+                && !action.contains('<')
+                && !action.contains('>')
+        })
+        .enumerate()
+        .map(|(index, command)| {
+            json!({
+                "step": index + 1,
+                "label": local_checklist_label(command),
+                "command": command,
+            })
+        })
+        .collect()
+}
+
 fn benchmark_action_checklist(actions: &[String]) -> Vec<Value> {
     actions
         .iter()
@@ -3354,10 +3375,28 @@ fn benchmark_checklist_label(command: &str) -> &'static str {
     }
 }
 
+fn local_checklist_label(command: &str) -> &'static str {
+    if command.starts_with("deepcli ") {
+        scorecard_checklist_label(command)
+    } else if command == "cargo test mvp_slash_commands_are_registered" {
+        "Verify command registry"
+    } else if command.starts_with("cargo ") {
+        "Run cargo command"
+    } else if command.starts_with("git config user.") {
+        "Configure Git identity"
+    } else if command.starts_with("git ") {
+        "Run git command"
+    } else {
+        "Run command"
+    }
+}
+
 fn scorecard_checklist_label(command: &str) -> &'static str {
     match command {
         "deepcli quickstart --json" => "Open quickstart readiness",
+        "deepcli init --quick" => "Initialize project config",
         "deepcli recipes" => "Open workflow recipes",
+        "deepcli recipes release" => "Open release workflow",
         "deepcli completion json" => "Export command catalog",
         "deepcli status --json" => "Inspect current status",
         "deepcli review" => "Review current diff",
@@ -3368,10 +3407,17 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli handoff --pr" => "Prepare PR handoff",
         "deepcli permissions show --json" => "Inspect permissions",
         "deepcli credentials status --json" => "Inspect credentials",
+        command if command.starts_with("deepcli credentials set ") => {
+            "Configure provider credentials"
+        }
+        "deepcli model list" => "List configured models",
         "deepcli model list --json" => "List configured models",
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
+        "deepcli doctor --quick" => "Run quick diagnostics",
+        "deepcli doctor shell --json" => "Check shell install",
         "deepcli diagnose --json" => "Collect diagnostics",
         "deepcli version --json" => "Inspect version",
+        "deepcli scorecard --json" => "Inspect product scorecard",
         "deepcli recipes sota --json" => "Open SOTA product loop recipe",
         "deepcli benchmark presets --json" => "List benchmark presets",
         "deepcli benchmark status --json" => "Check benchmark evidence",
@@ -3387,6 +3433,7 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION => "Compare against competitor baseline",
         "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
         SCORECARD_ROUND_REPORT_ACTION => "Review current product round",
+        "deepcli accept --json" => "Run acceptance checks",
         _ => generic_recipe_command_label(command),
     }
 }
@@ -9303,6 +9350,7 @@ fn format_quickstart_check_json(
                 .collect::<Vec<_>>(),
         },
         "steps": report.steps,
+        "checklist": local_action_checklist(&report.next_actions),
         "nextActions": report.next_actions.clone(),
         "report": report.report,
     }))?)
@@ -9706,6 +9754,7 @@ fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<Str
                 .collect::<Vec<_>>(),
         },
         "issues": report.issues,
+        "checklist": local_action_checklist(&report.next_actions),
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
@@ -33721,6 +33770,8 @@ mod tests {
             }),
             "quickstart JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -36889,6 +36940,8 @@ mod tests {
             }),
             "selftest JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -42037,6 +42090,32 @@ diff --git a/docs/b.md b/docs/b.md
             checklist.len(),
             executable_actions.len(),
             "benchmark checklist should mirror executable nextActions"
+        );
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);
+            assert_eq!(item["command"].as_str().unwrap(), executable_actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+    }
+
+    fn assert_checklist_matches_executable_actions(value: &Value, actions: &[String]) {
+        let checklist = value["checklist"]
+            .as_array()
+            .expect("JSON report should expose checklist");
+        let executable_actions = actions
+            .iter()
+            .filter(|action| {
+                (action.starts_with("deepcli ")
+                    || action.starts_with("cargo ")
+                    || action.starts_with("git "))
+                    && !action.contains('<')
+                    && !action.contains('>')
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            checklist.len(),
+            executable_actions.len(),
+            "checklist should mirror executable nextActions"
         );
         for (index, item) in checklist.iter().enumerate() {
             assert_eq!(item["step"].as_u64().unwrap(), (index + 1) as u64);

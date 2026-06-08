@@ -248,7 +248,7 @@ TERM_PROGRAM=iTerm.app ./scripts/deepcli terminal --dry-run --json
 
 `selftest` 和 `doctor` 会读取 `.deepcli/config.json` 中的 `project.gitIdentity`，对比当前 Git 仓库的有效 `user.name` / `user.email`，用于提交前发现错误作者身份。
 
-`quickstart --json`、`selftest --json`、`version/about --json` 和 `health/doctor --json` 的顶层 `nextActions` 都是可直接复制到 shell 的命令；首次引导和诊断说明继续放在 `steps`、`report`、`environment`、`shell` 等解释性字段中，外部 UI 或脚本不需要解析 `run \`/...\`` 文本才能推进下一步。
+`quickstart --json` 和 `selftest --json` 会从可执行 `nextActions` 派生顶层 `checklist[]`，每项包含 `step`、`label` 和 `command`，让 TUI、外部 onboarding UI、安装脚本或验收脚本可以直接渲染下一步动作；`version/about --json` 和 `health/doctor --json` 的顶层 `nextActions` 也都是可直接复制到 shell 的命令；首次引导和诊断说明继续放在 `steps`、`report`、`environment`、`shell` 等解释性字段中，外部 UI 或脚本不需要解析 `run \`/...\`` 文本才能推进下一步。
 
 `preflight` / `release-check` 是提交或推送前的一键本地检查入口，会串联格式、diff whitespace、clippy、selftest、doctor、privacy 和 gate；`--dry-run` 可先预览将执行的检查且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 可跳过较慢的 clippy/gate，并将 privacy 计划切换为 `privacy --no-history` 以加快本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；JSON 顶层 `checklist[]` 会把检查队列结构化为 `step`、`label`、`command`、`status` 和 `required`，让 TUI、外部 UI 或脚本不必解析 `checks[]` 或 report 文本即可渲染发布检查清单；文本和 JSON 报告会汇总总耗时、最慢检查、最大输出检查和失败的 required check，便于快速定位发布前检查慢或噪声大的原因。
 
