@@ -172,6 +172,41 @@ fn wrapper_usage_lists_git_inspection_where_it_is_routable() {
 }
 
 #[test]
+fn wrapper_usage_lists_collaboration_queues_where_they_are_routable() {
+    let run = run_wrapper_raw(&["--help"]);
+
+    assert!(
+        run.status_success,
+        "wrapper help failed: stdout={}\nstderr={}",
+        run.stdout, run.stderr
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli approval list [--json] [--output path]"),
+        "top-level help should advertise approval inspection: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli btw ask <question>|list [--json] [--output path]"),
+        "top-level help should advertise by-the-way question workflow: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|"),
+        "kimi provider routable command list should include approval and btw: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|"),
+        "deepseek provider routable command list should include approval and btw: {}",
+        run.stdout
+    );
+}
+
+#[test]
 fn wrapper_maps_common_top_level_commands_to_slash_commands() {
     let run = run_wrapper(&["doctor", "--quick"]);
     let workspace = run.workspace.path().canonicalize().unwrap();
