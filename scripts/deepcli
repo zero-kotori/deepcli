@@ -196,6 +196,8 @@ Usage:
   deepcli session <action> [...]  Run a /session action
   deepcli git status|diff|branch|message [--json] [--output path]
                                    Inspect Git state, diffs, branch, or commit message suggestions
+  deepcli git create-branch <name>|commit <message>
+                                   Run controlled Git write operations through deepcli permissions
   deepcli approval list [--json] [--output path]
                                    Inspect pending approval requests
   deepcli approval approve <id>|deny <id> [--current] [--json] [--output path]
@@ -338,6 +340,9 @@ Examples:
   deepcli provider kimi
   deepcli providers --json
   deepcli history --limit 10
+  deepcli git status --json
+  deepcli git create-branch feature/my-work
+  deepcli git commit "Describe the change"
   deepcli prompt list --json --output .deepcli/exports/prompts.json
   deepcli skill list --json --output .deepcli/exports/skills.json
   deepcli agent list --json --output .deepcli/exports/agents.json

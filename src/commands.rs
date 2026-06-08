@@ -29288,17 +29288,14 @@ pub(crate) async fn handle_git(
             )?)
         }
         "create-branch" => {
-            let name = required_arg(&args, 1, "branch name")?;
+            let name = parse_git_create_branch_args(&args)?;
             Ok(executor
                 .execute("git_create_branch", json!({"name": name, "approved": true}))
                 .await?
                 .content)
         }
         "commit" => {
-            let message = args.iter().skip(1).cloned().collect::<Vec<_>>().join(" ");
-            if message.trim().is_empty() {
-                bail!("/git commit requires a message");
-            }
+            let message = parse_git_commit_message_args(&args)?;
             Ok(executor
                 .execute("git_commit", json!({"message": message, "approved": true}))
                 .await?
@@ -29306,6 +29303,37 @@ pub(crate) async fn handle_git(
         }
         other => bail!("unsupported /git action `{other}`"),
     }
+}
+
+fn parse_git_create_branch_args(args: &[String]) -> Result<&str> {
+    let name = required_arg(args, 1, "branch name")?;
+    if name.starts_with('-') {
+        bail!("unsupported /git create-branch option `{name}`");
+    }
+    if let Some(extra) = args.get(2) {
+        bail!("unexpected /git create-branch argument `{extra}`");
+    }
+    Ok(name)
+}
+
+fn parse_git_commit_message_args(args: &[String]) -> Result<String> {
+    let mut parts = Vec::new();
+    let mut literal_message = false;
+    for value in args.iter().skip(1) {
+        if !literal_message && value == "--" {
+            literal_message = true;
+            continue;
+        }
+        if !literal_message && value.starts_with('-') {
+            bail!("unexpected /git commit argument `{value}`");
+        }
+        parts.push(value.as_str());
+    }
+    let message = parts.join(" ");
+    if message.trim().is_empty() {
+        bail!("/git commit requires a message");
+    }
+    Ok(message)
 }
 
 struct GitOptions {
@@ -36712,6 +36740,63 @@ mod tests {
         .to_string();
         assert!(error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../git.json").exists());
+    }
+
+    #[tokio::test]
+    async fn git_write_actions_reject_extra_options_before_execution() {
+        let dir = tempdir().unwrap();
+        write_minimal_cargo_project(dir.path());
+        init_git_repo_with_baseline(dir.path());
+        fs::write(
+            dir.path().join("src/lib.rs"),
+            "pub fn ok() -> bool { true }\npub fn changed() -> bool { ok() }\n",
+        )
+        .unwrap();
+        let executor = test_executor(dir.path());
+
+        let branch_error = handle_git(
+            dir.path(),
+            &executor,
+            vec![
+                "create-branch".into(),
+                "feature/safe".into(),
+                "--dry-run".into(),
+            ],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(branch_error.contains("unexpected /git create-branch argument `--dry-run`"));
+        let branches = Command::new("git")
+            .args(["branch", "--list", "feature/safe"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(branches.status.success());
+        assert!(String::from_utf8_lossy(&branches.stdout).trim().is_empty());
+
+        let head_before = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(head_before.status.success());
+        let commit_error = handle_git(
+            dir.path(),
+            &executor,
+            vec!["commit".into(), "update".into(), "--json".into()],
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(commit_error.contains("unexpected /git commit argument `--json`"));
+        let head_after = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        assert!(head_after.status.success());
+        assert_eq!(head_after.stdout, head_before.stdout);
     }
 
     fn run_git(dir: &Path, args: &[&str]) {

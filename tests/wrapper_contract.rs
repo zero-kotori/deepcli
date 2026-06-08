@@ -143,7 +143,7 @@ fn wrapper_usage_lists_terminal_where_it_is_routable() {
 }
 
 #[test]
-fn wrapper_usage_lists_git_inspection_where_it_is_routable() {
+fn wrapper_usage_lists_git_workflow_where_it_is_routable() {
     let run = run_wrapper_raw(&["--help"]);
 
     assert!(
@@ -155,6 +155,12 @@ fn wrapper_usage_lists_git_inspection_where_it_is_routable() {
         run.stdout
             .contains("deepcli git status|diff|branch|message [--json] [--output path]"),
         "top-level help should advertise read-only git inspection: {}",
+        run.stdout
+    );
+    assert!(
+        run.stdout
+            .contains("deepcli git create-branch <name>|commit <message>"),
+        "top-level help should advertise controlled git write operations: {}",
         run.stdout
     );
     assert!(
@@ -312,6 +318,18 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
             "--output",
             ".deepcli/exports/usage.json",
         ]
+    ));
+
+    let git_create_branch = run_wrapper(&["git", "create-branch", "feature/safe"]);
+    assert!(ends_with_args(
+        &git_create_branch.args,
+        &["/git", "create-branch", "feature/safe"]
+    ));
+
+    let git_commit = run_wrapper(&["git", "commit", "safe", "checkpoint"]);
+    assert!(ends_with_args(
+        &git_commit.args,
+        &["/git", "commit", "safe", "checkpoint"]
     ));
 
     let health = run_wrapper(&["health", "--json"]);

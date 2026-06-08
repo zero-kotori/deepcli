@@ -31,6 +31,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli plan <rough requirement>`：围绕不成熟需求生成澄清问题、推荐选项和需求草稿。
 - `deepcli fork [session_id|--current] [--dry-run|--no-open] [--verify] [--app name]`：预览或复制已持久化会话上下文，并可打开新终端恢复到副本，在同一历史上下文上独立继续交互；`DEEPCLI_TERMINAL_APP=iTerm2` 可设置默认终端 app，`--app iTerm2` 可单次覆盖，`--verify --json` 会输出 resume 健康检查。
 - `deepcli git status|diff|branch|message --json [--output path]`：用稳定 `deepcli.git.inspect.v1` 输出只读 Git 检查结果、原始 stdout/stderr、report 和可执行 next actions，并可写入 workspace 内 artifact；`diff` 支持 `--staged|--cached`，未知只读参数会被拒绝，避免脚本把空输出误判为成功。
+- `deepcli git create-branch <name>` 和 `deepcli git commit <message>`：作为受控 Git 写操作入口暴露在顶层帮助中，并会拒绝多余 option-shaped 参数，避免用户把 `--dry-run`、`--json` 等误认为安全预览但实际执行写操作。
 - `deepcli terminal [--dry-run|--no-open] [--app name] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；`DEEPCLI_TERMINAL_APP` 可设置默认 macOS 终端 app，`--app iTerm2` 可单次覆盖，JSON 包含 app、command 和可直接复制的 `workspaceCommand`，并且 dry-run、失败和真实打开成功时的 `nextActions` 都只输出可执行的 `cd <workspace>` 或 `deepcli ...` 命令。
 - `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。

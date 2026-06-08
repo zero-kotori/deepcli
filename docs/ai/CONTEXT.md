@@ -518,6 +518,11 @@
    - 行为：action JSON 包含 workspace、action、session、处理后的 approval/question 或 clearedCount、可执行 `nextActions` 和 report；`--output` 继续限制在 workspace 内 artifact。默认文本输出不变，wrapper 会原样转发 action JSON 参数。
    - 目的：让外部 UI 和脚本从 list JSON 拿到处理命令后，执行处理命令也能获得稳定结构化结果并立即刷新队列，而不是解析纯文本。
 
+102. Git 写操作参数安全与可发现性
+   - 结果：`deepcli --help` 现在显式展示 `deepcli git create-branch <name>|commit <message>`，和 `/help git` 的能力说明保持一致。
+   - 行为：`/git create-branch` 必须且只能接收一个 branch name；`/git commit` 默认拒绝 option-shaped 额外参数，若提交信息确实需要以 `-` 开头可使用 `--` 分隔。`--dry-run`、`--json` 等不再被 Git 写操作静默忽略或当作普通文本导致误执行。
+   - 目的：避免 shell 用户把 Git 写操作上的 `--dry-run` 或 `--json` 误认为安全预览/结构化输出但实际创建分支或提交，同时让受控 Git 写入口在顶层帮助中可发现。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 `--from-current`、手工 baseline template 或 baseline compare；如果默认 competitor baseline 缺失且本地 artifact 可完整捕获，会先提示 `baseline-template --from-current` 生成 `status=ready` 的 compare-ready baseline，再提示手工 competitor baseline template。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
@@ -546,7 +551,9 @@ DEEPCLI_TERMINAL_APP=iTerm2 ./scripts/deepcli terminal --dry-run --json
 ./scripts/deepcli terminal --app iTerm2 --dry-run --json
 ./scripts/deepcli --help | rg 'terminal'
 ./scripts/deepcli --help | rg 'git status'
+./scripts/deepcli --help | rg 'git create-branch'
 ./scripts/deepcli git status --json
+cargo test git_write_actions_reject_extra_options_before_execution
 ./scripts/deepcli --help | rg 'approval list|approval approve|btw ask|btw answer'
 ./scripts/deepcli approval list --json
 ./scripts/deepcli approval list --json | jq '.nextActions'
