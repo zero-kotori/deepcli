@@ -2489,7 +2489,7 @@ fn format_recipes_json(
 ) -> Result<String> {
     let title = recipes_json_title(topic, recipes);
     let summary = recipes_json_summary(topic, recipes);
-    let checklist = recipes_checklist(workspace, recipes);
+    let checklist = recipes_checklist(workspace, topic, recipes, next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.recipes.v1",
         "status": "ok",
@@ -2527,7 +2527,15 @@ fn recipes_json_summary(topic: Option<&'static str>, recipes: &[Recipe]) -> Stri
     }
 }
 
-fn recipes_checklist(workspace: &Path, recipes: &[Recipe]) -> Vec<Value> {
+fn recipes_checklist(
+    workspace: &Path,
+    topic: Option<&'static str>,
+    recipes: &[Recipe],
+    next_actions: &[String],
+) -> Vec<Value> {
+    if topic == Some("sota") && recipes.len() == 1 {
+        return scorecard_action_checklist(next_actions);
+    }
     if recipes.len() == 1 {
         let recipe = recipes[0];
         return recipe_checklist_commands(workspace, &recipe)
@@ -34098,15 +34106,19 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Inspect product gaps"));
+        let next_actions = value["nextActions"].as_array().unwrap();
         let checklist = value["checklist"].as_array().unwrap();
-        assert!(checklist.len() >= 6);
-        assert_eq!(checklist[0]["step"], 1);
-        assert_eq!(checklist[0]["label"], "Open SOTA product loop recipe");
-        assert_eq!(checklist[0]["command"], "deepcli recipes sota --json");
-        assert!(checklist.iter().any(|item| {
-            item["label"] == "Refresh benchmark evidence"
-                && item["command"] == "deepcli round --json --run-benchmark --fail-on-command"
-        }));
+        assert_eq!(checklist.len(), next_actions.len());
+        for (index, item) in checklist.iter().enumerate() {
+            assert_eq!(item["step"], index + 1);
+            assert_eq!(item["command"], next_actions[index]);
+            assert!(item["label"].as_str().unwrap().len() >= 3);
+        }
+        assert_eq!(
+            checklist[0]["command"],
+            "deepcli round --json --run-benchmark --fail-on-command"
+        );
+        assert_eq!(checklist[0]["label"], "Refresh benchmark evidence");
         assert!(checklist
             .iter()
             .all(|item| { item["command"].as_str().unwrap().starts_with("deepcli ") }));
@@ -34139,7 +34151,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|topic| topic.as_str().unwrap() == "sota"));
-        let next_actions = value["nextActions"].as_array().unwrap();
         assert_eq!(
             next_actions.first().unwrap().as_str().unwrap(),
             "deepcli round --json --run-benchmark --fail-on-command"
@@ -34241,6 +34252,12 @@ mod tests {
         )
         .unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|action| action.as_str().unwrap())
+            .collect::<Vec<_>>();
         let checklist = value["checklist"]
             .as_array()
             .unwrap()
@@ -34248,6 +34265,7 @@ mod tests {
             .map(|item| item["command"].as_str().unwrap())
             .collect::<Vec<_>>();
 
+        assert_eq!(checklist, next_actions);
         assert!(checklist.contains(
             &"deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
         ));

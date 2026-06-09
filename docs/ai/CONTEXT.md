@@ -689,6 +689,7 @@ cargo test git_write
 jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}' .deepcli/support/latest/manifest.json
 ./scripts/deepcli recipes sota --json
 ./scripts/deepcli recipes sota --json | jq '{title,summary,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli recipes sota --json | jq '{matches:([.checklist[].command] == .nextActions),checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli recipes sota --json | jq '.checklist[] | select(.command | contains("baseline"))'
 ./scripts/deepcli round --json
 ./scripts/deepcli round --json | jq '{checklist,nextActions}'
@@ -722,6 +723,13 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
 ```
 
 上面两类 marker 命令应在执行时替换为本地私有扫描模式，不要把非目标个人身份字面量写入仓库文档。
+
+## 本轮新增上下文
+
+121. SOTA recipe 当前动作清单对齐
+   - 产品缺口：`deepcli recipes sota --json` 的顶层 `nextActions` 已经是状态感知动作队列，但 `checklist[]` 仍从静态 recipe 命令链生成，外部 UI 只渲染 checklist 时会先展示已读的 recipe/scorecard/round 导航，而不是当前最该执行的动作。
+   - 结果：`recipes sota` 顶层 `checklist[]` 改为从状态感知 `nextActions` 派生并逐项对齐；静态完整工作流继续保留在 `recipes[].commands`。
+   - 目的：TUI、外部产品循环页和脚本验收可以把 `checklist[]` 当作当前动作按钮队列，不需要自行判断 SOTA recipe 的静态命令和动态动作哪个更该展示。
 
 ## 下一步建议
 
