@@ -678,6 +678,11 @@ cargo test git_write
 ./scripts/deepcli doctor shell --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli status --json | jq '{checklist:.checklist[0:4],sessionChecklist:.session.checklist[0:4],nextActions:.session.nextActions[0:4]}'
 ./scripts/deepcli usage --json | jq '{checklist:.checklist[0:4],sessionChecklist:.session.checklist[0:4],nextActions:.session.nextActions[0:4]}'
+./scripts/deepcli config validate --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli config sources --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli credentials status --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli permissions show --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli timeout --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli model show --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli model list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli completion status zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
@@ -785,6 +790,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli env check|plan|setup|test ... --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，Environment 面板、安装向导和验收脚本仍要自行给检查、计划、安装、环境测试、accept 和 gate 动作命名。
    - 结果：Environment inspect JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；未 ready 环境展示 `Set up local environment` 与 `Inspect environment plan`，ready/setup/test 场景展示 `Run environment test`、`Discover test commands`、`Run acceptance checks` 和 `Run delivery gate`。
    - 目的：Docker/编译器环境从预检、安装计划、setup、smoke test 到验收 gate 的链路可以直接作为结构化按钮队列呈现，推进 deepcli 自发环境配置和测试体验。
+
+130. Config/Credentials/Permissions JSON 动作清单
+   - 产品缺口：`deepcli config show|sources|validate|get --json`、`credentials status --json`、`permissions show --json` 和 `timeout --json` 位于启动配置、模型切换和安全设置的关键路径，但 JSON 里缺少统一 `checklist[]`，且 credentials/permissions 的 next actions 仍混有 slash-command prose 或空动作。
+   - 结果：这些本地 inspect JSON 现在输出可执行 `deepcli ...` 顶层动作，并从动作派生 `checklist[]`；configured credentials 也会给出模型查看、模型列表、配置验证和 doctor，missing/parse-error credentials 会给出具体 provider 的 set/import-env/template 修复动作；permissions 会给出回到 sandbox、配置验证、doctor 和帮助动作；timeout 会给出 usage、trace、inspect、reset 和 help 动作。
+   - 目的：设置面板、凭据向导、权限安全页和慢响应排障页可以直接渲染配置/凭据/权限/超时动作按钮，不必解析自然语言或自行拼命令。
 
 ## 下一步建议
 

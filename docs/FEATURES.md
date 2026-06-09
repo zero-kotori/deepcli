@@ -96,7 +96,7 @@ Status、Usage、Completion、验收交付、模型、超时、日志、Test、P
 - `deepcli credentials template <provider>`
 - `deepcli credentials import-env <provider>`
 
-输出会脱敏，不打印明文 API key。
+输出会脱敏，不打印明文 API key。`credentials status --json`、`config show|sources|validate|get --json`、`permissions show --json` 和 `timeout --json` 的顶层 `nextActions` 都使用可执行 `deepcli ...` 命令，并从这些动作派生 `checklist[]`，让设置面板、凭据向导、权限安全页和模型切换排障页可以直接渲染配置验证、凭据修复、模型查看、超时诊断和权限帮助动作。
 
 ## 本地健康检查与安装验收
 
@@ -242,6 +242,7 @@ deepcli 默认强调本地安全边界：
 - `privacy.blockedTerms` 可把旧产品名、公司邮箱、作者姓名或内部代号纳入本地隐私门禁；`privacy.allowedTerms` 可折叠确认保留的迁移说明或测试夹具，报告中只展示 `<blocked-term>` 占位符。
 - `privacy.allowedUserPaths` 可把确认可接受的历史本机用户路径折叠到 suppressed findings，避免迁移旧路径长期阻断发布检查。
 - `project.gitIdentity` 可把仓库预期提交身份写入 `.deepcli/config.json`，由 `doctor` / `selftest` 作为正式健康检查项持续验证。
+- `permissions show --json` 会输出可执行 `nextActions` 和 `checklist[]`，把回到 sandbox、配置验证、doctor 和权限帮助动作结构化，供运行前安全审计 UI 直接渲染。
 - 只读 one-shot 命令不应创建空会话或污染项目授权状态。
 
 ## 常用验收命令

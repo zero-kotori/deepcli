@@ -3425,7 +3425,11 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli quickstart --check" => "Check quickstart readiness",
         "deepcli quickstart --json" => "Open quickstart readiness",
         "deepcli init --quick" => "Initialize project config",
+        "deepcli config show --json" => "Inspect project config",
+        "deepcli config sources --json" => "Inspect config sources",
         "deepcli config validate" => "Validate project config",
+        "deepcli config validate --json" => "Validate project config",
+        command if command.starts_with("deepcli config get ") => "Inspect config value",
         "deepcli recipes" => "Open workflow recipes",
         "deepcli recipes release" => "Open release workflow",
         "deepcli completion json" => "Export command catalog",
@@ -3466,21 +3470,35 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli next --json" => "Inspect recovery actions",
         "deepcli handoff --pr" => "Prepare PR handoff",
         "deepcli permissions show --json" => "Inspect permissions",
+        command if command.starts_with("deepcli permissions set-mode ") => "Set permission mode",
+        "deepcli help permissions" => "Open permissions help",
         "deepcli credentials status --json" => "Inspect credentials",
+        command if command.starts_with("deepcli credentials status ") => "Inspect credentials",
         command if command.starts_with("deepcli credentials set ") => {
             "Configure provider credentials"
         }
+        command if command.starts_with("deepcli credentials import-env ") => {
+            "Import credentials from environment"
+        }
+        command if command.starts_with("deepcli credentials template ") => {
+            "Create credentials template"
+        }
+        "deepcli help credentials" => "Open credentials help",
         "deepcli model list" => "List configured models",
         "deepcli model list --json" => "List configured models",
         "deepcli model show --json" => "Inspect active model",
         "deepcli help model" => "Open model help",
         command if command.starts_with("deepcli model set ") => "Switch configured model",
+        "deepcli timeout --json" => "Inspect provider timeout",
+        "deepcli timeout reset" => "Reset provider timeout",
+        "deepcli help timeout" => "Open timeout help",
         "deepcli stop" => "Stop running task",
         "deepcli fork --dry-run --json" => "Preview session fork",
         command if command.starts_with("deepcli fork --current") => "Fork active context",
         command if command.starts_with("deepcli fork ") => "Create session fork",
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
         "deepcli doctor --quick" => "Run quick diagnostics",
+        "deepcli doctor --quick --json" => "Run quick diagnostics",
         "deepcli doctor shell --json" => "Check shell install",
         "deepcli env check docker --json" => "Check Docker environment",
         command if command.starts_with("deepcli env check ") => "Check local environment",
@@ -16422,6 +16440,8 @@ fn format_permissions_show_json(
     config: &AppConfig,
     text: &str,
 ) -> Result<String> {
+    let next_actions = permissions_next_actions(config);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.permissions.show.v1",
         "status": "ok",
@@ -16452,7 +16472,8 @@ fn format_permissions_show_json(
             "dangerousCommands": !config.sandbox.allow_dangerous_commands
                 || config.permissions.dangerous_commands.contains("confirm"),
         },
-        "nextActions": permissions_next_actions(config),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": text,
     }))?)
 }
@@ -16469,20 +16490,18 @@ fn normalized_permission_mode(value: &str) -> &'static str {
 fn permissions_next_actions(config: &AppConfig) -> Vec<String> {
     let mut actions = Vec::new();
     if normalized_permission_mode(&config.permissions.default_mode) != "sandbox" {
-        actions.push(
-            "run `/permissions set-mode sandbox` to return to the safest default".to_string(),
-        );
+        actions.push("deepcli permissions set-mode sandbox".to_string());
     }
     if config.sandbox.allow_system_write {
-        actions.push("review sandbox.allowSystemWrite before running untrusted tasks".to_string());
+        actions.push("deepcli config show --json".to_string());
     }
     if config.sandbox.allow_dangerous_commands {
-        actions.push("review sandbox.allowDangerousCommands before running destructive shell or Git commands".to_string());
+        actions.push("deepcli config show --json".to_string());
     }
-    if actions.is_empty() {
-        actions.push("keep sandbox mode for routine coding tasks; approve elevated operations only when prompted".to_string());
-    }
-    actions
+    actions.push("deepcli config validate --json".to_string());
+    actions.push("deepcli doctor --quick --json".to_string());
+    actions.push("deepcli help permissions".to_string());
+    dedup_preserve_order(actions)
 }
 
 #[cfg(test)]
@@ -16816,31 +16835,26 @@ fn format_credential_status_entry(entry: &CredentialsStatusEntry) -> String {
 fn credentials_status_next_actions(entries: &[CredentialsStatusEntry]) -> Vec<String> {
     let mut actions = Vec::new();
     for entry in entries {
+        let provider = shell_words::quote(&entry.provider);
         if entry.error.is_some() {
-            actions.push(format!(
-                "check provider `{}` in `.deepcli/config.json` or run `/model list`",
-                entry.provider
-            ));
+            actions.push("deepcli config validate --json".to_string());
+            actions.push("deepcli model list --json".to_string());
             continue;
         }
         if entry.parse_error.is_some() {
-            actions.push(format!(
-                "fix credentials JSON at {} or recreate it with `/credentials set {} --force`",
-                entry.path, entry.provider
-            ));
+            actions.push(format!("deepcli credentials set {provider} --force"));
+            actions.push(format!("deepcli credentials template {provider}"));
         }
         if entry.api_key_status() == "missing" {
-            actions.push(format!("run `/credentials set {}`", entry.provider));
-            actions.push(format!(
-                "or export {} and run `/credentials import-env {}`",
-                entry.env_key, entry.provider
-            ));
-            actions.push(format!(
-                "or run `/credentials template {}` to create a local example",
-                entry.provider
-            ));
+            actions.push(format!("deepcli credentials set {provider}"));
+            actions.push(format!("deepcli credentials import-env {provider}"));
+            actions.push(format!("deepcli credentials template {provider}"));
         }
     }
+    actions.push("deepcli model show --json".to_string());
+    actions.push("deepcli model list --json".to_string());
+    actions.push("deepcli config validate --json".to_string());
+    actions.push("deepcli doctor --quick --json".to_string());
     dedup_preserve_order(actions)
 }
 
@@ -16849,6 +16863,12 @@ fn format_credentials_status_json(
     options: &CredentialsStatusOptions,
     report: &CredentialsStatusReport,
 ) -> Result<String> {
+    let next_actions = report
+        .next_actions
+        .iter()
+        .map(|action| redact_sensitive_text(action))
+        .collect::<Vec<_>>();
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.credentials.status.v1",
         "status": "ok",
@@ -16862,11 +16882,8 @@ fn format_credentials_status_json(
             .iter()
             .map(credential_status_entry_json)
             .collect::<Vec<_>>(),
-        "nextActions": report
-            .next_actions
-            .iter()
-            .map(|action| redact_sensitive_text(action))
-            .collect::<Vec<_>>(),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(&report.report),
         "format": if options.json_output { "json" } else { "text" },
     }))?)
@@ -17390,6 +17407,8 @@ fn format_config_read_json(
         ConfigReadKind::Get { path } => Some(path.as_str()),
         _ => None,
     };
+    let next_actions = config_read_next_actions(&report.kind);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.config.inspect.v1",
         "status": "ok",
@@ -17397,9 +17416,42 @@ fn format_config_read_json(
         "kind": report.kind.name(),
         "path": path,
         "payload": report.payload,
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(&report.report),
         "format": if options.json_output { "json" } else { "text" },
     }))?)
+}
+
+fn config_read_next_actions(kind: &ConfigReadKind) -> Vec<String> {
+    let mut actions = match kind {
+        ConfigReadKind::Show => vec![
+            "deepcli config validate --json".to_string(),
+            "deepcli config sources --json".to_string(),
+            "deepcli credentials status --json".to_string(),
+            "deepcli model show --json".to_string(),
+            "deepcli timeout --json".to_string(),
+        ],
+        ConfigReadKind::Sources => vec![
+            "deepcli config validate --json".to_string(),
+            "deepcli credentials status --json".to_string(),
+            "deepcli model show --json".to_string(),
+            "deepcli doctor --quick --json".to_string(),
+        ],
+        ConfigReadKind::Validate => vec![
+            "deepcli credentials status --json".to_string(),
+            "deepcli model show --json".to_string(),
+            "deepcli timeout --json".to_string(),
+            "deepcli doctor --quick --json".to_string(),
+        ],
+        ConfigReadKind::Get { .. } => vec![
+            "deepcli config show --json".to_string(),
+            "deepcli config validate --json".to_string(),
+            "deepcli credentials status --json".to_string(),
+            "deepcli model show --json".to_string(),
+        ],
+    };
+    dedup_preserve_order(std::mem::take(&mut actions))
 }
 
 fn collect_config_sources(workspace: &Path) -> ConfigSourceState {
@@ -17807,6 +17859,8 @@ fn format_timeout_json(
     seconds: u64,
     report: &str,
 ) -> Result<String> {
+    let next_actions = timeout_next_actions(action);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.timeout.v1",
         "status": "ok",
@@ -17814,14 +17868,23 @@ fn format_timeout_json(
         "action": action,
         "path": PROVIDER_TURN_TIMEOUT_CONFIG_PATH,
         "seconds": seconds,
-        "nextActions": [
-            "deepcli usage --json",
-            "deepcli trace --limit 30",
-            "deepcli help timeout",
-            "deepcli timeout reset"
-        ],
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": report,
     }))?)
+}
+
+fn timeout_next_actions(action: &str) -> Vec<String> {
+    let mut actions = vec![
+        "deepcli usage --json".to_string(),
+        "deepcli trace --limit 30".to_string(),
+        "deepcli timeout --json".to_string(),
+        "deepcli help timeout".to_string(),
+    ];
+    if action != "reset" {
+        actions.push("deepcli timeout reset".to_string());
+    }
+    dedup_preserve_order(actions)
 }
 
 fn handle_model(workspace: &Path, config: &AppConfig, args: Vec<String>) -> Result<String> {
@@ -41951,6 +42014,12 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["path"], "agent.providerTurnTimeoutSeconds");
         assert_eq!(value["payload"], 45);
         assert_eq!(value["report"], "45");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Validate project config".to_string()));
+        assert!(checklist_labels.contains(&"Inspect credentials".to_string()));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/config-timeout.json")).unwrap();
         assert_eq!(written, get_json);
@@ -41966,6 +42035,12 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["kind"], "validate");
         assert_eq!(value["payload"]["valid"], true);
         assert_eq!(value["payload"]["defaultProvider"], "deepseek");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect credentials".to_string()));
+        assert!(checklist_labels.contains(&"Inspect active model".to_string()));
     }
 
     #[test]
@@ -42016,6 +42091,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli timeout reset"));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect session usage".to_string()));
+        assert!(checklist_labels.contains(&"Reset provider timeout".to_string()));
 
         let raw = fs::read_to_string(dir.path().join(".deepcli/config.json")).unwrap();
         let config_value: Value = serde_json::from_str(&raw).unwrap();
@@ -42095,6 +42174,12 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .iter()
             .any(|item| item["key"] == "DEEPSEEK_API_KEY"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Validate project config".to_string()));
+        assert!(checklist_labels.contains(&"Inspect credentials".to_string()));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/config-sources.json")).unwrap();
         assert_eq!(written, json_output);
@@ -42144,11 +42229,12 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["sandbox"]["enabledByDefault"], true);
         assert_eq!(value["capabilities"]["network"], true);
         assert_eq!(value["requiresApproval"]["workspaceWrite"], true);
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item.as_str().unwrap().contains("sandbox mode")));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Validate project config".to_string()));
+        assert!(checklist_labels.contains(&"Open permissions help".to_string()));
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -42210,7 +42296,7 @@ diff --git a/docs/b.md b/docs/b.md
         )
         .unwrap();
         assert!(status.contains("api_key=missing"));
-        assert!(status.contains("/credentials set"));
+        assert!(status.contains(&format!("deepcli credentials set {provider}")));
     }
 
     #[test]
@@ -42404,10 +42490,47 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["providers"][0]["environment"]["present"], true);
         assert_eq!(value["providers"][0]["model"], "test-model");
         assert!(!output.contains(secret));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect active model".to_string()));
+        assert!(checklist_labels.contains(&"Validate project config".to_string()));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/credentials.json")).unwrap();
         assert_eq!(written, output);
+
+        let missing_dir = tempdir().unwrap();
+        let missing_provider = format!("missingcred{}", uuid::Uuid::new_v4().simple());
+        let missing_config = test_provider_config(&missing_provider);
+        let missing_output = handle_credentials(
+            missing_dir.path(),
+            &missing_config,
+            vec!["status".into(), missing_provider.clone(), "--json".into()],
+        )
+        .unwrap();
+        let missing_value: Value = serde_json::from_str(&missing_output).unwrap();
+        assert_eq!(missing_value["schema"], "deepcli.credentials.status.v1");
+        assert_eq!(missing_value["provider"], missing_provider);
+        assert_eq!(missing_value["configuredProviders"], 0);
+        assert_eq!(missing_value["missingProviders"], 1);
+        let missing_next_actions = json_string_array(&missing_value["nextActions"]);
+        assert_executable_deepcli_actions(&missing_next_actions);
+        assert_checklist_matches_executable_actions(&missing_value, &missing_next_actions);
+        assert!(missing_next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli credentials set {missing_provider}")));
+        assert!(missing_next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli credentials import-env {missing_provider}")));
+        assert!(missing_next_actions
+            .iter()
+            .any(|action| action == &format!("deepcli credentials template {missing_provider}")));
+        let missing_labels = json_checklist_labels(&missing_value);
+        assert!(missing_labels.contains(&"Configure provider credentials".to_string()));
+        assert!(missing_labels.contains(&"Import credentials from environment".to_string()));
+        assert!(missing_labels.contains(&"Create credentials template".to_string()));
     }
 
     #[test]
