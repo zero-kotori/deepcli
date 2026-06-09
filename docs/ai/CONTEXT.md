@@ -812,6 +812,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：新增 `deepcli benchmark baselines --json`，输出稳定 `deepcli.benchmark.baselines.v1`，包含 baselineCount、ready/needs_values/invalid 计数、defaultBaseline、每个 baseline 的 readiness、case 数、缺值数、compare/template nextActions 和 checklist；坏 JSON 会作为 invalid 条目展示，不会让整个列表失败。
    - 目的：SOTA 横向 benchmark 对比工作流从“生成模板后记路径”变成可发现、可检查、可渲染的 baseline inventory 面板，外部 UI 或 TUI 可以直接引导 compare 或补齐模板。
 
+134. Resume Candidate Diagnostics
+   - 产品缺口：`deepcli resume --dry-run --json` 在当前 workspace 没有可恢复候选时只能告诉用户失败并跳到 session list；但 session list 可能仍显示大量空会话、tool-only/diagnostic 会话或旧 workspace 会话，用户会误以为历史没有记录或 resume 过滤器出错。
+   - 结果：新增 `deepcli resume candidates --json`，输出稳定 `deepcli.resume.candidates.v1`，包含 total/shown/eligible/hidden 计数、默认可恢复候选、每个候选的 activity、eligible、hiddenReason、resumePreviewCommand、nextActions、checklist 和 report；hiddenReason 区分 empty、tool_only_or_diagnostic、low_information_clarification、thin_completed_chat、other_workspace 和其它 non_resumable。`resume --dry-run --json` 无候选错误的首个 nextAction 改为 `deepcli resume candidates --json`。
+   - 目的：恢复历史页、fork 源选择和用户手动排障可以直接解释“没有默认可恢复历史”的原因，不必在 `resume --dry-run`、`session list` 和人工猜测之间来回跳。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

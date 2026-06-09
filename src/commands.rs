@@ -1780,20 +1780,22 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/resume",
-            listing: "/resume [session_id] [--dry-run] [--json] [--output path]",
+            listing: "/resume [session_id|candidates] [--dry-run] [--json] [--output path]",
             summary: "Resume a saved session, or list resumable sessions when no id is provided.",
             usage: &[
                 "/resume",
                 "/resume <session_id>",
                 "/resume <session_id> --dry-run --json",
+                "/resume candidates --json [--limit n]",
                 "/resume --dry-run --json --output .deepcli/exports/resume.json",
             ],
             examples: &[
                 "/resume",
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
+                "deepcli resume candidates --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. Preview and error JSON both expose executable next actions plus matching `checklist[]` items so recovery UIs can render actions without parsing report text. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. `candidates --json` emits `deepcli.resume.candidates.v1`, explaining which current-workspace sessions are eligible, which are hidden, and why, so history UIs can distinguish missing history from filtered diagnostic sessions. Preview, candidates, and error JSON expose executable next actions plus matching `checklist[]` items so recovery UIs can render actions without parsing report text. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
         },
         CommandHelp {
             name: "/rename",
@@ -3481,6 +3483,7 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli help git" => "Open git help",
         "deepcli resume" => "Resume saved work",
         "deepcli resume --dry-run --json" => "Resume preview",
+        "deepcli resume candidates --json" => "Inspect resume candidates",
         command if command.starts_with("deepcli resume ") && command.contains("--dry-run") => {
             "Resume preview"
         }
@@ -3545,6 +3548,7 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         command if command.starts_with("deepcli session history ") => "Inspect session history",
         command if command.starts_with("deepcli session summary ") => "Inspect session summary",
         "deepcli help session" => "Open session help",
+        "deepcli help resume" => "Open resume help",
         command if command.starts_with("deepcli approval approve ") => "Approve request",
         command if command.starts_with("deepcli approval deny ") => "Deny request",
         command if command.starts_with("deepcli approval list ") => "Review approvals",
@@ -11904,11 +11908,34 @@ struct ResumeOptions {
     output_path: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct ResumeCandidateOptions {
+    json_output: bool,
+    output_path: Option<String>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Clone)]
+struct ResumeCandidateEntry {
+    metadata: SessionMetadata,
+    activity: SessionActivitySummary,
+    eligible: bool,
+    hidden_reason: Option<&'static str>,
+}
+
 pub(crate) fn handle_resume(
     workspace: &Path,
     current: Option<String>,
     args: Vec<String>,
 ) -> Result<String> {
+    if args.first().is_some_and(|value| {
+        matches!(
+            value.as_str(),
+            "candidates" | "candidate-list" | "candidate-ls"
+        )
+    }) {
+        return handle_resume_candidates(workspace, &args[1..]);
+    }
     let options = parse_resume_options(&args, current)?;
     let store = SessionStore::new(workspace);
     if !options.dry_run && !options.json_output && options.output_path.is_none() {
@@ -12015,6 +12042,337 @@ fn parse_resume_options(args: &[String], current: Option<String>) -> Result<Resu
         json_output,
         output_path,
     })
+}
+
+fn handle_resume_candidates(workspace: &Path, args: &[String]) -> Result<String> {
+    let options = parse_resume_candidate_options(args)?;
+    let store = SessionStore::new(workspace);
+    let candidates = collect_resume_candidates(&store, workspace)?;
+    let report = format_resume_candidates_report(workspace, &candidates, options.limit);
+    let output = if options.json_output {
+        format_resume_candidates_json(workspace, &candidates, &options, &report)?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_resume_candidate_options(args: &[String]) -> Result<ResumeCandidateOptions> {
+    let mut options = ResumeCandidateOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            "--limit" | "-n" => {
+                options.limit = Some(parse_positive_usize(
+                    required_arg(args, index + 1, "limit")?,
+                    "limit",
+                )?);
+                index += 2;
+            }
+            value if value.starts_with("--limit=") => {
+                options.limit = Some(parse_positive_usize(
+                    value.trim_start_matches("--limit="),
+                    "limit",
+                )?);
+                index += 1;
+            }
+            value => bail!("unsupported /resume candidates option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn collect_resume_candidates(
+    store: &SessionStore,
+    workspace: &Path,
+) -> Result<Vec<ResumeCandidateEntry>> {
+    store
+        .list()?
+        .into_iter()
+        .map(|metadata| resume_candidate_entry(store, workspace, metadata))
+        .collect()
+}
+
+fn resume_candidate_entry(
+    store: &SessionStore,
+    workspace: &Path,
+    metadata: SessionMetadata,
+) -> Result<ResumeCandidateEntry> {
+    if !session_metadata_matches_workspace(&metadata, workspace) {
+        return Ok(ResumeCandidateEntry {
+            metadata,
+            activity: empty_session_activity_summary(),
+            eligible: false,
+            hidden_reason: Some("other_workspace"),
+        });
+    }
+
+    let session = store.load(&metadata.id.to_string())?;
+    let activity = session.activity_summary()?;
+    let hidden_reason = resume_candidate_hidden_reason(&session, &activity)?;
+    Ok(ResumeCandidateEntry {
+        metadata,
+        activity,
+        eligible: hidden_reason.is_none(),
+        hidden_reason,
+    })
+}
+
+fn empty_session_activity_summary() -> SessionActivitySummary {
+    SessionActivitySummary {
+        message_count: 0,
+        tool_call_count: 0,
+        test_run_count: 0,
+        diff_count: 0,
+        backup_count: 0,
+        side_question_count: 0,
+        approval_request_count: 0,
+        has_summary: false,
+    }
+}
+
+fn resume_candidate_hidden_reason(
+    session: &Session,
+    activity: &SessionActivitySummary,
+) -> Result<Option<&'static str>> {
+    if session_is_low_information_clarification_only(session, activity)? {
+        return Ok(Some("low_information_clarification"));
+    }
+    if session_is_thin_completed_chat_only(session, activity)? {
+        return Ok(Some("thin_completed_chat"));
+    }
+    if session_has_resumable_context(session)? {
+        return Ok(None);
+    }
+    if !session_has_recorded_activity(session)? {
+        return Ok(Some("empty"));
+    }
+    if activity.message_count == 0
+        && !activity.has_summary
+        && (activity.tool_call_count > 0
+            || activity.test_run_count > 0
+            || activity.diff_count > 0
+            || activity.backup_count > 0)
+    {
+        return Ok(Some("tool_only_or_diagnostic"));
+    }
+    Ok(Some("non_resumable"))
+}
+
+fn format_resume_candidates_report(
+    workspace: &Path,
+    candidates: &[ResumeCandidateEntry],
+    limit: Option<usize>,
+) -> String {
+    let shown = limit.map_or(candidates.len(), |limit| candidates.len().min(limit));
+    let counts = resume_candidate_reason_counts(candidates);
+    let mut lines = vec![
+        "resume candidates".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!(
+            "total={} shown={} eligible={} hidden={}",
+            candidates.len(),
+            shown,
+            counts.eligible,
+            candidates.len().saturating_sub(counts.eligible)
+        ),
+        format!("hidden empty sessions: {}", counts.hidden_empty),
+        format!(
+            "hidden tool-only or diagnostic sessions: {}",
+            counts.hidden_tool_only
+        ),
+        format!(
+            "hidden low-information sessions: {}",
+            counts.hidden_low_information
+        ),
+        format!(
+            "hidden thin completed sessions: {}",
+            counts.hidden_thin_completed
+        ),
+        format!(
+            "hidden other-workspace sessions: {}",
+            counts.hidden_other_workspace
+        ),
+    ];
+    if let Some(default) = candidates.iter().find(|candidate| candidate.eligible) {
+        lines.push(format!(
+            "default: id={} title={}",
+            short_id(&default.metadata.id),
+            default
+                .metadata
+                .title
+                .as_deref()
+                .map(redact_sensitive_text)
+                .unwrap_or_else(|| "<untitled>".to_string())
+        ));
+    } else {
+        lines.push("default: <none>".to_string());
+    }
+    if candidates.is_empty() {
+        lines.push("candidates: <none>".to_string());
+    } else {
+        lines.push("candidates:".to_string());
+        for candidate in candidates.iter().take(shown) {
+            let reason = candidate.hidden_reason.unwrap_or("eligible");
+            let title = candidate
+                .metadata
+                .title
+                .as_deref()
+                .map(redact_sensitive_text)
+                .unwrap_or_else(|| "<untitled>".to_string());
+            lines.push(format!(
+                "  - id={} reason={} messages={} tools={} tests={} title={}",
+                short_id(&candidate.metadata.id),
+                reason,
+                candidate.activity.message_count,
+                candidate.activity.tool_call_count,
+                candidate.activity.test_run_count,
+                title
+            ));
+        }
+    }
+    lines.push("next actions:".to_string());
+    for action in resume_candidates_next_actions(candidates) {
+        lines.push(format!("  - {action}"));
+    }
+    lines.join("\n")
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ResumeCandidateReasonCounts {
+    eligible: usize,
+    hidden_empty: usize,
+    hidden_tool_only: usize,
+    hidden_low_information: usize,
+    hidden_thin_completed: usize,
+    hidden_other_workspace: usize,
+    hidden_non_resumable: usize,
+}
+
+fn resume_candidate_reason_counts(
+    candidates: &[ResumeCandidateEntry],
+) -> ResumeCandidateReasonCounts {
+    let mut counts = ResumeCandidateReasonCounts::default();
+    for candidate in candidates {
+        match candidate.hidden_reason {
+            None => counts.eligible += 1,
+            Some("empty") => counts.hidden_empty += 1,
+            Some("tool_only_or_diagnostic") => counts.hidden_tool_only += 1,
+            Some("low_information_clarification") => counts.hidden_low_information += 1,
+            Some("thin_completed_chat") => counts.hidden_thin_completed += 1,
+            Some("other_workspace") => counts.hidden_other_workspace += 1,
+            Some(_) => counts.hidden_non_resumable += 1,
+        }
+    }
+    counts
+}
+
+fn format_resume_candidates_json(
+    workspace: &Path,
+    candidates: &[ResumeCandidateEntry],
+    options: &ResumeCandidateOptions,
+    report: &str,
+) -> Result<String> {
+    let shown = options
+        .limit
+        .map_or(candidates.len(), |limit| candidates.len().min(limit));
+    let counts = resume_candidate_reason_counts(candidates);
+    let next_actions = resume_candidates_next_actions(candidates);
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.resume.candidates.v1",
+        "status": "ok",
+        "workspace": workspace.display().to_string(),
+        "limit": options.limit,
+        "counts": {
+            "total": candidates.len(),
+            "shown": shown,
+            "eligible": counts.eligible,
+            "hidden": candidates.len().saturating_sub(counts.eligible),
+            "hiddenEmpty": counts.hidden_empty,
+            "hiddenToolOnly": counts.hidden_tool_only,
+            "hiddenLowInformation": counts.hidden_low_information,
+            "hiddenThinCompleted": counts.hidden_thin_completed,
+            "hiddenOtherWorkspace": counts.hidden_other_workspace,
+            "hiddenNonResumable": counts.hidden_non_resumable,
+        },
+        "defaultCandidate": candidates
+            .iter()
+            .find(|candidate| candidate.eligible)
+            .map(resume_candidate_json)
+            .unwrap_or(Value::Null),
+        "candidates": candidates
+            .iter()
+            .take(shown)
+            .map(resume_candidate_json)
+            .collect::<Vec<_>>(),
+        "nextActions": next_actions,
+        "checklist": local_action_checklist(&next_actions),
+        "report": report,
+    }))?)
+}
+
+fn resume_candidate_json(candidate: &ResumeCandidateEntry) -> Value {
+    json!({
+        "id": candidate.metadata.id.to_string(),
+        "shortId": short_id(&candidate.metadata.id),
+        "title": candidate.metadata.title.as_deref().map(redact_sensitive_text),
+        "workspace": candidate.metadata.workspace.display().to_string(),
+        "provider": candidate.metadata.provider,
+        "model": candidate.metadata.model.as_deref().map(redact_sensitive_text),
+        "state": session_state_name(&candidate.metadata.state),
+        "createdAt": candidate.metadata.created_at.to_rfc3339(),
+        "updatedAt": candidate.metadata.updated_at.to_rfc3339(),
+        "activity": session_activity_json(&candidate.activity),
+        "eligible": candidate.eligible,
+        "hiddenReason": candidate.hidden_reason,
+        "resumePreviewCommand": if candidate.eligible {
+            Value::String(format!(
+                "deepcli resume {} --dry-run --json",
+                short_id(&candidate.metadata.id)
+            ))
+        } else {
+            Value::Null
+        },
+    })
+}
+
+fn resume_candidates_next_actions(candidates: &[ResumeCandidateEntry]) -> Vec<String> {
+    let mut actions = Vec::new();
+    if let Some(candidate) = candidates.iter().find(|candidate| candidate.eligible) {
+        let short = short_id(&candidate.metadata.id);
+        push_unique_action(
+            &mut actions,
+            format!("deepcli resume {short} --dry-run --json"),
+        );
+        push_unique_action(&mut actions, format!("deepcli resume {short}"));
+        push_unique_action(&mut actions, format!("deepcli session next {short} --json"));
+    }
+    push_unique_action(
+        &mut actions,
+        "deepcli session list --all --limit 20 --json".to_string(),
+    );
+    push_unique_action(&mut actions, "deepcli history --limit 20".to_string());
+    push_unique_action(&mut actions, "deepcli help resume".to_string());
+    actions
 }
 
 fn format_resume_preview_report(session: &Session, note: Option<&str>) -> Result<String> {
@@ -12147,6 +12505,7 @@ fn resume_source_error(
 
 fn resume_error_next_actions() -> Vec<String> {
     vec![
+        "deepcli resume candidates --json".to_string(),
         "deepcli sessions --all --limit 20".to_string(),
         "deepcli session list --all --limit 20 --json".to_string(),
         "deepcli history --limit 20".to_string(),
@@ -22882,7 +23241,7 @@ fn resolve_resumable_session_for_workspace(
     }
 
     bail!(
-        "missing session id and no session with resumable conversation context was found in current workspace; run `deepcli resume --dry-run --json` to inspect resumable candidates, `deepcli session list --all --limit 20 --json` to inspect all sessions with structured output, or pass an explicit session id"
+        "missing session id and no session with resumable conversation context was found in current workspace; run `deepcli resume candidates --json` to inspect hidden resume candidates, `deepcli session list --all --limit 20 --json` to inspect all sessions with structured output, or pass an explicit session id"
     )
 }
 
@@ -33446,6 +33805,133 @@ mod tests {
         let checklist_labels = json_checklist_labels(&value);
         assert!(checklist_labels.contains(&"List saved sessions".to_string()));
         assert!(value["report"].as_str().unwrap().contains("resume error"));
+    }
+
+    #[tokio::test]
+    async fn resume_candidates_json_explains_hidden_session_reasons() {
+        let dir = tempdir().unwrap();
+        let old_workspace = dir.path().with_file_name("old_deepcli");
+        let store = SessionStore::new(dir.path());
+        let eligible = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        eligible
+            .append_message("user", "continue this compiler task")
+            .unwrap();
+        eligible.write_summary("continue compiler task").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let tool_only = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        tool_only
+            .append_tool_call(&ToolCallRecord {
+                tool: "list_files".to_string(),
+                input: json!({"path": "."}),
+                output: json!({"files": ["src/main.rs"]}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let mut low_information = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        low_information.append_message("user", "1").unwrap();
+        let clarification = "我不确定你想执行什么。请说明要我分析、修改、测试、继续上次任务，或使用 /help 查看命令。";
+        low_information
+            .append_message("assistant", clarification)
+            .unwrap();
+        low_information.write_summary(clarification).unwrap();
+        low_information
+            .set_state(SessionState::WaitingUser)
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let old = store
+            .create(
+                &old_workspace,
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        old.append_message("user", "old workspace task").unwrap();
+        old.write_summary("old workspace task").unwrap();
+
+        let output = handle_resume(
+            dir.path(),
+            None,
+            vec![
+                "candidates".into(),
+                "--json".into(),
+                "--limit".into(),
+                "10".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.resume.candidates.v1");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["defaultCandidate"]["id"], eligible.id().to_string());
+        assert_eq!(value["counts"]["total"], 4);
+        assert_eq!(value["counts"]["eligible"], 1);
+        assert_eq!(value["counts"]["hiddenToolOnly"], 1);
+        assert_eq!(value["counts"]["hiddenLowInformation"], 1);
+        assert_eq!(value["counts"]["hiddenOtherWorkspace"], 1);
+
+        let candidates = value["candidates"].as_array().unwrap();
+        assert!(candidates.iter().any(|candidate| {
+            candidate["id"] == eligible.id().to_string()
+                && candidate["eligible"] == true
+                && candidate["hiddenReason"] == Value::Null
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["id"] == tool_only.id().to_string()
+                && candidate["eligible"] == false
+                && candidate["hiddenReason"] == "tool_only_or_diagnostic"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["id"] == low_information.id().to_string()
+                && candidate["eligible"] == false
+                && candidate["hiddenReason"] == "low_information_clarification"
+        }));
+        assert!(candidates.iter().any(|candidate| {
+            candidate["id"] == old.id().to_string()
+                && candidate["eligible"] == false
+                && candidate["hiddenReason"] == "other_workspace"
+        }));
+
+        assert_eq!(
+            value["nextActions"][0],
+            format!(
+                "deepcli resume {} --dry-run --json",
+                short_id(&eligible.id())
+            )
+        );
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
+        assert!(checklist_labels.contains(&"List saved sessions".to_string()));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("hidden low-information sessions: 1"));
     }
 
     #[tokio::test]
