@@ -599,7 +599,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli version",
                 "deepcli about --json",
             ],
-            notes: &["`/version` is a local support and acceptance shortcut. It is richer than `deepcli --version`: it includes the current workspace, project config presence, default provider, provider turn timeout, provider count, command count, and next diagnostic actions without creating a session or calling a provider. Use `--json` for the stable `deepcli.version.v1` schema, and use `/about` as an alias."],
+            notes: &["`/version` is a local support and acceptance shortcut. It is richer than `deepcli --version`: it includes the current workspace, project config presence, default provider, provider turn timeout, provider count, command count, next diagnostic actions, and a JSON checklist without creating a session or calling a provider. Use `--json` for the stable `deepcli.version.v1` schema, and use `/about` as an alias."],
         },
         CommandHelp {
             name: "/about",
@@ -911,7 +911,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/diagnose --json --output .deepcli/exports/diagnose.json",
                 "/diagnose --bundle .deepcli/support/latest",
             ],
-            notes: &["`/diagnose` is designed for first-aid checks and defaults to quick mode so it does not block on Docker or environment setup. `/diagnose docker` and `/diagnose compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `/session diagnose` when you only want a persisted session report. Use `--json` for automation; JSON nextActions are directly executable `deepcli ...` commands while explanatory slash quick links stay in the text report. Use `--output` to write the selected format to a workspace-contained file, and `--bundle` to write a redacted support bundle with an issue template plus version, diagnose, quickstart, status, usage, trace, logs, and session-list artifacts."],
+            notes: &["`/diagnose` is designed for first-aid checks and defaults to quick mode so it does not block on Docker or environment setup. `/diagnose docker` and `/diagnose compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `/session diagnose` when you only want a persisted session report. Use `--json` for automation; JSON nextActions are directly executable `deepcli ...` commands and top-level checklist items mirror the executable actions, while explanatory slash quick links stay in the text report. Use `--output` to write the selected format to a workspace-contained file, and `--bundle` to write a redacted support bundle with an issue template plus version, diagnose, quickstart, status, usage, trace, logs, and session-list artifacts."],
         },
         CommandHelp {
             name: "/health",
@@ -933,7 +933,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/health docker --json",
                 "deepcli health",
             ],
-            notes: &["Plain `/health` maps to `/doctor --quick`, so it checks config, credentials, sessions, and tests without slower environment probing or provider calls. `/health shell` maps to `/doctor --quick shell` and checks PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion status. `/health docker` and `/health compiler` map to `/env check <target>` for read-only environment readiness."],
+            notes: &["Plain `/health` maps to `/doctor --quick`, so it checks config, credentials, sessions, and tests without slower environment probing or provider calls. `/health shell` maps to `/doctor --quick shell` and checks PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion status. JSON output follows the doctor schema, including executable nextActions and matching checklist items. `/health docker` and `/health compiler` map to `/env check <target>` for read-only environment readiness."],
         },
         CommandHelp {
             name: "/support",
@@ -955,7 +955,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli support",
                 "deepcli support .deepcli/support/slow-run",
             ],
-            notes: &["`/support` is a shortcut for `/diagnose --bundle`; by default it writes `.deepcli/support/latest` and includes `issue.md`, `manifest.json`, `version.json`, `logs.json`, and redacted diagnostic JSON artifacts. JSON nextActions are directly executable `deepcli ...` commands, so support UIs and scripts do not need to parse report quick links. The first non-option argument is treated as the bundle directory; use `/diagnose --bundle <dir> <session_id>` when you need an explicit positional session id. Add `--full-env` only when Docker/compiler readiness matters, and `--probe-provider` only when an online provider check is needed."],
+            notes: &["`/support` is a shortcut for `/diagnose --bundle`; by default it writes `.deepcli/support/latest` and includes `issue.md`, `manifest.json`, `version.json`, `logs.json`, and redacted diagnostic JSON artifacts. JSON nextActions are directly executable `deepcli ...` commands, and top-level checklist items mirror those actions so support UIs and scripts do not need to parse report quick links; the bundle manifest exposes the same checklist contract. The first non-option argument is treated as the bundle directory; use `/diagnose --bundle <dir> <session_id>` when you need an explicit positional session id. Add `--full-env` only when Docker/compiler readiness matters, and `--probe-provider` only when an online provider check is needed."],
         },
         CommandHelp {
             name: "/next",
@@ -991,7 +991,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/doctor --output <workspace-relative-path>",
             ],
             examples: &["/doctor --quick", "/doctor shell --json", "/doctor docker --json", "/doctor --quick --json --output .deepcli/exports/doctor.json", "/doctor --fix --quick", "/doctor --probe-provider --provider deepseek"],
-            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, provider turn timeout, and configured Git identity for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema; JSON top-level `nextActions` are executable shell commands, while explanatory context remains in `report`, `environment`, and `shell`. Use `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Provider probes are online checks and only run when explicitly requested. `/doctor shell` is a local install health check for PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion state; it implies `--quick` so it does not run slower Docker/Colima checks. `/doctor docker` and `/doctor compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `--quick` or `--no-env` to skip slower Docker/Colima checks. The report includes deepcli version, registered command count, default provider, provider turn timeout, and configured Git identity for issue triage. Use `--json` for the stable `deepcli.doctor.v1` schema; JSON top-level `nextActions` are executable shell commands and top-level checklist items mirror the executable actions, while explanatory context remains in `report`, `environment`, and `shell`. Use `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/trace",
@@ -2099,6 +2099,10 @@ fn format_version_report(workspace: &Path, config: &AppConfig) -> String {
 
 fn format_version_json(workspace: &Path, config: &AppConfig, report: &str) -> Result<String> {
     let project_config = project_config_path(workspace);
+    let next_actions = version_next_actions()
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.version.v1",
         "status": "ok",
@@ -2114,7 +2118,8 @@ fn format_version_json(workspace: &Path, config: &AppConfig, report: &str) -> Re
         "providerCount": config.providers.len(),
         "providerTurnTimeoutSeconds": config.agent.provider_turn_timeout_seconds,
         "commandCount": CommandRouter::command_names().len(),
-        "nextActions": version_next_actions(),
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -3329,7 +3334,12 @@ fn local_action_checklist(actions: &[String]) -> Vec<Value> {
         .filter(|action| {
             (action.starts_with("deepcli ")
                 || action.starts_with("cargo ")
-                || action.starts_with("git "))
+                || action.starts_with("git ")
+                || action.starts_with("cd ")
+                || action.starts_with("mkdir ")
+                || action.starts_with("chmod ")
+                || action.starts_with("ln ")
+                || action.starts_with("rm "))
                 && !action.contains('<')
                 && !action.contains('>')
         })
@@ -3386,6 +3396,14 @@ fn local_checklist_label(command: &str) -> &'static str {
         "Configure Git identity"
     } else if command.starts_with("git ") {
         "Run git command"
+    } else if command.starts_with("mkdir ") || command.starts_with("ln ") {
+        "Install shell command"
+    } else if command.starts_with("chmod ") {
+        "Update shell permissions"
+    } else if command.starts_with("rm ") {
+        "Remove stale shell file"
+    } else if command.starts_with("cd ") {
+        "Enter workspace"
     } else {
         "Run command"
     }
@@ -3393,8 +3411,11 @@ fn local_checklist_label(command: &str) -> &'static str {
 
 fn scorecard_checklist_label(command: &str) -> &'static str {
     match command {
+        "deepcli quickstart" => "Open quickstart guide",
+        "deepcli quickstart --check" => "Check quickstart readiness",
         "deepcli quickstart --json" => "Open quickstart readiness",
         "deepcli init --quick" => "Initialize project config",
+        "deepcli config validate" => "Validate project config",
         "deepcli recipes" => "Open workflow recipes",
         "deepcli recipes release" => "Open release workflow",
         "deepcli completion json" => "Export command catalog",
@@ -3412,10 +3433,23 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         }
         "deepcli model list" => "List configured models",
         "deepcli model list --json" => "List configured models",
+        "deepcli model show --json" => "Inspect active model",
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
         "deepcli doctor --quick" => "Run quick diagnostics",
         "deepcli doctor shell --json" => "Check shell install",
+        "deepcli env check docker --json" => "Check Docker environment",
+        command if command.starts_with("deepcli env check ") => "Check local environment",
+        command if command.starts_with("deepcli setup ") => "Set up local environment",
         "deepcli diagnose --json" => "Collect diagnostics",
+        "deepcli diagnose --full-env --json" => "Run full diagnostics",
+        "deepcli diagnose --probe-provider --json" => "Probe provider diagnostics",
+        command if command.starts_with("deepcli diagnose --full-env --bundle ") => {
+            "Create full support bundle"
+        }
+        "deepcli session diagnose --json" => "Inspect session diagnostics",
+        command if command.starts_with("deepcli support ") || command == "deepcli support" => {
+            "Create support bundle"
+        }
         "deepcli version --json" => "Inspect version",
         "deepcli scorecard --json" => "Inspect product scorecard",
         "deepcli recipes sota --json" => "Open SOTA product loop recipe",
@@ -14484,6 +14518,7 @@ fn format_diagnose_report_json(
     report: &str,
     support_bundle: Option<&DiagnoseSupportBundleResult>,
 ) -> Result<String> {
+    let next_actions = diagnose_next_actions(options);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.diagnose.v1",
         "status": "ok",
@@ -14501,7 +14536,8 @@ fn format_diagnose_report_json(
         "supportBundle": support_bundle
             .map(diagnose_support_bundle_json)
             .unwrap_or(Value::Null),
-        "nextActions": diagnose_next_actions(options),
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -14689,6 +14725,7 @@ fn write_diagnose_support_bundle(
     )?;
 
     let manifest_path = directory.join("manifest.json");
+    let next_actions = diagnose_support_bundle_next_actions(workspace, &directory);
     let manifest = serde_json::to_string_pretty(&json!({
         "schema": "deepcli.support_bundle.v1",
         "status": "ok",
@@ -14704,7 +14741,8 @@ fn write_diagnose_support_bundle(
             "session": input.options.session_id.as_deref(),
         },
         "files": files.iter().map(diagnose_support_bundle_file_json).collect::<Vec<_>>(),
-        "nextActions": diagnose_support_bundle_next_actions(workspace, &directory),
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
         "notes": [
             "attach this support bundle when reporting a deepcli issue",
             "start from issue.md when drafting a bug report or support request",
@@ -15235,6 +15273,11 @@ fn format_doctor_report_json(
         .iter()
         .map(doctor_test_json)
         .collect::<Vec<_>>();
+    let next_actions = report
+        .next_actions
+        .iter()
+        .map(|action| redact_sensitive_text(action))
+        .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.doctor.v1",
         "status": "ok",
@@ -15311,11 +15354,8 @@ fn format_doctor_report_json(
             "text": report.environment.text.as_deref().map(redact_sensitive_text),
             "error": report.environment.error.as_deref().map(redact_sensitive_text),
         },
-        "nextActions": report
-            .next_actions
-            .iter()
-            .map(|action| redact_sensitive_text(action))
-            .collect::<Vec<_>>(),
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
         "report": redact_sensitive_text(&report.report),
     }))?)
 }
@@ -37430,6 +37470,7 @@ mod tests {
         assert!(value["commandCount"].as_u64().unwrap() > 0);
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         assert_eq!(next_actions[0], "deepcli quickstart --check");
         assert!(next_actions
             .iter()
@@ -42107,7 +42148,12 @@ diff --git a/docs/b.md b/docs/b.md
             .filter(|action| {
                 (action.starts_with("deepcli ")
                     || action.starts_with("cargo ")
-                    || action.starts_with("git "))
+                    || action.starts_with("git ")
+                    || action.starts_with("cd ")
+                    || action.starts_with("mkdir ")
+                    || action.starts_with("chmod ")
+                    || action.starts_with("ln ")
+                    || action.starts_with("rm "))
                     && !action.contains('<')
                     && !action.contains('>')
             })
@@ -42323,6 +42369,7 @@ diff --git a/docs/b.md b/docs/b.md
             .contains("shell install:"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_shell_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli completion install zsh --force"));
@@ -42500,6 +42547,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["supportBundle"], Value::Null);
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli diagnose --full-env --json"));
@@ -42558,6 +42606,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["schema"], "deepcli.diagnose.v1");
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli diagnose --json"));
@@ -42593,6 +42642,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(manifest_value["files"].as_array().unwrap().len(), 10);
         let manifest_next_actions = json_string_array(&manifest_value["nextActions"]);
         assert_executable_deepcli_actions(&manifest_next_actions);
+        assert_checklist_matches_executable_actions(&manifest_value, &manifest_next_actions);
         assert!(manifest_next_actions
             .iter()
             .any(|action| action == "deepcli diagnose --json"));

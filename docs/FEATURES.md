@@ -33,7 +33,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli git status|diff|branch|message --json [--output path]`：用稳定 `deepcli.git.inspect.v1` 输出只读 Git 检查结果、原始 stdout/stderr、report 和可执行 next actions，并可写入 workspace 内 artifact；`diff` 支持 `--staged|--cached`，未知只读参数会被拒绝，避免脚本把空输出误判为成功。
 - `deepcli git create-branch <name>` 和 `deepcli git commit <message>`：作为受控 Git 写操作入口暴露在顶层帮助中；`--dry-run --json` 输出稳定 `deepcli.git.action.v1` 预览、可写入 workspace artifact，且不会创建分支或提交，真实执行仍走权限策略。
 - `deepcli terminal [--dry-run|--no-open] [--app name] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；终端 app 采用同一优先级，`DEEPCLI_TERMINAL_APP` 可显式设置默认 macOS 终端 app，`--app iTerm2` 可单次覆盖，JSON 包含 app、command 和可直接复制的 `workspaceCommand`，并且 dry-run、失败和真实打开成功时的 `nextActions` 都只输出可执行的 `cd <workspace>` 或 `deepcli ...` 命令。
-- `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
+- `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，并派生 `checklist[]` 供 UI 直接渲染，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard、benchmark status 和最近 goal readiness，输出本轮产品迭代状态、去重后的门禁和下一步动作。
 - `deepcli benchmark presets|run-suite|run|record|status|gate|summary|trends|baseline-template|compare|list|show|clean [--json]`：发现推荐 workload、一键执行推荐基准套件、执行单项 preset、记录、评估证据质量、门禁、汇总、趋势分析、baseline 模板、baseline 对比、列出、查看和清理本地 benchmark 证据 artifact。
@@ -143,7 +143,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 
 环境 setup/test 走权限和工具审计路径；只读 check/plan 可作为快速预检。
 环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli setup docker --smoke` 和 `deepcli env plan docker --smoke --json`；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
-`health/doctor --json` 复用同一可执行动作契约：缺凭据时给出 `deepcli credentials set/import-env/template ...`，环境未就绪时给出 `deepcli setup ... --smoke` 或 `deepcli env test compiler`，`doctor shell --json` 的 PATH 和 completion 建议直接给出可复制命令。
+`health/doctor --json` 复用同一可执行动作契约：缺凭据时给出 `deepcli credentials set/import-env/template ...`，环境未就绪时给出 `deepcli setup ... --smoke` 或 `deepcli env test compiler`，`doctor shell --json` 的 PATH 和 completion 建议直接给出可复制命令；顶层 `checklist[]` 从这些可执行动作派生，便于健康面板直接渲染。
 
 ## 测试、验收与交付
 
@@ -217,7 +217,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 支持包会脱敏，便于提交 issue 或内部工单。
 
-`diagnose/support --json` 的顶层 `nextActions` 只输出可直接执行的 `deepcli ...` 命令，例如 `deepcli diagnose --full-env --json`、`deepcli diagnose --probe-provider --json`、`deepcli session diagnose --json` 和 `deepcli support .deepcli/support/latest --json`；support bundle 内的 `manifest.json` 也使用同一格式，人工支持说明放在 `notes` 中；解释性 quick links 仍保留在文本 `report` 中。
+`diagnose/support --json` 的顶层 `nextActions` 只输出可直接执行的 `deepcli ...` 命令，例如 `deepcli diagnose --full-env --json`、`deepcli diagnose --probe-provider --json`、`deepcli session diagnose --json` 和 `deepcli support .deepcli/support/latest --json`；顶层 `checklist[]` 从可执行动作派生，support bundle 内的 `manifest.json` 也使用同一格式并提供同样的 checklist，人工支持说明放在 `notes` 中；解释性 quick links 仍保留在文本 `report` 中。
 
 ## Prompt、Skill 与子 Agent
 

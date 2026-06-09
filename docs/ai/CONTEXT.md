@@ -13,7 +13,7 @@
 - 远程仓库：`https://github.com/zero-kotori/deepcli.git`
 - 目标提交身份：`zero-kotori <kotorizero8@gmail.com>`
 - 产品命名：统一使用 `deepcli`
-- 本地忽略产物：`.deepcli/benchmarks/`、`.deepcli/exports/`、credentials、logs、sessions 等不得提交
+- 本地忽略产物：`.deepcli/benchmarks/`、`.deepcli/exports/`、`.deepcli/support/`、credentials、logs、sessions 等不得提交
 
 ## 最近已完成的产品迭代
 
@@ -578,6 +578,11 @@
    - 行为：checklist 从可执行 `deepcli ...`、`cargo ...` 或 `git ...` nextActions 派生 `step`、`label` 和 `command`；首次引导和诊断说明继续保留在 `steps`、`report` 等解释性字段。
    - 目的：新用户 onboarding 和产品自检入口此前只有可执行 nextActions，TUI、外部 onboarding UI、安装脚本或验收脚本仍要自行命名按钮；顶层 checklist 让启动链路和后续 scorecard/round/preflight/benchmark 动作面保持一致。
 
+114. Health/Support 顶层动作清单
+   - 结果：`deepcli version/about --json`、`deepcli doctor/health --json`、`deepcli diagnose/support --json` 和 support bundle `manifest.json` 的顶层 JSON 增加 `checklist[]`。
+   - 行为：checklist 从可执行 `deepcli ...`、`cargo ...`、`git ...` 和 doctor shell 安装动作派生 `step`、`label` 和 `command`；配置、凭据、环境、shell 和人工支持说明继续保留在 `report`、`environment`、`shell` 或 `notes` 中。
+   - 目的：健康检查、版本支持元数据和支持包此前已有可执行 nextActions，但 TUI、外部健康面板或支持面板仍要自行解析和命名动作；顶层 checklist 让支持诊断链路和 onboarding、scorecard、round、preflight、交付、benchmark 报告保持一致。
+
 ## 当前产品自评
 
 当前本地自评中，`scorecard` 为 80/80，`benchmark status` 为 ready；如果本地 `.deepcli/benchmarks/` 只有每个 required case 的单条样本，`benchmark trends` 会返回 `insufficient_history`，`round` 会据此进入 `needs_attention` 并提示 `deepcli round --json --run-benchmark --fail-on-command`。当 benchmark evidence、trends 和 goal gates 都 ready 时，`round.nextActions` 会继续在 preflight/gate 后提示 `--from-current`、手工 baseline template 或 baseline compare；如果默认 competitor baseline 缺失且本地 artifact 可完整捕获，会先提示 `baseline-template --from-current` 生成 `status=ready` 的 compare-ready baseline，再提示手工 competitor baseline template。该结果依赖 `.deepcli/benchmarks/` 下的本地忽略证据 artifact，这些文件不应推送到远程仓库。
@@ -586,7 +591,7 @@
 
 下一轮产品设计应继续从真实使用阻力中选一个高价值缺口，而不是只为了让分数变绿而提交本地 artifact；本轮已补齐 baseline 模板未填写时的 compare 引导、baseline-template 自带后续动作、baseline-template 捕获当前 benchmark、ready 产品循环优先推荐当前 baseline 捕获、Fork/Terminal 可选终端 app、Fork/Terminal 终端 app 默认偏好、Fork/Terminal 当前终端自动识别、Recipes 顶层工作流清单、Scorecard 分类级工作流清单、Round Gate 工作流清单、SOTA Recipe checklist baseline-aware、Scorecard 顶层工作流清单、Round 顶层工作流清单、Preflight 顶层发布检查清单、Verify/Gate/Handoff 顶层交付动作清单、Benchmark 证据报告动作清单、Wrapper terminal 帮助可发现性、Wrapper Git inspect 帮助可发现性、Wrapper 协作队列帮助可发现性、fork workspace-aware 恢复命令、Fork nextActions workspace-aware、Resume 空候选 JSON 错误结构化、Session search JSON nextActions、Fork current shell 误用动作直达、Diagnose/Support JSON actions 可执行化、Completion JSON actions 可执行化、Support bundle manifest actions 可执行化、Terminal opened actions 可执行化、Git read-only JSON 输出、Git inspect output artifact、TUI 运行中 read-only Git inspection、TUI 运行中旁路命令 artifact guard、TUI 运行中 completion force install guard、Verify/Handoff JSON actions 可执行化、Fork 无源错误 nextActions 候选发现、Fork no-source actions 去占位符、Inspect JSON actions 去占位符、Test JSON actions 可执行化、Next JSON 动作可执行化、Benchmark aging 顶层刷新动作、Quickstart/Selftest JSON 动作可执行化、Cleanup JSON 动作可执行化、Health/Version JSON 动作可执行化、Inspect JSON 动作可执行化、Running Fork JSON 动作可执行化、Quick Preflight 隐私快路径、Status session actions 可执行化、Usage session actions 可执行化、restore-backup 结构化预览、TUI 运行中 restore-backup 安全预览、TUI 运行中 `/session` read-only guard、环境 JSON nextActions 可执行化、Tools 视图工具输出动作可见化、Quick actions run/edit 语义提示、Terminal workspaceCommand、scorecard 分类级 nextActions 排序、round 摘要中的分类级 nextActions 透传、scorecard 全局 nextActions 的 gap-aware 聚焦、scorecard nextActions 的可执行 CLI 命令格式、benchmark preset gap 修复提示的可执行 CLI 命令格式、recipes nextActions 的可执行 CLI 命令格式、scorecard nextActions 的自引用跳转清理、round nextActions 的自引用跳转清理、benchmark status 空证据状态的 clean action 隐藏、scorecard benchmark 修复队列的 round 只读跳转回归测试、fork 上下文复制透明化、benchmark trends 文本证据格式修复、scorecard ready 状态下的下一步动作聚焦、benchmark trends 单样本历史不足状态、round 聚合 benchmark trends gate、round benchmark trends 修复动作闭环、顶层命令帮助旗标转发、benchmark trends 历史不足闭环动作、SOTA recipe 状态感知 nextActions、scorecard ready 状态感知 trend 修复动作、TUI 运行中产品循环观察命令、TUI running-safe 标记收敛、TUI 运行中 fork 持久化上下文、terminal dry-run 可验收报告、fork dry-run 预览、fork resume 健康检查、resume dry-run 预览、resume 候选去噪、preflight 运行诊断摘要、benchmark status/summary JSON 内嵌 report、resume 低信息澄清会话去噪、resume 当前 workspace 与短任务去噪、privacy 配置化禁用词扫描、fork 默认候选去噪、fork JSON 错误结构化、benchmark 证据 freshness 可见性、SOTA recipe baseline-aware nextActions、scorecard ready baseline-aware nextActions，以及 round ready baseline-aware nextActions，下一轮可继续关注 TUI 可观测性、恢复历史或环境自动化验收的真实交互阻力。
 
-本轮继续补齐 Quickstart/Selftest 顶层动作清单，让 onboarding、自检、scorecard、round、preflight、交付和 benchmark 报告都能提供可直接渲染的动作队列。
+本轮继续补齐 Health/Support 顶层动作清单，让 onboarding、自检、health、version、diagnose、support、scorecard、round、preflight、交付和 benchmark 报告都能提供可直接渲染的动作队列。
 
 ## 常用检查命令
 
@@ -634,6 +639,12 @@ cargo test git_write
 ./scripts/deepcli scorecard --json | jq '.categories[0] | {title,checklist,nextActions}'
 ./scripts/deepcli quickstart --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli selftest --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli version --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli doctor --quick --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli doctor shell --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli diagnose --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli support --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}' .deepcli/support/latest/manifest.json
 ./scripts/deepcli recipes sota --json
 ./scripts/deepcli recipes sota --json | jq '{title,summary,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli recipes sota --json | jq '.checklist[] | select(.command | contains("baseline"))'

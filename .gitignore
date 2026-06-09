@@ -5,6 +5,7 @@
 .deepcli/logs/
 .deepcli/benchmarks/
 .deepcli/exports/
+.deepcli/support/
 .env
 .env.*
 *.pem
