@@ -827,6 +827,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`benchmark trends` 的 JSON 和文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`；empty 状态仍先提示采集证据，insufficient_history 状态先提示 `deepcli round --json --run-benchmark --fail-on-command` 补样本，再追加 baseline 导航；其它状态根据默认 baseline 是否存在选择 `baseline-template --from-current`、手工 template 或 compare。
    - 目的：benchmark 趋势页、SOTA 循环页和 baseline inventory 的后续动作保持一致，外部 UI 不会在默认 baseline 缺失时提前展示必然失败的 compare 按钮。
 
+137. Benchmark Exploration Baseline Navigation
+   - 产品缺口：`deepcli benchmark presets/list/summary` 仍固定推荐默认 competitor baseline compare；当 `.deepcli/baselines/competitor.json` 缺失时，用户会从 benchmark 探索页进入预期失败的 compare，而不是先捕获 current baseline 或生成手工 competitor template。
+   - 结果：`benchmark presets`、`benchmark list` 和 `benchmark summary` 的 JSON 与文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`，并继续从这些动作派生 checklist；默认 baseline 缺失且当前 artifact 可完整捕获时先推荐 `baseline-template --from-current` 和手工 competitor template，文件存在后才推荐 compare。
+   - 目的：benchmark 发现、历史列表、汇总、趋势和 SOTA 循环页使用一致的 baseline 状态导航，外部 UI 不会在 baseline 尚未准备好时展示不可执行的 compare 按钮。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
