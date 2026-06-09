@@ -1340,7 +1340,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --app iTerm2 --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. If `DEEPCLI_TERMINAL_APP` is unset, deepcli infers supported defaults from `TERM_PROGRAM`, so iTerm users get iTerm2 automatically; set `DEEPCLI_TERMINAL_APP=iTerm2` to make that terminal app explicit for fork and terminal commands, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override. Explicit flags win over the environment, and `DEEPCLI_TERMINAL_APP` wins over `TERM_PROGRAM`. Automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, and `nextActions` so UIs can explain whether the source was idle or running and provide a copy-paste command that works from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, and next actions before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. If `DEEPCLI_TERMINAL_APP` is unset, deepcli infers supported defaults from `TERM_PROGRAM`, so iTerm users get iTerm2 automatically; set `DEEPCLI_TERMINAL_APP=iTerm2` to make that terminal app explicit for fork and terminal commands, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override. Explicit flags win over the environment, and `DEEPCLI_TERMINAL_APP` wins over `TERM_PROGRAM`. Automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, executable `nextActions`, and matching `checklist[]` so UIs can explain whether the source was idle or running and provide named copy-paste actions that work from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, next actions, and checklist before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume --dry-run --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -3388,6 +3388,8 @@ fn benchmark_checklist_label(command: &str) -> &'static str {
 fn local_checklist_label(command: &str) -> &'static str {
     if command.starts_with("deepcli ") {
         scorecard_checklist_label(command)
+    } else if command.starts_with("cd ") && command.contains(" && deepcli resume ") {
+        "Resume forked context"
     } else if command == "cargo test mvp_slash_commands_are_registered" {
         "Verify command registry"
     } else if command.starts_with("cargo ") {
@@ -3427,6 +3429,10 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli review" => "Review current diff",
         "deepcli test discover --json" => "Discover test commands",
         "deepcli resume" => "Resume saved work",
+        "deepcli resume --dry-run --json" => "Resume preview",
+        command if command.starts_with("deepcli resume ") && command.contains("--dry-run") => {
+            "Resume preview"
+        }
         command if command.starts_with("deepcli resume ") => "Resume saved work",
         "deepcli sessions --all --limit 20" => "List saved sessions",
         command if command.starts_with("deepcli history ") => "List saved sessions",
@@ -3442,6 +3448,10 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli model show --json" => "Inspect active model",
         "deepcli help model" => "Open model help",
         command if command.starts_with("deepcli model set ") => "Switch configured model",
+        "deepcli stop" => "Stop running task",
+        "deepcli fork --dry-run --json" => "Preview session fork",
+        command if command.starts_with("deepcli fork --current") => "Fork active context",
+        command if command.starts_with("deepcli fork ") => "Create session fork",
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
         "deepcli doctor --quick" => "Run quick diagnostics",
         "deepcli doctor shell --json" => "Check shell install",
@@ -20327,6 +20337,7 @@ fn format_fork_dry_run_report(
 }
 
 fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
+    let checklist = local_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.fork.v1",
         "status": "ok",
@@ -20352,6 +20363,7 @@ fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
         },
         "verification": report.verification.as_ref().map(fork_verification_json),
         "nextActions": report.next_actions,
+        "checklist": checklist,
         "limitations": [
             "forking a currently running agent task copies persisted session files only; the in-memory task is not hot-forked"
         ],
@@ -20368,6 +20380,7 @@ fn format_fork_dry_run_json(
     next_actions: &[String],
     report: &str,
 ) -> Result<String> {
+    let checklist = local_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.fork.v1",
         "status": "dry_run",
@@ -20408,6 +20421,7 @@ fn format_fork_dry_run_json(
             Value::Null
         },
         "nextActions": next_actions,
+        "checklist": checklist,
         "limitations": [
             "dry-run does not create a fork session or copy files",
             "forking a currently running agent task copies persisted session files only; the in-memory task is not hot-forked"
@@ -20424,6 +20438,7 @@ fn format_fork_error_json(
     next_actions: &[String],
     report: &str,
 ) -> Result<String> {
+    let checklist = local_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.fork.v1",
         "status": "error",
@@ -20448,6 +20463,7 @@ fn format_fork_error_json(
             "message": redact_sensitive_text(message),
         },
         "nextActions": next_actions,
+        "checklist": checklist,
         "limitations": [
             "no fork session was created because no source session was selected"
         ],
@@ -32117,6 +32133,11 @@ mod tests {
         assert!(workspace_resume_command.contains(" && deepcli resume "));
         assert!(workspace_resume_command.ends_with(fork_id));
         assert_eq!(value["nextActions"][0], workspace_resume_command);
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Resume forked context".to_string()));
+        assert!(checklist_labels.contains(&"Resume saved work".to_string()));
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -32233,6 +32254,10 @@ mod tests {
             .contains("does not copy the in-memory running agent"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_shell_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Stop running task".to_string()));
+        assert!(checklist_labels.contains(&"Fork active context".to_string()));
         assert!(next_actions.iter().any(|action| action == "deepcli stop"));
         assert!(next_actions
             .iter()
@@ -32406,6 +32431,10 @@ mod tests {
             }));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Preview session fork".to_string()));
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
     }
 
     #[test]
@@ -32473,6 +32502,10 @@ mod tests {
             }));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
+        assert!(checklist_labels.contains(&"List saved sessions".to_string()));
     }
 
     #[test]
@@ -32515,11 +32548,13 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Fork of original task"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Create session fork".to_string()));
+        assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap().starts_with("deepcli fork ")));
+            .any(|action| action.starts_with("deepcli fork ")));
         assert!(value["report"].as_str().unwrap().contains("fork dry-run"));
         assert_eq!(store.list().unwrap().len(), before);
     }
@@ -40621,7 +40656,7 @@ diff --git a/docs/b.md b/docs/b.md
         let next_actions = json_string_array(&value["nextActions"]);
         assert_checklist_matches_executable_actions(&value, &next_actions);
         let checklist_labels = json_checklist_labels(&value);
-        assert!(checklist_labels.contains(&"Resume saved work".to_string()));
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
         assert!(checklist_labels.contains(&"Inspect session history".to_string()));
         assert!(checklist_labels.contains(&"Inspect recovery actions".to_string()));
         assert!(checklist_labels.contains(&"Inspect session diagnostics".to_string()));
@@ -40682,7 +40717,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_checklist_matches_executable_actions(&value, &next_actions);
         let checklist_labels = json_checklist_labels(&value);
         assert!(checklist_labels.contains(&"List saved sessions".to_string()));
-        assert!(checklist_labels.contains(&"Resume saved work".to_string()));
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
