@@ -3444,6 +3444,12 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         command if command.starts_with("deepcli prompt get ") => "Open prompt",
         command if command.starts_with("deepcli prompt render ") => "Render prompt",
         "deepcli help prompt" => "Open prompt help",
+        "deepcli skill list --json" => "List skills",
+        command if command.starts_with("deepcli skill run ") => "Run skill",
+        "deepcli help skill" => "Open skill help",
+        "deepcli agent list --json" => "List sub-agents",
+        command if command.starts_with("deepcli agent show ") => "Inspect sub-agent",
+        "deepcli help agent" => "Open agent help",
         "deepcli git status --json" => "Inspect git status",
         "deepcli git diff --json" => "Inspect git diff",
         "deepcli git message --json" => "Prepare commit message",
@@ -24921,6 +24927,8 @@ fn format_agent_list_json(
     tasks: &[SubagentTask],
     report: &str,
 ) -> Result<String> {
+    let next_actions = agent_list_next_actions(tasks);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.agent.inspect.v1",
         "status": "ok",
@@ -24931,20 +24939,24 @@ fn format_agent_list_json(
             .iter()
             .map(|task| subagent_task_json(workspace, task))
             .collect::<Vec<_>>(),
-        "nextActions": agent_list_next_actions(tasks),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
         "format": "json",
     }))?)
 }
 
 fn format_agent_show_json(workspace: &Path, task: &SubagentTask, report: &str) -> Result<String> {
+    let next_actions = agent_next_actions(Some(task), false);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.agent.inspect.v1",
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "show",
         "agent": subagent_task_json(workspace, task),
-        "nextActions": agent_next_actions(Some(task), false),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
         "format": "json",
     }))?)
@@ -30730,6 +30742,11 @@ fn format_skill_list_json(
     skills: &[SkillMetadata],
     report: &str,
 ) -> Result<String> {
+    let next_actions = skill_next_actions(
+        skills.first().map(|skill| skill.name.as_str()),
+        skills.is_empty(),
+    );
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.skill.inspect.v1",
         "status": "ok",
@@ -30740,13 +30757,16 @@ fn format_skill_list_json(
             .iter()
             .map(|skill| skill_metadata_json(workspace, skill))
             .collect::<Vec<_>>(),
-        "nextActions": skill_next_actions(skills.first().map(|skill| skill.name.as_str()), skills.is_empty()),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
         "format": "json",
     }))?)
 }
 
 fn format_skill_run_json(workspace: &Path, loaded: &LoadedSkill) -> Result<String> {
+    let next_actions = skill_next_actions(Some(&loaded.metadata.name), false);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.skill.inspect.v1",
         "status": "ok",
@@ -30755,7 +30775,8 @@ fn format_skill_run_json(workspace: &Path, loaded: &LoadedSkill) -> Result<Strin
         "skill": skill_metadata_json(workspace, &loaded.metadata),
         "instructions": loaded.instructions.as_str(),
         "instructionChars": loaded.instructions.chars().count(),
-        "nextActions": skill_next_actions(Some(&loaded.metadata.name), false),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": loaded.instructions.as_str(),
         "format": "json",
     }))?)
@@ -37709,6 +37730,10 @@ mod tests {
             .ends_with(&format!(".deepcli/agents/tasks/{}.json", task.id)));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect sub-agent".to_string()));
+        assert!(checklist_labels.contains(&"List sub-agents".to_string()));
         assert!(next_actions
             .iter()
             .any(|action| action == &format!("deepcli agent show {}", short_id(&task.id))));
@@ -37746,6 +37771,12 @@ mod tests {
         assert_eq!(value["agent"]["id"], task.id.to_string());
         assert_eq!(value["agent"]["task"], "inspect parser");
         assert!(value["report"].as_str().unwrap().contains("inspect parser"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect sub-agent".to_string()));
+        assert!(checklist_labels.contains(&"List sub-agents".to_string()));
 
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/agent.json")).unwrap();
         assert_eq!(written, output);
@@ -38823,6 +38854,10 @@ mod tests {
             .contains("compiler - SysY compiler workflow"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run skill".to_string()));
+        assert!(checklist_labels.contains(&"List skills".to_string()));
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli skill run compiler"));
@@ -38860,6 +38895,12 @@ mod tests {
             .contains("SysY compiler workflow"));
         assert_eq!(value["report"], value["instructions"]);
         assert!(value["instructionChars"].as_u64().unwrap() > 0);
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run skill".to_string()));
+        assert!(checklist_labels.contains(&"List skills".to_string()));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/compiler-skill.json")).unwrap();
