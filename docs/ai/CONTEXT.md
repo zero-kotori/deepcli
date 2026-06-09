@@ -832,6 +832,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`benchmark presets`、`benchmark list` 和 `benchmark summary` 的 JSON 与文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`，并继续从这些动作派生 checklist；默认 baseline 缺失且当前 artifact 可完整捕获时先推荐 `baseline-template --from-current` 和手工 competitor template，文件存在后才推荐 compare。
    - 目的：benchmark 发现、历史列表、汇总、趋势和 SOTA 循环页使用一致的 baseline 状态导航，外部 UI 不会在 baseline 尚未准备好时展示不可执行的 compare 按钮。
 
+138. Scorecard Normalized Score Clarity
+   - 产品缺口：`deepcli scorecard --json` 在无 gaps、`percent=100` 时仍输出 `score=80`、`maxScore=80`；用户或外部 UI 如果只读取 `score`，会误以为产品还有 20 分缺口。
+   - 结果：`deepcli.scorecard.v1` 和内嵌的 `deepcli.scorecard.summary.v1` 增加 `normalizedScore` 与 `scoreScale`，明确 `score` 是 raw points、`normalizedScore`/`percent` 是 0-100 展示分，并把推荐展示字段标为 `scoreScale.display=normalizedScore`；scorecard 与 round 文本报告也拆清 raw score 和 normalized score。
+   - 目的：scorecard、round 和外部产品循环 UI 不再把 raw points 误读成百分制分数，ready 状态下能清楚展示 100/100，而不破坏既有 `score`/`maxScore` 脚本兼容性。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

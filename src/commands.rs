@@ -3608,6 +3608,16 @@ fn scorecard_category_status(category: &ScorecardCategory) -> &'static str {
     }
 }
 
+fn scorecard_score_scale_json() -> Value {
+    json!({
+        "score": "raw_points",
+        "maxScore": "raw_points_max",
+        "percent": "percent_0_100",
+        "normalizedScore": "percent_0_100",
+        "display": "normalizedScore",
+    })
+}
+
 struct ScorecardTextInput<'a> {
     status: &'a str,
     tier: &'a str,
@@ -3625,10 +3635,8 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
         format!("workspace: {}", workspace.display()),
         format!("status: {}", input.status),
         format!("tier: {}", input.tier),
-        format!(
-            "score: {}/{} ({}%)",
-            input.score, input.max_score, input.percent
-        ),
+        format!("raw score: {}/{} points", input.score, input.max_score),
+        format!("normalized score: {}/100", input.percent),
         "categories:".to_string(),
     ];
     for category in input.categories {
@@ -3676,6 +3684,8 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
         "score": report.score,
         "maxScore": report.max_score,
         "percent": report.percent,
+        "normalizedScore": report.percent,
+        "scoreScale": scorecard_score_scale_json(),
         "workspace": workspace.display().to_string(),
         "version": {
             "package": "deepcli",
@@ -3689,6 +3699,7 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
             "score": category.score,
             "maxScore": category.max_score,
             "percent": scorecard_percent(category.score, category.max_score),
+            "normalizedScore": scorecard_percent(category.score, category.max_score),
             "evidence": category.evidence,
             "gaps": category.gaps,
             "nextActions": category.next_actions,
@@ -4265,7 +4276,7 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
         format!("status: {}", input.status),
         format!("score threshold: {}%", input.score_threshold),
         format!(
-            "scorecard: {}/{} ({}%, {}, tier={})",
+            "scorecard: raw score {}/{} points; normalized score {}/100 ({}, tier={})",
             input.scorecard.score,
             input.scorecard.max_score,
             input.scorecard.percent,
@@ -5931,6 +5942,8 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
         "score": report.score,
         "maxScore": report.max_score,
         "percent": report.percent,
+        "normalizedScore": report.percent,
+        "scoreScale": scorecard_score_scale_json(),
         "gaps": report.gaps,
         "categories": report.categories.iter().map(|category| json!({
             "id": category.id,
@@ -5938,6 +5951,7 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
             "score": category.score,
             "maxScore": category.max_score,
             "percent": scorecard_percent(category.score, category.max_score),
+            "normalizedScore": scorecard_percent(category.score, category.max_score),
             "gaps": category.gaps,
             "nextActions": category.next_actions,
             "checklist": scorecard_category_checklist(category),
@@ -35528,6 +35542,64 @@ mod tests {
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/scorecard.json")).unwrap();
         assert_eq!(written, output);
+    }
+
+    #[test]
+    fn scorecard_json_explains_raw_and_normalized_score_scale() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        let now = Utc::now();
+        for preset in MEANINGFUL_BENCHMARK_PRESETS {
+            write_benchmark_status_test_artifact(
+                dir.path(),
+                &format!("20990101T000000Z-product-{preset}.json"),
+                now,
+                preset,
+                preset,
+                "passed",
+            );
+        }
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output =
+            handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.scorecard.v1");
+        assert_eq!(value["status"], "ok");
+        assert_eq!(value["normalizedScore"], value["percent"]);
+        assert_eq!(value["normalizedScore"].as_u64().unwrap(), 100);
+        assert_eq!(value["scoreScale"]["score"], "raw_points");
+        assert_eq!(value["scoreScale"]["normalizedScore"], "percent_0_100");
+        assert_eq!(value["scoreScale"]["display"], "normalizedScore");
+
+        let text = handle_scorecard(dir.path(), &config, &registry, Vec::new()).unwrap();
+        assert!(text.contains("raw score: "));
+        assert!(text.contains("normalized score: 100/100"));
+
+        let report = build_scorecard_report(dir.path(), &config, &registry);
+        let summary = scorecard_summary_json(&report);
+        assert_eq!(summary["normalizedScore"], summary["percent"]);
+        assert_eq!(summary["scoreScale"]["display"], "normalizedScore");
+
+        let round_report = build_round_report(dir.path(), &config, &registry, 85, None);
+        let round_text = format_round_text(
+            dir.path(),
+            RoundTextInput {
+                status: round_report.status,
+                score_threshold: round_report.score_threshold,
+                scorecard: &round_report.scorecard,
+                benchmark: &round_report.benchmark,
+                benchmark_run: round_report.benchmark_run.as_ref(),
+                goal: round_report.goal.as_ref(),
+                gates: &round_report.gates,
+                gaps: &round_report.gaps,
+                next_actions: &round_report.next_actions,
+            },
+        );
+        assert!(round_text.contains("scorecard: raw score "));
+        assert!(round_text.contains("normalized score 100/100"));
     }
 
     #[test]
