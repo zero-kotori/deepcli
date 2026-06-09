@@ -867,6 +867,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`benchmark baselines` 现在返回 `status=needs_default`，`defaultBaseline.present=false`，首个 `nextActions` 和 `checklist[0]` 都指向生成 competitor baseline template；current-main compare 仅保留为后续辅助动作，且不会重复推荐 current capture。
    - 目的：baseline inventory 与 scorecard、round、recipes 和 opportunities 的状态推进一致，先补默认 competitor 对照，再进入 compare。
 
+145. Opportunity Baseline Inventory First
+   - 产品缺口：`opportunities --json` 的 baseline 机会会直接把写入 `.deepcli/baselines/*.json` 的命令放在首位，用户或外部 UI 在点击前看不到当前 baseline inventory 是 empty、needs_default 还是 ready。
+   - 结果：baseline 机会现在先给 `deepcli benchmark baselines --json`，再给 current capture、competitor template 或 competitor compare；顶层 opportunities `nextActions` 和 `checklist[]` 也从该只读 inventory 动作开始。
+   - 目的：机会页从“直接写本地 evidence artifact”变成“先检查状态，再执行下一步”，降低误操作并让 UI 能先渲染 baseline inventory。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

@@ -3576,7 +3576,7 @@ fn scorecard_product_opportunities(
         return Vec::new();
     }
 
-    let baseline_actions = sota_baseline_next_actions(workspace);
+    let baseline_actions = opportunity_baseline_next_actions(sota_baseline_next_actions(workspace));
     let baseline_ready = baseline_actions
         .iter()
         .any(|action| action.starts_with("deepcli benchmark compare --baseline "));
@@ -3620,6 +3620,12 @@ fn scorecard_product_opportunities(
             ],
         },
     ]
+}
+
+fn opportunity_baseline_next_actions(actions: Vec<String>) -> Vec<String> {
+    let mut next_actions = vec!["deepcli benchmark baselines --json".to_string()];
+    next_actions.extend(actions);
+    dedup_preserve_order(next_actions)
 }
 
 fn scorecard_category_checklist(category: &ScorecardCategory) -> Vec<Value> {
@@ -35887,10 +35893,20 @@ mod tests {
         assert_eq!(value["source"]["command"], "deepcli round --json");
         assert!(value["opportunityCount"].as_u64().unwrap() >= 2);
         let opportunities = value["opportunities"].as_array().unwrap();
-        assert!(opportunities
+        let baseline_opportunity = opportunities
             .iter()
-            .any(|opportunity| opportunity["id"] == "competitor_baseline"));
+            .find(|opportunity| opportunity["id"] == "competitor_baseline")
+            .expect("opportunities should include the competitor baseline workflow");
+        assert_eq!(
+            baseline_opportunity["nextActions"][0],
+            "deepcli benchmark baselines --json"
+        );
+        assert_eq!(
+            baseline_opportunity["checklist"][0]["command"],
+            "deepcli benchmark baselines --json"
+        );
         let next_actions = json_string_array(&value["nextActions"]);
+        assert_eq!(next_actions[0], "deepcli benchmark baselines --json");
         assert!(next_actions.iter().any(|action| {
             action == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
         }));
@@ -36701,17 +36717,57 @@ mod tests {
             .contains("baseline"));
         assert_eq!(
             baseline_opportunity["nextActions"][0],
-            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+            "deepcli benchmark baselines --json"
         );
+        assert!(json_string_array(&baseline_opportunity["nextActions"])
+            .iter()
+            .any(|action| action
+                == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"));
         assert_eq!(
             baseline_opportunity["checklist"][0]["command"],
             baseline_opportunity["nextActions"][0]
+        );
+        assert_eq!(
+            baseline_opportunity["checklist"][0]["label"],
+            "List benchmark baselines"
         );
         assert_eq!(
             value["scorecard"]["opportunities"][0]["id"],
             baseline_opportunity["id"]
         );
         assert!(value["report"].as_str().unwrap().contains("opportunities:"));
+    }
+
+    #[test]
+    fn round_ready_product_opportunity_keeps_compare_after_baseline_inventory() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
+        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+        fs::write(&baseline, "{}\n").unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let baseline_opportunity = value["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|opportunity| opportunity["id"] == "competitor_baseline")
+            .expect("ready round should recommend competitor baseline comparison");
+        let next_actions = json_string_array(&baseline_opportunity["nextActions"]);
+
+        assert_eq!(next_actions[0], "deepcli benchmark baselines --json");
+        assert!(next_actions.contains(
+            &"deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string()
+        ));
+        assert!(!next_actions.contains(
+            &"deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+                .to_string()
+        ));
     }
 
     #[test]
