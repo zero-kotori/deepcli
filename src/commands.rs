@@ -1791,7 +1791,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/resume 6155c14e-85e5-4600-a081-29359cc232f2",
                 "deepcli resume 6155c14e --dry-run --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. Preview and error JSON both expose executable next actions plus matching `checklist[]` items so recovery UIs can render actions without parsing report text. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
         },
         CommandHelp {
             name: "/rename",
@@ -3429,6 +3429,7 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli resume" => "Resume saved work",
         command if command.starts_with("deepcli resume ") => "Resume saved work",
         "deepcli sessions --all --limit 20" => "List saved sessions",
+        command if command.starts_with("deepcli history ") => "List saved sessions",
         "deepcli next --json" => "Inspect recovery actions",
         "deepcli handoff --pr" => "Prepare PR handoff",
         "deepcli permissions show --json" => "Inspect permissions",
@@ -11616,6 +11617,7 @@ fn format_resume_preview_json(
 ) -> Result<String> {
     let activity = session.activity_summary()?;
     let recent_messages = session.load_recent_messages(5)?;
+    let next_actions = resume_preview_next_actions(session);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.resume.preview.v1",
         "status": "preview",
@@ -11643,7 +11645,8 @@ fn format_resume_preview_json(
             .collect::<Vec<_>>(),
         "resumeCommand": format!("deepcli resume {}", session.id()),
         "note": note,
-        "nextActions": resume_preview_next_actions(session),
+        "nextActions": next_actions,
+        "checklist": local_action_checklist(&next_actions),
         "report": report,
     }))?)
 }
@@ -11710,6 +11713,7 @@ fn format_resume_error_json(
             "message": redact_sensitive_text(message),
         },
         "nextActions": next_actions,
+        "checklist": local_action_checklist(next_actions),
         "report": report,
     }))?)
 }
@@ -32709,6 +32713,12 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().starts_with("deepcli resume ")));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Resume saved work".to_string()));
+        assert!(checklist_labels.contains(&"Inspect recovery actions".to_string()));
+        assert!(checklist_labels.contains(&"Inspect session diagnostics".to_string()));
         assert!(value["report"].as_str().unwrap().contains("resume preview"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/resume.json")).unwrap();
         assert_eq!(written, output);
@@ -32753,6 +32763,10 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str() == Some("deepcli sessions --all --limit 20")));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"List saved sessions".to_string()));
         assert!(value["report"].as_str().unwrap().contains("resume error"));
     }
 

@@ -61,7 +61,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 
 - `deepcli resume` 打开当前 workspace 的会话选择器，并默认跳过只包含工具、测试或审计记录的诊断型 session、只包含低信息输入和本地澄清回复的会话，以及短小已完成的单轮任务会话。
 - `deepcli resume <session_id>` 恢复指定会话。
-- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，不创建新会话、不进入 TUI、不调用 provider；无 id 时同样使用当前 workspace 内去噪后的可恢复候选；没有可恢复候选时同一 schema 输出 `status=error`、`selected=null`、`error.code` 和可执行 `nextActions` 后返回非零。
+- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，并从 `nextActions` 派生顶层 `checklist[]`，不创建新会话、不进入 TUI、不调用 provider；无 id 时同样使用当前 workspace 内去噪后的可恢复候选；没有可恢复候选时同一 schema 输出 `status=error`、`selected=null`、`error.code`、可执行 `nextActions` 和 `checklist[]` 后返回非零。
 - `deepcli sessions --all --limit 20` 查看历史。
 - `deepcli history` 是历史列表快捷入口。
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
