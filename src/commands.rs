@@ -6649,8 +6649,11 @@ fn build_benchmark_status_report(
 
 fn benchmark_status_next_actions(report: &BenchmarkStatusReport) -> Vec<String> {
     let mut actions = benchmark_freshness_next_actions(report);
+    actions.push("deepcli recipes sota --json".to_string());
+    if report.status == "ready" {
+        actions.push("deepcli benchmark baselines --json".to_string());
+    }
     actions.extend([
-        "deepcli recipes sota --json".to_string(),
         "deepcli benchmark presets --json".to_string(),
         "deepcli benchmark run-suite --json --fail-on-command".to_string(),
         "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
@@ -37516,6 +37519,25 @@ mod tests {
         assert_eq!(
             ready_value["latestMeaningfulArtifact"]["artifactPath"],
             scorecard_path
+        );
+        let ready_next_actions = json_string_array(&ready_value["nextActions"]);
+        let recipes_index = ready_next_actions
+            .iter()
+            .position(|action| action == "deepcli recipes sota --json")
+            .expect("ready benchmark status should link back to SOTA recipes");
+        let baselines_index = ready_next_actions
+            .iter()
+            .position(|action| action == "deepcli benchmark baselines --json")
+            .expect("ready benchmark status should link to baseline inventory");
+        let presets_index = ready_next_actions
+            .iter()
+            .position(|action| action == "deepcli benchmark presets --json")
+            .expect("ready benchmark status should keep preset discovery");
+        assert!(recipes_index < baselines_index);
+        assert!(baselines_index < presets_index);
+        assert_checklist_matches_executable_actions(&ready_value, &ready_next_actions);
+        assert!(
+            json_checklist_labels(&ready_value).contains(&"List benchmark baselines".to_string())
         );
 
         let ready_gate = handle_benchmark(

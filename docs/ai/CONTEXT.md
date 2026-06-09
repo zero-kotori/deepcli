@@ -877,6 +877,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：ready scorecard、ready round 和 SOTA recipe 的顶层动作现在包含 `deepcli opportunities --json`；round 仍保留 preflight/gate 在前，scorecard 的 benchmark 修复动作也保持优先。
    - 目的：机会页成为可发现的一等产品循环入口，而不是只作为嵌套字段存在。
 
+147. Benchmark Status Baseline Inventory Link
+   - 产品缺口：`deepcli benchmark status --json` 在 benchmark evidence ready 时只给 SOTA recipe、presets、run、gate、summary 和 trends，用户已证明证据 ready 后还要从其它入口绕到 baseline inventory。
+   - 结果：ready benchmark status 的顶层 `nextActions` 现在会在 `deepcli recipes sota --json` 后直接给出 `deepcli benchmark baselines --json`，并从同一动作派生 `List benchmark baselines` checklist；missing、weak、incomplete、failing 和 stale 状态仍优先展示证据修复路径。
+   - 目的：benchmark status 页从“证据体检”自然推进到“查看对照基线”，让 TUI、外部 benchmark 面板和脚本用户先看只读 inventory，再决定生成 baseline、compare 或重新跑 preset。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
