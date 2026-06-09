@@ -3,6 +3,7 @@
 .deepcli/credentials/
 .deepcli/sessions/
 .deepcli/logs/
+.deepcli/baselines/
 .env
 .env.*
 *.pem

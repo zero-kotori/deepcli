@@ -13,7 +13,7 @@
 - 远程仓库：`https://github.com/zero-kotori/deepcli.git`
 - 目标提交身份：`zero-kotori <kotorizero8@gmail.com>`
 - 产品命名：统一使用 `deepcli`
-- 本地忽略产物：`.deepcli/benchmarks/`、`.deepcli/exports/`、`.deepcli/support/`、credentials、logs、sessions 等不得提交
+- 本地忽略产物：`.deepcli/benchmarks/`、`.deepcli/baselines/`、`.deepcli/exports/`、`.deepcli/support/`、credentials、logs、sessions 等不得提交
 
 ## 最近已完成的产品迭代
 
@@ -724,6 +724,7 @@ jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}' .deepcli/support/
 ./scripts/deepcli round --json --run-benchmark --fail-on-command
 ./scripts/deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json
 ./scripts/deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json
+./scripts/deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json | jq '{status,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json
 ./scripts/deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json | jq '{status,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ```
@@ -795,6 +796,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli config show|sources|validate|get --json`、`credentials status --json`、`permissions show --json` 和 `timeout --json` 位于启动配置、模型切换和安全设置的关键路径，但 JSON 里缺少统一 `checklist[]`，且 credentials/permissions 的 next actions 仍混有 slash-command prose 或空动作。
    - 结果：这些本地 inspect JSON 现在输出可执行 `deepcli ...` 顶层动作，并从动作派生 `checklist[]`；configured credentials 也会给出模型查看、模型列表、配置验证和 doctor，missing/parse-error credentials 会给出具体 provider 的 set/import-env/template 修复动作；permissions 会给出回到 sandbox、配置验证、doctor 和帮助动作；timeout 会给出 usage、trace、inspect、reset 和 help 动作。
    - 目的：设置面板、凭据向导、权限安全页和慢响应排障页可以直接渲染配置/凭据/权限/超时动作按钮，不必解析自然语言或自行拼命令。
+
+131. Benchmark Baseline JSON 动作清单与本地忽略
+   - 产品缺口：`scorecard`、`round` 和 `recipes sota` 已经把 `benchmark baseline-template --from-current ... --output .deepcli/baselines/...` 作为 ready 状态下的下一步，但 baseline-template JSON 自身缺少 `checklist[]`；同时 `.deepcli/baselines/` 未被默认忽略，用户执行推荐动作后工作区会出现未跟踪 baseline artifact。
+   - 结果：`deepcli benchmark baseline-template --json` 现在从可执行 `nextActions` 派生 `checklist[]`，人工编辑提示仍只保留在 `nextActions`/`report`；`.deepcli/baselines/` 加入 `.gitignore` 和 `.deepignore`。
+   - 目的：SOTA baseline 捕获、手工竞品模板和 compare 路径可在外部 UI 中直接渲染动作按钮，同时推荐命令不会污染 Git 工作区或 deepcli 上下文。
 
 ## 下一步建议
 

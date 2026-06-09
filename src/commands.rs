@@ -7816,6 +7816,7 @@ fn benchmark_baseline_template_value(
     report: Option<&str>,
     captures: Option<&BTreeMap<String, BenchmarkBaselineTemplateCapture>>,
 ) -> Value {
+    let checklist = benchmark_action_checklist(next_actions);
     let cases = MEANINGFUL_BENCHMARK_PRESETS
         .iter()
         .filter_map(|preset_name| benchmark_preset_by_name(preset_name).ok())
@@ -7846,6 +7847,7 @@ fn benchmark_baseline_template_value(
         },
         "cases": cases,
         "nextActions": next_actions,
+        "checklist": checklist,
         "report": report,
     })
 }
@@ -36686,6 +36688,18 @@ mod tests {
             action.as_str().unwrap()
                 == "deepcli benchmark compare --baseline .deepcli/baselines/deepcli-main.json --json"
         }));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(&value, &next_actions);
+        assert!(value["checklist"].as_array().unwrap().iter().any(|item| {
+            item["label"] == "Compare benchmark baseline"
+                && item["command"]
+                    == "deepcli benchmark compare --baseline .deepcli/baselines/deepcli-main.json --json"
+        }));
+        assert!(!value["checklist"].as_array().unwrap().iter().any(|item| {
+            item["command"]
+                .as_str()
+                .is_some_and(|command| command.starts_with("edit status"))
+        }));
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -36862,6 +36876,18 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().starts_with("edit status")));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(&value, &next_actions);
+        assert_eq!(
+            value["checklist"][0]["command"].as_str(),
+            Some(
+                "deepcli benchmark compare --baseline .deepcli/baselines/current-main.json --json"
+            )
+        );
+        assert_eq!(
+            value["checklist"][0]["label"].as_str(),
+            Some("Compare benchmark baseline")
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
@@ -37023,6 +37049,11 @@ mod tests {
         .unwrap();
         let baseline_value: Value = serde_json::from_str(&baseline).unwrap();
         assert_eq!(baseline_value["status"], "needs_values");
+        let baseline_next_actions = json_string_array(&baseline_value["nextActions"]);
+        assert_benchmark_checklist_matches_executable_actions(
+            &baseline_value,
+            &baseline_next_actions,
+        );
 
         let compare = handle_benchmark(
             dir.path(),

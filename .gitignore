@@ -4,6 +4,7 @@
 .deepcli/sessions/
 .deepcli/logs/
 .deepcli/benchmarks/
+.deepcli/baselines/
 .deepcli/exports/
 .deepcli/support/
 .env
