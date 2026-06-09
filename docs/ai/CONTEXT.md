@@ -837,6 +837,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.scorecard.v1` 和内嵌的 `deepcli.scorecard.summary.v1` 增加 `normalizedScore` 与 `scoreScale`，明确 `score` 是 raw points、`normalizedScore`/`percent` 是 0-100 展示分，并把推荐展示字段标为 `scoreScale.display=normalizedScore`；scorecard 与 round 文本报告也拆清 raw score 和 normalized score。
    - 目的：scorecard、round 和外部产品循环 UI 不再把 raw points 误读成百分制分数，ready 状态下能清楚展示 100/100，而不破坏既有 `score`/`maxScore` 脚本兼容性。
 
+139. Ready Round Product Opportunities
+   - 产品缺口：当 `scorecard` 和 `round` 都 ready 且没有 gaps 时，JSON 只剩 preflight、gate 和 baseline 维护动作；外部 UI 难以区分“必须修复的缺口”和“下一轮可继续推进的产品机会”，持续产品循环容易停在 100 分报告上。
+   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
+   - 目的：ready 状态继续给产品设计师和外部 UI 提供下一轮可选方向，同时不把机会误标成 gaps，不改变 gates、status 或现有 nextActions。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

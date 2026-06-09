@@ -2666,6 +2666,17 @@ struct ScorecardReport {
     categories: Vec<ScorecardCategory>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
+    opportunities: Vec<ScorecardOpportunity>,
+}
+
+#[derive(Debug, Clone)]
+struct ScorecardOpportunity {
+    id: &'static str,
+    title: &'static str,
+    summary: String,
+    impact: &'static str,
+    status: &'static str,
+    next_actions: Vec<String>,
 }
 
 const SCORECARD_BENCHMARK_REMEDIATION_ACTION: &str =
@@ -3169,6 +3180,7 @@ fn build_scorecard_report(
         &benchmark_status,
         benchmark_trends_status,
     );
+    let opportunities = scorecard_product_opportunities(workspace, status, &gaps);
     let report = format_scorecard_text(
         workspace,
         ScorecardTextInput {
@@ -3180,6 +3192,7 @@ fn build_scorecard_report(
             categories: &categories,
             gaps: &gaps,
             next_actions: &next_actions,
+            opportunities: &opportunities,
         },
     );
 
@@ -3193,6 +3206,7 @@ fn build_scorecard_report(
         categories,
         gaps,
         next_actions,
+        opportunities,
     }
 }
 
@@ -3321,8 +3335,80 @@ fn scorecard_prioritize_category_next_actions(category: &mut ScorecardCategory) 
     category.next_actions = dedup_preserve_order(actions);
 }
 
+fn scorecard_product_opportunities(
+    workspace: &Path,
+    status: &str,
+    gaps: &[String],
+) -> Vec<ScorecardOpportunity> {
+    if status != "ok" || !gaps.is_empty() {
+        return Vec::new();
+    }
+
+    let baseline_actions = sota_baseline_next_actions(workspace);
+    let baseline_ready = baseline_actions
+        .iter()
+        .any(|action| action.starts_with("deepcli benchmark compare --baseline "));
+    let baseline = if baseline_ready {
+        ScorecardOpportunity {
+            id: "competitor_baseline",
+            title: "Compare Competitor Baseline",
+            summary:
+                "A ready competitor baseline is available; compare current evidence against it."
+                    .to_string(),
+            impact: "keeps SOTA claims grounded in a local competitor benchmark",
+            status: "available",
+            next_actions: baseline_actions,
+        }
+    } else {
+        ScorecardOpportunity {
+            id: "competitor_baseline",
+            title: "Prepare Competitor Baseline",
+            summary:
+                "Capture a current baseline and prepare a competitor baseline before the next SOTA comparison."
+                    .to_string(),
+            impact: "turns ready product evidence into comparable benchmark evidence",
+            status: "available",
+            next_actions: baseline_actions,
+        }
+    };
+
+    vec![
+        baseline,
+        ScorecardOpportunity {
+            id: "product_loop_experience",
+            title: "Exercise Product Loop Experience",
+            summary:
+                "Review the ready round and SOTA recipe as the next product-design entrypoint."
+                    .to_string(),
+            impact: "keeps the designer-engineer loop discoverable after all gates pass",
+            status: "available",
+            next_actions: vec![
+                SCORECARD_ROUND_REPORT_ACTION.to_string(),
+                "deepcli recipes sota --json".to_string(),
+            ],
+        },
+    ]
+}
+
 fn scorecard_category_checklist(category: &ScorecardCategory) -> Vec<Value> {
     scorecard_action_checklist(&category.next_actions)
+}
+
+fn scorecard_opportunities_json(opportunities: &[ScorecardOpportunity]) -> Vec<Value> {
+    opportunities
+        .iter()
+        .map(|opportunity| {
+            json!({
+                "id": opportunity.id,
+                "title": opportunity.title,
+                "summary": opportunity.summary,
+                "impact": opportunity.impact,
+                "status": opportunity.status,
+                "nextActions": opportunity.next_actions,
+                "checklist": scorecard_action_checklist(&opportunity.next_actions),
+            })
+        })
+        .collect()
 }
 
 fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
@@ -3627,6 +3713,7 @@ struct ScorecardTextInput<'a> {
     categories: &'a [ScorecardCategory],
     gaps: &'a [String],
     next_actions: &'a [String],
+    opportunities: &'a [ScorecardOpportunity],
 }
 
 fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> String {
@@ -3665,6 +3752,24 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
     if !input.gaps.is_empty() {
         lines.push("gaps:".to_string());
         lines.extend(input.gaps.iter().map(|gap| format!("  - {gap}")));
+    }
+    if !input.opportunities.is_empty() {
+        lines.push("opportunities:".to_string());
+        for opportunity in input.opportunities {
+            lines.push(format!(
+                "  - {}: {} ({})",
+                opportunity.id, opportunity.title, opportunity.status
+            ));
+            lines.push(format!("    summary: {}", opportunity.summary));
+            lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push("    next actions:".to_string());
+            lines.extend(
+                opportunity
+                    .next_actions
+                    .iter()
+                    .map(|action| format!("      - {action}")),
+            );
+        }
     }
     lines.push("next actions:".to_string());
     lines.extend(
@@ -3708,6 +3813,7 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
         "gaps": report.gaps,
         "nextActions": report.next_actions,
         "checklist": scorecard_action_checklist(&report.next_actions),
+        "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": report.report,
     }))?)
 }
@@ -3745,6 +3851,7 @@ struct RoundReport {
     gates: Vec<RoundGate>,
     gaps: Vec<String>,
     next_actions: Vec<String>,
+    opportunities: Vec<ScorecardOpportunity>,
 }
 
 #[derive(Debug, Clone)]
@@ -3777,6 +3884,7 @@ struct RoundTextInput<'a> {
     gates: &'a [RoundGate],
     gaps: &'a [String],
     next_actions: &'a [String],
+    opportunities: &'a [ScorecardOpportunity],
 }
 
 pub(crate) fn handle_round(
@@ -4131,6 +4239,11 @@ fn build_round_report(
         next_actions.extend(sota_baseline_next_actions(workspace));
     }
     let next_actions = dedup_preserve_order(next_actions);
+    let opportunities = if status == "ready" {
+        scorecard.opportunities.clone()
+    } else {
+        Vec::new()
+    };
     let report = format_round_text(
         workspace,
         RoundTextInput {
@@ -4143,6 +4256,7 @@ fn build_round_report(
             gates: &gates,
             gaps: &gaps,
             next_actions: &next_actions,
+            opportunities: &opportunities,
         },
     );
 
@@ -4157,6 +4271,7 @@ fn build_round_report(
         gates,
         gaps,
         next_actions,
+        opportunities,
     }
 }
 
@@ -4350,6 +4465,24 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
         lines.push("gaps:".to_string());
         lines.extend(input.gaps.iter().map(|gap| format!("  - {gap}")));
     }
+    if !input.opportunities.is_empty() {
+        lines.push("opportunities:".to_string());
+        for opportunity in input.opportunities {
+            lines.push(format!(
+                "  - {}: {} ({})",
+                opportunity.id, opportunity.title, opportunity.status
+            ));
+            lines.push(format!("    summary: {}", opportunity.summary));
+            lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push("    next actions:".to_string());
+            lines.extend(
+                opportunity
+                    .next_actions
+                    .iter()
+                    .map(|action| format!("      - {action}")),
+            );
+        }
+    }
     lines.push("next actions:".to_string());
     lines.extend(
         input
@@ -4386,6 +4519,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "gaps": &report.gaps,
         "nextActions": &report.next_actions,
         "checklist": scorecard_action_checklist(&report.next_actions),
+        "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": &report.report,
     }))?)
 }
@@ -5945,6 +6079,7 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
         "normalizedScore": report.percent,
         "scoreScale": scorecard_score_scale_json(),
         "gaps": report.gaps,
+        "opportunities": scorecard_opportunities_json(&report.opportunities),
         "categories": report.categories.iter().map(|category| json!({
             "id": category.id,
             "status": scorecard_category_status(category),
@@ -35596,6 +35731,7 @@ mod tests {
                 gates: &round_report.gates,
                 gaps: &round_report.gaps,
                 next_actions: &round_report.next_actions,
+                opportunities: &round_report.opportunities,
             },
         );
         assert!(round_text.contains("scorecard: raw score "));
@@ -36133,6 +36269,48 @@ mod tests {
         assert!(value["report"].as_str().unwrap().contains(
             "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
         ));
+    }
+
+    #[test]
+    fn round_ready_surfaces_non_blocking_product_opportunities() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["status"], "ready");
+        assert!(value["gaps"].as_array().unwrap().is_empty());
+        let opportunities = value["opportunities"].as_array().unwrap();
+        assert!(
+            !opportunities.is_empty(),
+            "ready round should still expose next product opportunities"
+        );
+        let baseline_opportunity = opportunities
+            .iter()
+            .find(|opportunity| opportunity["id"] == "competitor_baseline")
+            .expect("ready round should recommend competitor baseline setup");
+        assert_eq!(baseline_opportunity["status"], "available");
+        assert!(baseline_opportunity["summary"]
+            .as_str()
+            .unwrap()
+            .contains("baseline"));
+        assert_eq!(
+            baseline_opportunity["nextActions"][0],
+            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        );
+        assert_eq!(
+            baseline_opportunity["checklist"][0]["command"],
+            baseline_opportunity["nextActions"][0]
+        );
+        assert_eq!(
+            value["scorecard"]["opportunities"][0]["id"],
+            baseline_opportunity["id"]
+        );
+        assert!(value["report"].as_str().unwrap().contains("opportunities:"));
     }
 
     #[test]
