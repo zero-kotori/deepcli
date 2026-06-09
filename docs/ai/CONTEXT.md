@@ -842,6 +842,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
    - 目的：ready 状态继续给产品设计师和外部 UI 提供下一轮可选方向，同时不把机会误标成 gaps，不改变 gates、status 或现有 nextActions。
 
+140. SOTA Recipe Product Opportunities
+   - 产品缺口：`scorecard` 和 `round` 已经能输出非阻塞 `opportunities[]`，但用户从 `deepcli recipes sota --json` 这个产品循环入口进入时仍只能看到 checklist/nextActions，缺少机会的 summary、impact 和 status。
+   - 结果：`deepcli.recipes.v1` 在 `sota` topic 下复用当前 `round` 的 `opportunities[]`，普通 topic 返回空数组；文本模式在有机会时也展示 opportunities。
+   - 目的：外部产品循环页、TUI recipe 面板和脚本入口可以在同一份 SOTA recipe 报告里同时渲染动作按钮和机会说明，不必额外调用 round 或自行解释动作原因。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

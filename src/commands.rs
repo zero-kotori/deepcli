@@ -2144,6 +2144,12 @@ struct Recipe {
     notes: &'static [&'static str],
 }
 
+#[derive(Debug, Clone, Default)]
+struct RecipesState {
+    next_actions: Vec<String>,
+    opportunities: Vec<ScorecardOpportunity>,
+}
+
 pub(crate) fn handle_recipes(
     workspace: &Path,
     config: &AppConfig,
@@ -2152,10 +2158,23 @@ pub(crate) fn handle_recipes(
 ) -> Result<String> {
     let options = parse_recipes_options(&args)?;
     let recipes = selected_recipes(options.topic)?;
-    let next_actions = recipes_next_actions(workspace, config, registry, options.topic);
-    let report = format_recipes_text(workspace, options.topic, &recipes, &next_actions);
+    let state = recipes_state(workspace, config, registry, options.topic);
+    let report = format_recipes_text(
+        workspace,
+        options.topic,
+        &recipes,
+        &state.next_actions,
+        &state.opportunities,
+    );
     let output = if options.json_output {
-        format_recipes_json(workspace, options.topic, &recipes, &next_actions, &report)?
+        format_recipes_json(
+            workspace,
+            options.topic,
+            &recipes,
+            &state.next_actions,
+            &state.opportunities,
+            &report,
+        )?
     } else {
         report
     };
@@ -2383,12 +2402,12 @@ fn recipes_catalog() -> Vec<Recipe> {
     ]
 }
 
-fn recipes_next_actions(
+fn recipes_state(
     workspace: &Path,
     config: &AppConfig,
     registry: &ToolRegistry,
     topic: Option<&'static str>,
-) -> Vec<String> {
+) -> RecipesState {
     let actions = match topic {
         Some("start") => vec!["deepcli", "deepcli recipes code"],
         Some("code") => vec!["deepcli status --json", "deepcli recipes release"],
@@ -2407,16 +2426,19 @@ fn recipes_next_actions(
             "deepcli completion install zsh --force",
         ],
         Some("sota") => {
-            let mut actions = build_round_report(
+            let round = build_round_report(
                 workspace,
                 config,
                 registry,
                 DEFAULT_ROUND_SCORE_THRESHOLD,
                 None,
-            )
-            .next_actions;
+            );
+            let mut actions = round.next_actions;
             actions.extend(sota_baseline_next_actions(workspace));
-            return dedup_preserve_order(actions);
+            return RecipesState {
+                next_actions: dedup_preserve_order(actions),
+                opportunities: round.opportunities,
+            };
         }
         _ => vec![
             "deepcli recipes sota",
@@ -2424,7 +2446,10 @@ fn recipes_next_actions(
             "deepcli recipes --json --output .deepcli/exports/recipes.json",
         ],
     };
-    dedup_preserve_order(actions.into_iter().map(str::to_string).collect())
+    RecipesState {
+        next_actions: dedup_preserve_order(actions.into_iter().map(str::to_string).collect()),
+        opportunities: Vec::new(),
+    }
 }
 
 fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
@@ -2454,6 +2479,7 @@ fn format_recipes_text(
     topic: Option<&'static str>,
     recipes: &[Recipe],
     next_actions: &[String],
+    opportunities: &[ScorecardOpportunity],
 ) -> String {
     let mut lines = vec![
         "deepcli recipes".to_string(),
@@ -2481,6 +2507,24 @@ fn format_recipes_text(
     }
     lines.push("next actions:".to_string());
     lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
+    if !opportunities.is_empty() {
+        lines.push("opportunities:".to_string());
+        for opportunity in opportunities {
+            lines.push(format!(
+                "  - {}: {} ({})",
+                opportunity.id, opportunity.title, opportunity.status
+            ));
+            lines.push(format!("    summary: {}", opportunity.summary));
+            lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push("    next actions:".to_string());
+            lines.extend(
+                opportunity
+                    .next_actions
+                    .iter()
+                    .map(|action| format!("      - {action}")),
+            );
+        }
+    }
     lines.join("\n")
 }
 
@@ -2489,6 +2533,7 @@ fn format_recipes_json(
     topic: Option<&'static str>,
     recipes: &[Recipe],
     next_actions: &[String],
+    opportunities: &[ScorecardOpportunity],
     report: &str,
 ) -> Result<String> {
     let title = recipes_json_title(topic, recipes);
@@ -2511,6 +2556,7 @@ fn format_recipes_json(
             "notes": recipe.notes,
         })).collect::<Vec<_>>(),
         "nextActions": next_actions,
+        "opportunities": scorecard_opportunities_json(opportunities),
         "report": report,
     }))?)
 }
@@ -35537,6 +35583,40 @@ mod tests {
         assert!(!checklist.contains(
             &"deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
         ));
+    }
+
+    #[test]
+    fn recipes_sota_surfaces_ready_round_product_opportunities() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_recipes(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["sota".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["topic"], "sota");
+        let opportunities = value["opportunities"].as_array().unwrap();
+        let baseline_opportunity = opportunities
+            .iter()
+            .find(|opportunity| opportunity["id"] == "competitor_baseline")
+            .expect("SOTA recipe should explain the baseline opportunity");
+        assert_eq!(baseline_opportunity["status"], "available");
+        assert!(baseline_opportunity["impact"]
+            .as_str()
+            .unwrap()
+            .contains("benchmark"));
+        assert_eq!(
+            baseline_opportunity["checklist"][0]["command"],
+            baseline_opportunity["nextActions"][0]
+        );
     }
 
     #[test]
