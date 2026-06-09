@@ -679,6 +679,8 @@ cargo test git_write
 ./scripts/deepcli usage --json | jq '{checklist:.checklist[0:4],sessionChecklist:.session.checklist[0:4],nextActions:.session.nextActions[0:4]}'
 ./scripts/deepcli model show --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli model list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli completion status zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli completion install zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search compiler --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search __definitely_no_deepcli_match__ --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli next --json | jq '{checklist:.checklist[0:4],quickLinkChecklist:.quickLinkChecklist[0:4],nextActions:.nextActions[0:4],quickLinks:.quickLinks[0:4]}'
@@ -730,6 +732,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli recipes sota --json` 的顶层 `nextActions` 已经是状态感知动作队列，但 `checklist[]` 仍从静态 recipe 命令链生成，外部 UI 只渲染 checklist 时会先展示已读的 recipe/scorecard/round 导航，而不是当前最该执行的动作。
    - 结果：`recipes sota` 顶层 `checklist[]` 改为从状态感知 `nextActions` 派生并逐项对齐；静态完整工作流继续保留在 `recipes[].commands`。
    - 目的：TUI、外部产品循环页和脚本验收可以把 `checklist[]` 当作当前动作按钮队列，不需要自行判断 SOTA recipe 的静态命令和动态动作哪个更该展示。
+
+122. Shell Completion JSON 动作清单
+   - 产品缺口：`deepcli completion status/install --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，shell 安装面板、TUI 或外部 onboarding UI 还需要自行给安装、复查和 shell 体检动作命名。
+   - 结果：`completion status --json` 与 `completion install --json` 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；缺失、过期、dry-run install 和 up-to-date 场景都保留原 `nextActions` 兼容脚本。
+   - 目的：shell completion 的安装、刷新和复查链路可以和 status、usage、doctor、logs、model、fork 等 JSON 面板一致，外部 UI 可直接渲染可点击动作。
 
 ## 下一步建议
 

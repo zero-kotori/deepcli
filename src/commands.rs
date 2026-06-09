@@ -3429,6 +3429,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli recipes" => "Open workflow recipes",
         "deepcli recipes release" => "Open release workflow",
         "deepcli completion json" => "Export command catalog",
+        command if command.starts_with("deepcli completion install ") => "Install shell completion",
+        command if command.starts_with("deepcli completion status ") => "Check shell completion",
         "deepcli status --json" => "Inspect current status",
         command if command.starts_with("deepcli usage ") => "Inspect session usage",
         command if command.starts_with("deepcli trace ") => "Inspect session trace",
@@ -11146,6 +11148,7 @@ fn completion_install_next_actions(shell: CompletionFormat, dry_run: bool) -> Ve
 }
 
 fn format_completion_install_json(report: &CompletionInstallReport) -> Result<String> {
+    let checklist = local_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.completion.install.v1",
         "program": "deepcli",
@@ -11157,7 +11160,8 @@ fn format_completion_install_json(report: &CompletionInstallReport) -> Result<St
         "force": report.force,
         "bytes": report.bytes,
         "parentCreated": report.parent_created,
-        "nextActions": report.next_actions,
+        "nextActions": &report.next_actions,
+        "checklist": checklist,
         "report": report.report,
     }))?)
 }
@@ -11169,6 +11173,7 @@ fn format_completion_status_json(report: &CompletionStatusReport) -> Result<Stri
 }
 
 fn completion_status_json_value(report: &CompletionStatusReport) -> Value {
+    let checklist = local_action_checklist(&report.next_actions);
     json!({
         "schema": "deepcli.completion.status.v1",
         "program": "deepcli",
@@ -11180,7 +11185,8 @@ fn completion_status_json_value(report: &CompletionStatusReport) -> Value {
         "upToDate": report.up_to_date,
         "expectedBytes": report.expected_bytes,
         "installedBytes": report.installed_bytes,
-        "nextActions": report.next_actions,
+        "nextActions": &report.next_actions,
+        "checklist": checklist,
         "report": report.report,
     })
 }
@@ -37448,6 +37454,12 @@ mod tests {
             .as_str()
             .unwrap()
             .ends_with(".zsh/completions/_deepcli"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Check shell completion".to_string()));
+        assert!(checklist_labels.contains(&"Check shell install".to_string()));
     }
 
     #[test]
@@ -37496,6 +37508,10 @@ mod tests {
         assert_eq!(value["shell"], "zsh");
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Check shell completion".to_string()));
+        assert!(checklist_labels.contains(&"Check shell install".to_string()));
         assert_eq!(value["status"], "up_to_date");
         assert_eq!(value["installed"], true);
         assert_eq!(value["upToDate"], true);
