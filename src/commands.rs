@@ -9014,6 +9014,9 @@ fn benchmark_baselines_status(baselines: &[BenchmarkBaselineInventoryEntry]) -> 
     if baselines.is_empty() {
         return "empty";
     }
+    if !baselines.iter().any(|baseline| baseline.is_default) {
+        return "needs_default";
+    }
     let ready_count = baselines
         .iter()
         .filter(|baseline| baseline.status == "ready")
@@ -9080,6 +9083,15 @@ fn benchmark_baselines_next_actions(
     if baselines.is_empty() {
         actions.extend(sota_baseline_next_actions(workspace));
     } else {
+        if !baselines.iter().any(|baseline| baseline.is_default) {
+            actions.push(DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string());
+        }
+        if baselines
+            .iter()
+            .any(|baseline| baseline.is_default && baseline.status == "invalid")
+        {
+            actions.push(DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string());
+        }
         for baseline in baselines
             .iter()
             .filter(|baseline| baseline.ready_to_compare)
@@ -9102,17 +9114,8 @@ fn benchmark_baselines_next_actions(
                 baseline.path
             ));
         }
-        if baselines
-            .iter()
-            .any(|baseline| baseline.is_default && baseline.status == "invalid")
-        {
-            actions.push(DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string());
-        }
-        if !baselines.iter().any(|baseline| baseline.is_default) {
-            actions.push(DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string());
-        }
+        actions.extend(sota_baseline_next_actions(workspace));
     }
-    actions.push(DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION.to_string());
     actions.push("deepcli benchmark trends --json".to_string());
     actions.push("deepcli benchmark status --json".to_string());
     actions.push("deepcli scorecard --json".to_string());
@@ -38613,6 +38616,79 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("default baseline: .deepcli/baselines/competitor.json status=needs_values"));
+    }
+
+    #[test]
+    fn benchmark_baselines_prioritizes_default_template_when_only_current_is_ready() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        let baselines_dir = dir.path().join(".deepcli/baselines");
+        fs::create_dir_all(&baselines_dir).unwrap();
+        fs::write(
+            baselines_dir.join("current-main.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": "deepcli.benchmark.baseline.v1",
+                "name": "current-main",
+                "cases": [
+                    {
+                        "suite": "product",
+                        "case": "cargo-test",
+                        "status": "passed",
+                        "durationMs": 120
+                    },
+                    {
+                        "suite": "product",
+                        "case": "preflight-quick",
+                        "status": "passed",
+                        "durationMs": 250
+                    },
+                    {
+                        "suite": "product",
+                        "case": "selftest",
+                        "status": "passed",
+                        "durationMs": 30
+                    },
+                    {
+                        "suite": "product",
+                        "case": "scorecard",
+                        "status": "passed",
+                        "durationMs": 10
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["baselines".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["schema"], "deepcli.benchmark.baselines.v1");
+        assert_eq!(value["status"], "needs_default");
+        assert_eq!(value["defaultBaseline"]["present"], false);
+        assert_eq!(
+            next_actions[0],
+            "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        );
+        assert!(!next_actions.iter().any(|action| {
+            action
+                == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        }));
+        assert!(next_actions.iter().any(|action| {
+            action == "deepcli benchmark compare --baseline .deepcli/baselines/current-main.json --json"
+        }));
+        assert_eq!(
+            value["checklist"][0]["command"],
+            "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+        );
     }
 
     #[test]

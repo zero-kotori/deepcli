@@ -862,6 +862,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：共享的 baseline 导航现在会先检查 current-main baseline 文件是否覆盖 required cases 且都有 `status`/`durationMs`；若默认 competitor baseline 缺失但 current-main 已 ready，只推荐生成 `.deepcli/baselines/competitor.json` 的手工模板。
    - 目的：SOTA baseline 工作流从“捕获 current -> 准备 competitor -> compare”向前推进，不会在 current baseline 已 ready 后继续重复同一步。
 
+144. Benchmark Baselines Needs Default State
+   - 产品缺口：当 `.deepcli/baselines/current-main.json` 已 ready、但默认 `.deepcli/baselines/competitor.json` 缺失时，`deepcli benchmark baselines --json` 会把 inventory 判为 ready，并先推荐 compare 非默认 current-main baseline，容易让用户误以为 SOTA 对照基线已准备好。
+   - 结果：`benchmark baselines` 现在返回 `status=needs_default`，`defaultBaseline.present=false`，首个 `nextActions` 和 `checklist[0]` 都指向生成 competitor baseline template；current-main compare 仅保留为后续辅助动作，且不会重复推荐 current capture。
+   - 目的：baseline inventory 与 scorecard、round、recipes 和 opportunities 的状态推进一致，先补默认 competitor 对照，再进入 compare。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
