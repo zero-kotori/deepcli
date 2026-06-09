@@ -2780,6 +2780,7 @@ struct ScorecardOpportunity {
 const SCORECARD_BENCHMARK_REMEDIATION_ACTION: &str =
     "deepcli round --json --run-benchmark --fail-on-command";
 const SCORECARD_ROUND_REPORT_ACTION: &str = "deepcli round --json";
+const SCORECARD_OPPORTUNITIES_ACTION: &str = "deepcli opportunities --json";
 const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
     "deepcli benchmark run-suite --json --fail-on-command";
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
@@ -3511,6 +3512,7 @@ fn scorecard_global_next_actions(
             actions.extend([
                 round_benchmark_trends_next_action(benchmark_trends_status),
                 "deepcli recipes sota --json".to_string(),
+                SCORECARD_OPPORTUNITIES_ACTION.to_string(),
                 "deepcli benchmark trends --json".to_string(),
                 "deepcli benchmark status --json".to_string(),
                 "deepcli preflight --json".to_string(),
@@ -3525,6 +3527,7 @@ fn scorecard_global_next_actions(
             "deepcli preflight --json".to_string(),
             "deepcli gate --json".to_string(),
             "deepcli recipes sota --json".to_string(),
+            SCORECARD_OPPORTUNITIES_ACTION.to_string(),
             "deepcli benchmark trends --json".to_string(),
             "deepcli benchmark status --json".to_string(),
         ]);
@@ -4474,6 +4477,7 @@ fn build_round_report(
     next_actions.push("deepcli preflight --json".to_string());
     next_actions.push("deepcli gate --json".to_string());
     if status == "ready" {
+        next_actions.push(SCORECARD_OPPORTUNITIES_ACTION.to_string());
         next_actions.extend(sota_baseline_next_actions(workspace));
     }
     let next_actions = dedup_preserve_order(next_actions);
@@ -36269,6 +36273,7 @@ mod tests {
             vec![
                 "deepcli round --json --run-benchmark --fail-on-command",
                 "deepcli recipes sota --json",
+                "deepcli opportunities --json",
                 "deepcli benchmark trends --json",
                 "deepcli benchmark status --json",
                 "deepcli preflight --json",
@@ -36289,7 +36294,7 @@ mod tests {
             Some("Refresh benchmark evidence")
         );
         assert_eq!(
-            checklist[6]["label"].as_str(),
+            checklist[7]["label"].as_str(),
             Some("Capture current benchmark baseline")
         );
 
@@ -36662,6 +36667,7 @@ mod tests {
             vec![
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli opportunities --json",
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]

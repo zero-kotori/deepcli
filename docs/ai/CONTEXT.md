@@ -872,6 +872,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：baseline 机会现在先给 `deepcli benchmark baselines --json`，再给 current capture、competitor template 或 competitor compare；顶层 opportunities `nextActions` 和 `checklist[]` 也从该只读 inventory 动作开始。
    - 目的：机会页从“直接写本地 evidence artifact”变成“先检查状态，再执行下一步”，降低误操作并让 UI 能先渲染 baseline inventory。
 
+146. Ready Reports Link Opportunities
+   - 产品缺口：`scorecard`、`round` 和 `recipes sota` 已经输出 `opportunities[]`，但顶层 `nextActions` 没有 `deepcli opportunities --json`，用户或外部 UI 想单独打开机会页仍要解析完整报告或记住命令。
+   - 结果：ready scorecard、ready round 和 SOTA recipe 的顶层动作现在包含 `deepcli opportunities --json`；round 仍保留 preflight/gate 在前，scorecard 的 benchmark 修复动作也保持优先。
+   - 目的：机会页成为可发现的一等产品循环入口，而不是只作为嵌套字段存在。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
