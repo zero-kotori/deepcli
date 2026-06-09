@@ -3440,6 +3440,11 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli test discover --json" => "Discover test commands",
         command if command.starts_with("deepcli test run ") => "Run test command",
         "deepcli help test" => "Open test help",
+        "deepcli git status --json" => "Inspect git status",
+        "deepcli git diff --json" => "Inspect git diff",
+        "deepcli git message --json" => "Prepare commit message",
+        "deepcli git branch --json" => "Inspect git branches",
+        "deepcli help git" => "Open git help",
         "deepcli resume" => "Resume saved work",
         "deepcli resume --dry-run --json" => "Resume preview",
         command if command.starts_with("deepcli resume ") && command.contains("--dry-run") => {
@@ -30141,6 +30146,8 @@ fn format_git_read_output(
         return Ok(content);
     }
     let report = format_git_read_report(&options.action, command, &content, &raw);
+    let next_actions = git_read_next_actions(&options.action);
+    let checklist = local_action_checklist(&next_actions);
     let output = serde_json::to_string_pretty(&json!({
         "schema": "deepcli.git.inspect.v1",
         "status": if git_raw_exit_code(&raw) == Some(0) { "ok" } else { "failed" },
@@ -30151,7 +30158,8 @@ fn format_git_read_output(
         "stderr": git_raw_string(&raw, "stderr"),
         "output": content,
         "raw": raw,
-        "nextActions": git_read_next_actions(&options.action),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": report,
     }))?;
     if let Some(output_path) = &options.output_path {
@@ -37910,6 +37918,11 @@ mod tests {
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli git message --json"));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect git diff".to_string()));
+        assert!(checklist_labels.contains(&"Prepare commit message".to_string()));
+        assert!(checklist_labels.contains(&"Review current diff".to_string()));
 
         let error = handle_git(
             dir.path(),
@@ -37949,6 +37962,8 @@ mod tests {
         let value: Value = serde_json::from_str(&output).unwrap();
         assert_eq!(value["schema"], "deepcli.git.inspect.v1");
         assert_eq!(value["kind"], "status");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/git-status.json")).unwrap();
         assert_eq!(written, output);

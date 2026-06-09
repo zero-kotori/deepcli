@@ -518,7 +518,7 @@ MVP 支持：
 - 本地 commit。
 - 创建分支。
 
-只读子命令 `status|diff|branch|message` 支持 `--json` 输出稳定 `deepcli.git.inspect.v1`，用于 TUI、外部 UI 和脚本读取 Git 状态而不解析纯文本。JSON 应包含 `kind`、实际执行命令、exit code、stdout/stderr、原始 raw、report 和可执行 `deepcli ...` next actions；`--output` 复用 workspace-contained 写文件校验，把当前选择的文本或 JSON 输出写入 artifact；`diff` 支持 `--staged|--cached`。只读子命令遇到未知 option 或多余参数时必须报错，避免脚本把被忽略参数后的空输出误判为结构化成功。
+只读子命令 `status|diff|branch|message` 支持 `--json` 输出稳定 `deepcli.git.inspect.v1`，用于 TUI、外部 UI 和脚本读取 Git 状态而不解析纯文本。JSON 应包含 `kind`、实际执行命令、exit code、stdout/stderr、原始 raw、report、可执行 `deepcli ...` next actions，以及从这些动作派生的 `checklist[]`；`checklist[]` 每项包含 `step`、`label` 和 `command`，用于 Git 面板直接渲染 diff、commit message、review、gate 和帮助动作；`--output` 复用 workspace-contained 写文件校验，把当前选择的文本或 JSON 输出写入 artifact；`diff` 支持 `--staged|--cached`。只读子命令遇到未知 option 或多余参数时必须报错，避免脚本把被忽略参数后的空输出误判为结构化成功。
 
 后续支持：
 

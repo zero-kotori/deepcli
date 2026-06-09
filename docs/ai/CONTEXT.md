@@ -649,6 +649,7 @@ TERM_PROGRAM=iTerm.app ./scripts/deepcli terminal --dry-run --json
 ./scripts/deepcli --help | rg 'git status'
 ./scripts/deepcli --help | rg 'git create-branch'
 ./scripts/deepcli git status --json
+./scripts/deepcli git status --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 cargo test git_write
 ./scripts/deepcli git create-branch feature/preview --dry-run --json
 ./scripts/deepcli git commit 'preview checkpoint' --dry-run --json
@@ -744,6 +745,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli test discover/run --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，TUI Tests 面板、外部测试面板或 CI artifact UI 仍要自行给“运行测试、重新发现、验收、gate”动作命名。
    - 结果：`test discover --json` 与 `test run --json` 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；具体测试命令会显示为 `Run test command`，测试帮助显示为 `Open test help`，失败的 run 场景会把重新发现测试标为 `Discover test commands`。
    - 目的：编程后的测试发现、测试执行、验收和交付 gate 可以直接作为按钮队列呈现，推进 deepcli 自发测试能力和外部 UI 可用性。
+
+124. Git Inspect JSON 动作清单
+   - 产品缺口：`deepcli git status|diff|branch|message --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，Git 面板和外部编码工作流 UI 仍要自行给 diff、commit message、review、gate 和帮助动作命名。
+   - 结果：Git 只读 inspect JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；Git status 场景会直接展示 `Inspect git diff`、`Prepare commit message` 和 `Review current diff`。
+   - 目的：编码后的 Git 状态、diff、提交信息建议和 review/gate 链路可以直接作为按钮队列呈现，减少用户在修改后进入验收和提交阶段的手动判断。
 
 ## 下一步建议
 
