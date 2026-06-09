@@ -2780,6 +2780,9 @@ fn ensure_running_benchmark_is_read_only(args: &[String]) -> Result<()> {
             | "compare"
             | "comparison"
             | "baseline"
+            | "baselines"
+            | "baseline-list"
+            | "baseline-ls"
             | "list"
             | "ls"
             | "show"
@@ -8958,6 +8961,10 @@ mod tests {
             ("/scorecard --json", "deepcli.scorecard.v1"),
             ("/round --json", "deepcli.round.v1"),
             ("/benchmark status --json", "deepcli.benchmark.status.v1"),
+            (
+                "/benchmark baselines --json",
+                "deepcli.benchmark.baselines.v1",
+            ),
             ("/preflight --dry-run --json", "deepcli.preflight.v1"),
             ("/privacy --json --no-history", "deepcli.privacy.scan.v1"),
         ] {

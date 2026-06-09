@@ -807,6 +807,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：所有带可执行 `nextActions` 的 benchmark JSON 都会派生 `checklist[]`，覆盖 `presets`、`run-suite`、`run`、`record`、`status`、`summary`、`trends`、`baseline-template`、`compare`、`list`、`show` 和 `clean`；`show latest --json` 会对旧 artifact 动态补齐 checklist。
    - 目的：benchmark 证据链的发现、执行、记录、查看、汇总、趋势、baseline、compare 和清理面板可以统一渲染动作按钮，不必解析 report 或硬编码子命令标签。
 
+133. Benchmark Baseline Inventory
+   - 产品缺口：ready 状态会推荐生成或维护 `.deepcli/baselines/*.json`，但用户缺少一个只读入口查看当前有哪些 baseline、哪个是默认 competitor、哪些可直接 compare、哪些还需要补 status/durationMs。
+   - 结果：新增 `deepcli benchmark baselines --json`，输出稳定 `deepcli.benchmark.baselines.v1`，包含 baselineCount、ready/needs_values/invalid 计数、defaultBaseline、每个 baseline 的 readiness、case 数、缺值数、compare/template nextActions 和 checklist；坏 JSON 会作为 invalid 条目展示，不会让整个列表失败。
+   - 目的：SOTA 横向 benchmark 对比工作流从“生成模板后记路径”变成可发现、可检查、可渲染的 baseline inventory 面板，外部 UI 或 TUI 可以直接引导 compare 或补齐模板。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
