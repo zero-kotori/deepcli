@@ -817,6 +817,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：新增 `deepcli resume candidates --json`，输出稳定 `deepcli.resume.candidates.v1`，包含 total/shown/eligible/hidden 计数、默认可恢复候选、每个候选的 activity、eligible、hiddenReason、resumePreviewCommand、nextActions、checklist 和 report；hiddenReason 区分 empty、tool_only_or_diagnostic、low_information_clarification、thin_completed_chat、other_workspace 和其它 non_resumable。`resume --dry-run --json` 无候选错误的首个 nextAction 改为 `deepcli resume candidates --json`。
    - 目的：恢复历史页、fork 源选择和用户手动排障可以直接解释“没有默认可恢复历史”的原因，不必在 `resume --dry-run`、`session list` 和人工猜测之间来回跳。
 
+135. Fork No-Source Candidate Diagnostics
+   - 产品缺口：`deepcli fork --dry-run --json` 已复用 resume 的可恢复候选过滤，但无源错误的 `nextActions` 仍优先给出 `deepcli resume --dry-run --json`，在当前 workspace 已知没有默认可恢复候选时会把外部 UI 和用户带回同一个失败入口。
+   - 结果：fork 源选择失败时，`deepcli.session.fork.v1` error JSON 和非 JSON report 的一般 no-source 动作优先给出 `deepcli resume candidates --json`，再给出结构化 session list 和文本 session list；shell 中误用 `--current` 的首个动作仍保留 `deepcli fork --dry-run --json`，后续候选诊断也改为 resume candidates。
+   - 目的：fork 源选择、恢复历史页和外部 UI 可以直接解释“为什么没有可 fork 的默认上下文”，而不是先执行一个预期会失败的 resume preview。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
