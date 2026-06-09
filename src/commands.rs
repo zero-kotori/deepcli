@@ -2481,6 +2481,8 @@ fn recipes_state(
 fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
     if workspace.join(DEFAULT_BENCHMARK_BASELINE_PATH).is_file() {
         vec![DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()]
+    } else if benchmark_current_baseline_file_ready(workspace) {
+        vec![DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()]
     } else if benchmark_current_baseline_ready(workspace) {
         vec![
             DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION.to_string(),
@@ -2491,6 +2493,12 @@ fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
     }
 }
 
+fn benchmark_current_baseline_file_ready(workspace: &Path) -> bool {
+    load_benchmark_baseline(workspace, Some(DEFAULT_BENCHMARK_CURRENT_BASELINE_PATH))
+        .map(|baseline| benchmark_baseline_ready_for_required_presets(&baseline))
+        .unwrap_or(false)
+}
+
 fn benchmark_current_baseline_ready(workspace: &Path) -> bool {
     load_benchmark_artifacts(workspace)
         .map(|artifacts| {
@@ -2498,6 +2506,24 @@ fn benchmark_current_baseline_ready(workspace: &Path) -> bool {
             benchmark_baseline_template_status(Some(&captures)) == "ready"
         })
         .unwrap_or(false)
+}
+
+fn benchmark_baseline_ready_for_required_presets(baseline: &BenchmarkBaselineReport) -> bool {
+    baseline.present
+        && MEANINGFUL_BENCHMARK_PRESETS
+            .iter()
+            .filter_map(|preset_name| benchmark_preset_by_name(preset_name).ok())
+            .all(|preset| {
+                baseline.cases.iter().any(|case| {
+                    case.suite == preset.suite
+                        && case.case_name == preset.case_name
+                        && case
+                            .status
+                            .as_deref()
+                            .is_some_and(|status| !status.trim().is_empty() && status != "unknown")
+                        && case.duration_ms.is_some()
+                })
+            })
 }
 
 fn format_recipes_text(
@@ -2759,6 +2785,7 @@ const BENCHMARK_RUN_SUITE_REMEDIATION_ACTION: &str =
 const BENCHMARK_CARGO_TEST_REMEDIATION_ACTION: &str =
     "deepcli benchmark run --preset cargo-test --json --fail-on-command";
 const DEFAULT_BENCHMARK_BASELINE_PATH: &str = ".deepcli/baselines/competitor.json";
+const DEFAULT_BENCHMARK_CURRENT_BASELINE_PATH: &str = ".deepcli/baselines/current-main.json";
 const DEFAULT_BENCHMARK_CURRENT_BASELINE_TEMPLATE_ACTION: &str =
     "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json";
 const DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION: &str =
@@ -35914,6 +35941,49 @@ mod tests {
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
+        );
+
+        let current = dir.path().join(".deepcli/baselines/current-main.json");
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        fs::write(
+            &current,
+            serde_json::to_string_pretty(&json!({
+                "schema": "deepcli.benchmark.baseline.v1",
+                "name": "current-main",
+                "cases": [
+                    {
+                        "suite": "product",
+                        "case": "cargo-test",
+                        "status": "passed",
+                        "durationMs": 120
+                    },
+                    {
+                        "suite": "product",
+                        "case": "preflight-quick",
+                        "status": "passed",
+                        "durationMs": 250
+                    },
+                    {
+                        "suite": "product",
+                        "case": "selftest",
+                        "status": "passed",
+                        "durationMs": 30
+                    },
+                    {
+                        "suite": "product",
+                        "case": "scorecard",
+                        "status": "passed",
+                        "durationMs": 10
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            sota_baseline_next_actions(dir.path()),
+            vec!["deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"]
         );
 
         let baseline = dir.path().join(".deepcli/baselines/competitor.json");

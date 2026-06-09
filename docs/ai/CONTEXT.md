@@ -857,6 +857,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：stdout-only baseline-template 报告现在先推荐带 `--output <path>` 的持久化命令；只有本次实际写入 workspace baseline 文件后，ready baseline 才推荐 compare，needs_values baseline 才推荐编辑目标文件和 compare。
    - 目的：baseline capture、current-main 本地基线和 competitor compare 链路保持可执行，不会从预览 JSON 直接跳到不存在的文件。
 
+143. Current Baseline Ready Navigation
+   - 产品缺口：生成 ready 的 `.deepcli/baselines/current-main.json` 后，`scorecard`、`round`、`recipes sota`、`opportunities` 和 benchmark 探索入口仍会重复推荐 current capture，而不是推进到尚缺的 competitor baseline。
+   - 结果：共享的 baseline 导航现在会先检查 current-main baseline 文件是否覆盖 required cases 且都有 `status`/`durationMs`；若默认 competitor baseline 缺失但 current-main 已 ready，只推荐生成 `.deepcli/baselines/competitor.json` 的手工模板。
+   - 目的：SOTA baseline 工作流从“捕获 current -> 准备 competitor -> compare”向前推进，不会在 current baseline 已 ready 后继续重复同一步。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
