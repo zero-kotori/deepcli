@@ -3438,6 +3438,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         command if command.starts_with("deepcli logs") => "Inspect local logs",
         "deepcli review" => "Review current diff",
         "deepcli test discover --json" => "Discover test commands",
+        command if command.starts_with("deepcli test run ") => "Run test command",
+        "deepcli help test" => "Open test help",
         "deepcli resume" => "Resume saved work",
         "deepcli resume --dry-run --json" => "Resume preview",
         command if command.starts_with("deepcli resume ") && command.contains("--dry-run") => {
@@ -25157,6 +25159,8 @@ fn format_test_discover_json(workspace: &Path, raw: &Value, report: &str) -> Res
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let next_actions = test_discover_next_actions(raw);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.test.inspect.v1",
         "status": "ok",
@@ -25167,7 +25171,8 @@ fn format_test_discover_json(workspace: &Path, raw: &Value, report: &str) -> Res
             .into_iter()
             .map(|command| discovered_test_command_json(workspace, command))
             .collect::<Vec<_>>(),
-        "nextActions": test_discover_next_actions(raw),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(report),
         "format": "json",
     }))?)
@@ -25190,6 +25195,8 @@ fn format_test_run_json(workspace: &Path, raw: &Value, report: &str) -> Result<S
         .and_then(Value::as_str)
         .map(redact_sensitive_text)
         .unwrap_or_default();
+    let next_actions = test_run_next_actions(passed, command);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.test.inspect.v1",
         "status": if passed { "passed" } else { "failed" },
@@ -25202,7 +25209,8 @@ fn format_test_run_json(workspace: &Path, raw: &Value, report: &str) -> Result<S
         "stderr": stderr,
         "stdoutChars": stdout.chars().count(),
         "stderrChars": stderr.chars().count(),
-        "nextActions": test_run_next_actions(passed, command),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(report),
         "format": "json",
     }))?)
@@ -37788,6 +37796,10 @@ mod tests {
         assert!(next_actions.iter().any(|action| {
             action.starts_with("deepcli test run --json -- ") && action.contains("cargo test")
         }));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run test command".to_string()));
+        assert!(checklist_labels.contains(&"Open test help".to_string()));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/tests.json")).unwrap();
         assert_eq!(written, output);
     }
@@ -37831,6 +37843,11 @@ mod tests {
         assert!(next_actions.iter().any(|action| {
             action.starts_with("deepcli test run --json -- ") && action.contains("printf ok")
         }));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run acceptance checks".to_string()));
+        assert!(checklist_labels.contains(&"Run delivery gate".to_string()));
+        assert!(checklist_labels.contains(&"Run test command".to_string()));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/test-run.json")).unwrap();
         assert_eq!(written, output);

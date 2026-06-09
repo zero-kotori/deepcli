@@ -681,6 +681,8 @@ cargo test git_write
 ./scripts/deepcli model list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli completion status zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli completion install zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli test discover --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli test run --json -- 'printf ok' | jq '{status,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search compiler --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search __definitely_no_deepcli_match__ --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli next --json | jq '{checklist:.checklist[0:4],quickLinkChecklist:.quickLinkChecklist[0:4],nextActions:.nextActions[0:4],quickLinks:.quickLinks[0:4]}'
@@ -737,6 +739,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli completion status/install --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，shell 安装面板、TUI 或外部 onboarding UI 还需要自行给安装、复查和 shell 体检动作命名。
    - 结果：`completion status --json` 与 `completion install --json` 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；缺失、过期、dry-run install 和 up-to-date 场景都保留原 `nextActions` 兼容脚本。
    - 目的：shell completion 的安装、刷新和复查链路可以和 status、usage、doctor、logs、model、fork 等 JSON 面板一致，外部 UI 可直接渲染可点击动作。
+
+123. Test JSON 动作清单
+   - 产品缺口：`deepcli test discover/run --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，TUI Tests 面板、外部测试面板或 CI artifact UI 仍要自行给“运行测试、重新发现、验收、gate”动作命名。
+   - 结果：`test discover --json` 与 `test run --json` 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；具体测试命令会显示为 `Run test command`，测试帮助显示为 `Open test help`，失败的 run 场景会把重新发现测试标为 `Discover test commands`。
+   - 目的：编程后的测试发现、测试执行、验收和交付 gate 可以直接作为按钮队列呈现，推进 deepcli 自发测试能力和外部 UI 可用性。
 
 ## 下一步建议
 
