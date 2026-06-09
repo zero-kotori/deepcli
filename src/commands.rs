@@ -3500,8 +3500,12 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         command if command.starts_with("deepcli session tools --failed") => "Inspect failed tools",
         command if command.starts_with("deepcli session tests ") => "Inspect session tests",
         command if command.starts_with("deepcli session history ") => "Inspect session history",
+        command if command.starts_with("deepcli approval approve ") => "Approve request",
+        command if command.starts_with("deepcli approval deny ") => "Deny request",
         command if command.starts_with("deepcli approval list ") => "Review approvals",
+        "deepcli help approval" => "Open approval help",
         command if command.starts_with("deepcli btw list ") => "Review by-the-way questions",
+        "deepcli help btw" => "Open by-the-way help",
         command if command.starts_with("deepcli support ") || command == "deepcli support" => {
             "Create support bundle"
         }
@@ -24425,6 +24429,8 @@ fn format_approval_list_json(
         .map(approval_request_json)
         .collect::<Vec<_>>();
     let activity = session.activity_summary()?;
+    let next_actions = approval_list_next_actions(session, include_all, requests);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.approval.list.v1",
         "status": "ok",
@@ -24440,7 +24446,8 @@ fn format_approval_list_json(
             .filter(|item| item.status == ApprovalStatus::Pending)
             .count(),
         "approvals": items,
-        "nextActions": approval_list_next_actions(session, include_all, requests),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -24484,6 +24491,8 @@ fn format_approval_action_json(
     item: &ApprovalRequest,
     report: &str,
 ) -> Result<String> {
+    let next_actions = approval_action_next_actions(session);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.approval.action.v1",
         "status": "ok",
@@ -24492,7 +24501,8 @@ fn format_approval_action_json(
         "session": session_inspect_metadata_json(session),
         "approval": approval_request_json(item),
         "clearedCount": Value::Null,
-        "nextActions": approval_action_next_actions(session),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -24503,6 +24513,8 @@ fn format_approval_clear_json(
     cleared: usize,
     report: &str,
 ) -> Result<String> {
+    let next_actions = approval_action_next_actions(session);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.approval.action.v1",
         "status": "ok",
@@ -24511,7 +24523,8 @@ fn format_approval_clear_json(
         "session": session_inspect_metadata_json(session),
         "approval": Value::Null,
         "clearedCount": cleared,
-        "nextActions": approval_action_next_actions(session),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -24700,6 +24713,8 @@ fn format_btw_list_json(
         .map(side_question_json)
         .collect::<Vec<_>>();
     let activity = session.activity_summary()?;
+    let next_actions = btw_list_next_actions(session, include_all);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.btw.list.v1",
         "status": "ok",
@@ -24715,7 +24730,8 @@ fn format_btw_list_json(
             .filter(|item| item.status == SideQuestionStatus::Open)
             .count(),
         "questions": items,
-        "nextActions": btw_list_next_actions(session, include_all),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -24746,6 +24762,8 @@ fn format_btw_action_json(
     item: &SideQuestion,
     report: &str,
 ) -> Result<String> {
+    let next_actions = btw_action_next_actions(session);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.btw.action.v1",
         "status": "ok",
@@ -24754,7 +24772,8 @@ fn format_btw_action_json(
         "session": session_inspect_metadata_json(session),
         "question": side_question_json(item),
         "clearedCount": Value::Null,
-        "nextActions": btw_action_next_actions(session),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -24765,6 +24784,8 @@ fn format_btw_clear_json(
     cleared: usize,
     report: &str,
 ) -> Result<String> {
+    let next_actions = btw_action_next_actions(session);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.btw.action.v1",
         "status": "ok",
@@ -24773,7 +24794,8 @@ fn format_btw_clear_json(
         "session": session_inspect_metadata_json(session),
         "question": Value::Null,
         "clearedCount": cleared,
-        "nextActions": btw_action_next_actions(session),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
     }))?)
 }
@@ -41376,6 +41398,12 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(!list_json.contains("sk-approval-secret"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Approve request".to_string()));
+        assert!(checklist_labels.contains(&"Deny request".to_string()));
+        assert!(checklist_labels.contains(&"Review approvals".to_string()));
+        assert!(checklist_labels.contains(&"Open approval help".to_string()));
         let request_short_id = request.id.to_string()[..8].to_string();
         assert!(next_actions
             .iter()
@@ -41417,6 +41445,10 @@ diff --git a/docs/b.md b/docs/b.md
         let current_value: Value = serde_json::from_str(&current_list_json).unwrap();
         let current_next_actions = json_string_array(&current_value["nextActions"]);
         assert_executable_deepcli_actions(&current_next_actions);
+        assert_checklist_matches_executable_actions(&current_value, &current_next_actions);
+        let current_checklist_labels = json_checklist_labels(&current_value);
+        assert!(current_checklist_labels.contains(&"Review approvals".to_string()));
+        assert!(current_checklist_labels.contains(&"Open approval help".to_string()));
         assert!(current_next_actions.iter().any(|action| action
             == &format!("deepcli approval list {} --all --json", current_empty.id())));
         assert!(current_next_actions
@@ -41482,6 +41514,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(!approved_json.contains("sk-second-approval-secret"));
         let approved_next_actions = json_string_array(&approved_value["nextActions"]);
         assert_executable_deepcli_actions(&approved_next_actions);
+        assert_checklist_matches_executable_actions(&approved_value, &approved_next_actions);
+        let approved_checklist_labels = json_checklist_labels(&approved_value);
+        assert!(approved_checklist_labels.contains(&"Review approvals".to_string()));
+        assert!(approved_checklist_labels.contains(&"Open approval help".to_string()));
         assert!(approved_next_actions.iter().any(|action| action
             == &format!("deepcli approval list {} --all --json", with_approval.id())));
         let approved_written =
@@ -41519,6 +41555,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(!clear_json.contains("sk-clear-approval-secret"));
         let clear_next_actions = json_string_array(&clear_value["nextActions"]);
         assert_executable_deepcli_actions(&clear_next_actions);
+        assert_checklist_matches_executable_actions(&clear_value, &clear_next_actions);
+        let clear_checklist_labels = json_checklist_labels(&clear_value);
+        assert!(clear_checklist_labels.contains(&"Review approvals".to_string()));
+        assert!(clear_checklist_labels.contains(&"Open approval help".to_string()));
         let clear_written =
             fs::read_to_string(dir.path().join(".deepcli/exports/approval-clear.json")).unwrap();
         assert_eq!(clear_written, clear_json);
@@ -41582,6 +41622,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(!list_json.contains("sk-btw-secret"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(checklist_labels.contains(&"Open by-the-way help".to_string()));
         assert!(next_actions.iter().any(
             |action| action == &format!("deepcli btw list {} --all --json", with_question.id())
         ));
@@ -41616,6 +41660,10 @@ diff --git a/docs/b.md b/docs/b.md
         let current_value: Value = serde_json::from_str(&current_list_json).unwrap();
         let current_next_actions = json_string_array(&current_value["nextActions"]);
         assert_executable_deepcli_actions(&current_next_actions);
+        assert_checklist_matches_executable_actions(&current_value, &current_next_actions);
+        let current_checklist_labels = json_checklist_labels(&current_value);
+        assert!(current_checklist_labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(current_checklist_labels.contains(&"Open by-the-way help".to_string()));
         assert!(current_next_actions.iter().any(
             |action| action == &format!("deepcli btw list {} --all --json", current_empty.id())
         ));
@@ -41679,6 +41727,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(!answered_json.contains("sk-second-btw-secret"));
         let answered_next_actions = json_string_array(&answered_value["nextActions"]);
         assert_executable_deepcli_actions(&answered_next_actions);
+        assert_checklist_matches_executable_actions(&answered_value, &answered_next_actions);
+        let answered_checklist_labels = json_checklist_labels(&answered_value);
+        assert!(answered_checklist_labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(answered_checklist_labels.contains(&"Open by-the-way help".to_string()));
         assert!(answered_next_actions.iter().any(
             |action| action == &format!("deepcli btw list {} --all --json", with_question.id())
         ));
@@ -41715,6 +41767,10 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(clear_value["clearedCount"], 1);
         let clear_next_actions = json_string_array(&clear_value["nextActions"]);
         assert_executable_deepcli_actions(&clear_next_actions);
+        assert_checklist_matches_executable_actions(&clear_value, &clear_next_actions);
+        let clear_checklist_labels = json_checklist_labels(&clear_value);
+        assert!(clear_checklist_labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(clear_checklist_labels.contains(&"Open by-the-way help".to_string()));
         let clear_written =
             fs::read_to_string(dir.path().join(".deepcli/exports/btw-clear.json")).unwrap();
         assert_eq!(clear_written, clear_json);
