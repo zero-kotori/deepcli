@@ -802,6 +802,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli benchmark baseline-template --json` 现在从可执行 `nextActions` 派生 `checklist[]`，人工编辑提示仍只保留在 `nextActions`/`report`；`.deepcli/baselines/` 加入 `.gitignore` 和 `.deepignore`。
    - 目的：SOTA baseline 捕获、手工竞品模板和 compare 路径可在外部 UI 中直接渲染动作按钮，同时推荐命令不会污染 Git 工作区或 deepcli 上下文。
 
+132. Benchmark JSON 动作清单全覆盖
+   - 产品缺口：`benchmark presets/list/show/clean` 以及 run/run-suite/record artifact 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，外部 benchmark 面板仍需要自行给运行、查看、清理和回到 scorecard 的动作命名。
+   - 结果：所有带可执行 `nextActions` 的 benchmark JSON 都会派生 `checklist[]`，覆盖 `presets`、`run-suite`、`run`、`record`、`status`、`summary`、`trends`、`baseline-template`、`compare`、`list`、`show` 和 `clean`；`show latest --json` 会对旧 artifact 动态补齐 checklist。
+   - 目的：benchmark 证据链的发现、执行、记录、查看、汇总、趋势、baseline、compare 和清理面板可以统一渲染动作按钮，不必解析 report 或硬编码子命令标签。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
