@@ -8794,7 +8794,7 @@ fn format_benchmark_trends_json(
     recent_limit: usize,
 ) -> Result<String> {
     let status = benchmark_trends_status(artifacts.len(), trends);
-    let next_actions = benchmark_trends_next_actions(status);
+    let next_actions = benchmark_trends_next_actions(workspace, status);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.trends.v1",
@@ -8872,7 +8872,7 @@ fn benchmark_trend_point_value(point: &BenchmarkTrendPoint) -> Value {
     })
 }
 
-fn benchmark_trends_next_actions(status: &str) -> Vec<String> {
+fn benchmark_trends_next_actions(workspace: &Path, status: &str) -> Vec<String> {
     match status {
         "empty" => vec![
             "deepcli benchmark presets --json".to_string(),
@@ -8880,25 +8880,33 @@ fn benchmark_trends_next_actions(status: &str) -> Vec<String> {
             "deepcli benchmark run --preset cargo-test --json --fail-on-command".to_string(),
             "deepcli benchmark status --json".to_string(),
         ],
-        "insufficient_history" => vec![
-            "deepcli round --json --run-benchmark --fail-on-command".to_string(),
-            "deepcli benchmark run-suite --json --fail-on-command".to_string(),
-            "deepcli benchmark status --json".to_string(),
-            "deepcli benchmark summary --json".to_string(),
-            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-                .to_string(),
-            "deepcli benchmark list --json".to_string(),
-            "deepcli benchmark clean --dry-run --json".to_string(),
-        ],
-        _ => vec![
-            "deepcli benchmark status --json".to_string(),
-            "deepcli benchmark summary --json".to_string(),
-            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-                .to_string(),
-            "deepcli benchmark list --json".to_string(),
-            "deepcli benchmark clean --dry-run --json".to_string(),
-            "deepcli round --json".to_string(),
-        ],
+        "insufficient_history" => {
+            let mut actions = vec![
+                "deepcli round --json --run-benchmark --fail-on-command".to_string(),
+                "deepcli benchmark run-suite --json --fail-on-command".to_string(),
+                "deepcli benchmark status --json".to_string(),
+                "deepcli benchmark summary --json".to_string(),
+            ];
+            actions.extend(sota_baseline_next_actions(workspace));
+            actions.extend([
+                "deepcli benchmark list --json".to_string(),
+                "deepcli benchmark clean --dry-run --json".to_string(),
+            ]);
+            actions
+        }
+        _ => {
+            let mut actions = vec![
+                "deepcli benchmark status --json".to_string(),
+                "deepcli benchmark summary --json".to_string(),
+            ];
+            actions.extend(sota_baseline_next_actions(workspace));
+            actions.extend([
+                "deepcli benchmark list --json".to_string(),
+                "deepcli benchmark clean --dry-run --json".to_string(),
+                "deepcli round --json".to_string(),
+            ]);
+            actions
+        }
     }
 }
 
@@ -9139,7 +9147,7 @@ fn format_benchmark_trends_text(
         lines.push("trends: none".to_string());
         lines.push("next actions:".to_string());
         lines.extend(
-            benchmark_trends_next_actions(status)
+            benchmark_trends_next_actions(workspace, status)
                 .into_iter()
                 .map(|action| format!("  - {action}")),
         );
@@ -9201,7 +9209,7 @@ fn format_benchmark_trends_text(
     }
     lines.push("next actions:".to_string());
     lines.extend(
-        benchmark_trends_next_actions(status)
+        benchmark_trends_next_actions(workspace, status)
             .into_iter()
             .map(|action| format!("  - {action}")),
     );
@@ -38243,6 +38251,47 @@ mod tests {
         .to_string();
         assert!(traversal.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../trends.json").exists());
+    }
+
+    #[test]
+    fn benchmark_trends_uses_baseline_state_for_followup_actions() {
+        let dir = tempdir().unwrap();
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["trends".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["status"], "ok");
+        assert!(next_actions.contains(
+            &"deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+                .to_string()
+        ));
+        assert!(next_actions.contains(
+            &"deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+                .to_string()
+        ));
+        assert!(!next_actions.contains(
+            &"deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+                .to_string()
+        ));
+        assert_benchmark_checklist_matches_executable_actions(&value, &next_actions);
+
+        let text = handle_benchmark(dir.path(), &config, &registry, vec!["trends".into()]).unwrap();
+        assert!(text.contains(
+            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        ));
+        assert!(!text.contains(
+            "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+        ));
     }
 
     #[test]

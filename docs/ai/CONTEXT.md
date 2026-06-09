@@ -822,6 +822,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：fork 源选择失败时，`deepcli.session.fork.v1` error JSON 和非 JSON report 的一般 no-source 动作优先给出 `deepcli resume candidates --json`，再给出结构化 session list 和文本 session list；shell 中误用 `--current` 的首个动作仍保留 `deepcli fork --dry-run --json`，后续候选诊断也改为 resume candidates。
    - 目的：fork 源选择、恢复历史页和外部 UI 可以直接解释“为什么没有可 fork 的默认上下文”，而不是先执行一个预期会失败的 resume preview。
 
+136. Benchmark Trends Baseline Navigation
+   - 产品缺口：`deepcli benchmark trends --json` 在 trends 状态已 ok 或 regression 时固定推荐默认 competitor baseline compare；当 `.deepcli/baselines/competitor.json` 缺失时，这会让用户从趋势页跳到一个不可完成的 compare 路径，而 scorecard、round 和 recipes sota 已经有状态感知 baseline 导航。
+   - 结果：`benchmark trends` 的 JSON 和文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`；empty 状态仍先提示采集证据，insufficient_history 状态先提示 `deepcli round --json --run-benchmark --fail-on-command` 补样本，再追加 baseline 导航；其它状态根据默认 baseline 是否存在选择 `baseline-template --from-current`、手工 template 或 compare。
+   - 目的：benchmark 趋势页、SOTA 循环页和 baseline inventory 的后续动作保持一致，外部 UI 不会在默认 baseline 缺失时提前展示必然失败的 compare 按钮。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
