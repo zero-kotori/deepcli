@@ -852,6 +852,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：新增 `deepcli opportunities --json` 与 `/opportunities`/`/opportunity`，输出稳定 `deepcli.opportunities.v1`，复用当前 `round` 的机会对象，顶层提供 `nextActions` 和 `checklist[]`；TUI 运行中也可作为本地只读旁路命令执行。
    - 目的：产品循环页、TUI 面板和脚本可以直接渲染机会卡片和动作按钮，不需要读取完整 round 报告或复制机会判断逻辑。
 
+142. Baseline Template Stdout-Only Next Actions
+   - 产品缺口：`deepcli benchmark baseline-template --from-current --json` 在未传 `--output` 时只把 ready baseline 打到 stdout，却会推荐 `compare --baseline .deepcli/baselines/current-main.json`，让用户跳到一个尚未写入的文件。
+   - 结果：stdout-only baseline-template 报告现在先推荐带 `--output <path>` 的持久化命令；只有本次实际写入 workspace baseline 文件后，ready baseline 才推荐 compare，needs_values baseline 才推荐编辑目标文件和 compare。
+   - 目的：baseline capture、current-main 本地基线和 competitor compare 链路保持可执行，不会从预览 JSON 直接跳到不存在的文件。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

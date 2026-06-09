@@ -207,7 +207,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 当 benchmark evidence 仍为 ready 但 freshness 为 aging/stale 时，`scorecard --json`、`round --json` 和 `recipes sota --json` 的顶层 `nextActions` 会先给出 `deepcli round --json --run-benchmark --fail-on-command`，避免用户在证据已经建议刷新时先进入 preflight、gate 或 baseline 对比。
 
-`baseline-template` 写出的 `deepcli.benchmark.baseline.v1` 文件会带顶层 `status=needs_values`、`nextActions` 和 `report`，stdout 与 `--output` 文件保持一致；模板仍保留每个 required case 的待填写 `status` / `durationMs`，同时直接提示编辑目标 baseline 文件并运行 `deepcli benchmark compare --baseline <path> --json`。加 `--from-current` 时会从最新 required benchmark artifact 捕获每个 case 的 `status` 和 `durationMs`，证据完整时生成 `status=ready` 的 baseline，让本地当前版本、旧版本或手工跑完的对照版本可以不经手改直接进入 compare。
+`baseline-template` 写出的 `deepcli.benchmark.baseline.v1` 文件会带顶层 `status=needs_values`、`nextActions` 和 `report`，同一次调用的 stdout 与 `--output` 文件保持一致；模板仍保留每个 required case 的待填写 `status` / `durationMs`，同时直接提示编辑目标 baseline 文件并运行 `deepcli benchmark compare --baseline <path> --json`。加 `--from-current` 时会从最新 required benchmark artifact 捕获每个 case 的 `status` 和 `durationMs`，证据完整时生成 `status=ready` 的 baseline，让本地当前版本、旧版本或手工跑完的对照版本可以不经手改直接进入 compare。未传 `--output` 时命令只预览 JSON，下一步会先给出带 `--output` 的持久化命令，避免 compare 尚未写入的默认 baseline 文件。
 
 当 scorecard 自身已经 ok 但 benchmark trends 仍需要补历史或处理回归时，scorecard 顶层 `nextActions` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，避免评分入口先把用户带到已知不能推进闭环的只读报告。
 

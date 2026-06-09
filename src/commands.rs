@@ -818,7 +818,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/benchmark clean --force --keep 20",
                 "deepcli benchmark --fail-below 85",
             ],
-            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits an editable `deepcli.benchmark.baseline.v1` JSON file with `status=needs_values`, `nextActions`, and `report`, and writes it to a workspace-contained path when `--output` is supplied; add `--from-current` to prefill required cases from the latest local benchmark artifacts and produce a compare-ready baseline when evidence is complete. `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `baselines` lists local baseline files, readiness, default competitor state, and compare/template actions with `deepcli.benchmark.baselines.v1`; every benchmark JSON report that exposes executable `nextActions` also includes a matching top-level `checklist[]`, while manual edit guidance remains in `nextActions` and `report`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied. While an agent task is running in the TUI, read-only benchmark reports such as `status`, `summary`, `trends`, `compare`, `baselines`, `list`, `show`, `presets`, and scorecard compatibility are allowed; benchmark-producing `run`, `run-suite`, `record`, `baseline-template`, and cleanup actions should wait until the task is stopped or finished."],
+            notes: &["`/benchmark` is local and does not call a provider. With no subcommand, with scorecard flags, or with `scorecard`, it preserves the old `/scorecard` behavior. `presets` lists curated local benchmark commands without executing them; `run-suite` executes the default meaningful preset set, or a repeated `--preset` subset, and writes a stable `deepcli.benchmark.suite.v1` report plus normal record artifacts; `run --preset <name>` executes one selected preset explicitly. `run` executes an explicitly provided local command with a bounded timeout and writes a stable `deepcli.benchmark.record.v1` artifact under `.deepcli/benchmarks/`; `record` stores declared evidence without executing shell; `status` classifies local evidence as missing, weak, incomplete, failing, stale, or ready with the stable `deepcli.benchmark.status.v1` schema and required preset coverage details; `status --fail-on-not-ready` and `gate` return a non-zero exit when evidence is not ready; `summary` aggregates local history into the stable `deepcli.benchmark.summary.v1` schema; `trends` reports recent per-case status and duration movement with `deepcli.benchmark.trends.v1`, and returns `insufficient_history` when artifacts exist but no case has a previous sample yet; in that state its first next action runs `deepcli round --json --run-benchmark --fail-on-command`, so one command creates a comparable sample and prints the refreshed round report. `baseline-template` emits an editable `deepcli.benchmark.baseline.v1` JSON file with `status=needs_values`, `nextActions`, and `report`, and writes it to a workspace-contained path when `--output` is supplied; stdout-only reports first recommend rerunning with `--output` instead of comparing a file that was not written. Add `--from-current` to prefill required cases from the latest local benchmark artifacts and produce a compare-ready baseline when evidence is complete. `compare` reads local artifacts plus an optional workspace-contained baseline JSON and emits `deepcli.benchmark.compare.v1`; `baselines` lists local baseline files, readiness, default competitor state, and compare/template actions with `deepcli.benchmark.baselines.v1`; every benchmark JSON report that exposes executable `nextActions` also includes a matching top-level `checklist[]`, while manual edit guidance remains in `nextActions` and `report`; `list` and `show` inspect artifacts; `clean` previews or deletes old local artifacts with `deepcli.benchmark.cleanup.v1`, defaulting to dry-run and keeping the newest 20 artifacts unless `--force` is supplied. While an agent task is running in the TUI, read-only benchmark reports such as `status`, `summary`, `trends`, `compare`, `baselines`, `list`, `show`, `presets`, and scorecard compatibility are allowed; benchmark-producing `run`, `run-suite`, `record`, `baseline-template`, and cleanup actions should wait until the task is stopped or finished."],
         },
         CommandHelp {
             name: "/round",
@@ -7453,8 +7453,13 @@ fn handle_benchmark_baseline_template(workspace: &Path, args: &[String]) -> Resu
         None
     };
     let status = benchmark_baseline_template_status(captures.as_ref());
-    let next_actions =
-        benchmark_baseline_template_next_actions(&target_path, status, options.from_current);
+    let next_actions = benchmark_baseline_template_next_actions(
+        &target_path,
+        &options.name,
+        status,
+        options.from_current,
+        options.output_path.is_some(),
+    );
     let base_template =
         benchmark_baseline_template_value(&options.name, &next_actions, None, captures.as_ref());
     let base_template_json = serde_json::to_string_pretty(&base_template)?;
@@ -8402,9 +8407,27 @@ fn benchmark_baseline_template_target_path(options: &BenchmarkBaselineTemplateOp
 
 fn benchmark_baseline_template_next_actions(
     target_path: &str,
+    name: &str,
     status: &str,
     from_current: bool,
+    writes_output: bool,
 ) -> Vec<String> {
+    if !writes_output {
+        let mut actions = Vec::new();
+        if from_current && status != "ready" {
+            actions.push("deepcli benchmark run-suite --json --fail-on-command".to_string());
+        }
+        actions.push(benchmark_baseline_template_persist_action(
+            target_path,
+            name,
+            from_current,
+        ));
+        actions.extend([
+            "deepcli benchmark trends --json".to_string(),
+            "deepcli benchmark status --json".to_string(),
+        ]);
+        return actions;
+    }
     if status == "ready" {
         return vec![
             format!("deepcli benchmark compare --baseline {target_path} --json"),
@@ -8423,6 +8446,25 @@ fn benchmark_baseline_template_next_actions(
         "deepcli benchmark compare --baseline {target_path} --json"
     ));
     actions
+}
+
+fn benchmark_baseline_template_persist_action(
+    target_path: &str,
+    name: &str,
+    from_current: bool,
+) -> String {
+    let mut action = "deepcli benchmark baseline-template".to_string();
+    if from_current {
+        action.push_str(" --from-current");
+    }
+    if name != "competitor" {
+        action.push_str(" --name ");
+        action.push_str(shell_words::quote(name).as_ref());
+    }
+    action.push_str(" --output ");
+    action.push_str(shell_words::quote(target_path).as_ref());
+    action.push_str(" --json");
+    action
 }
 
 fn format_benchmark_baseline_template_text(
@@ -38365,6 +38407,48 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action.as_str().unwrap().starts_with("edit status")));
+    }
+
+    #[test]
+    fn benchmark_baseline_template_stdout_only_does_not_compare_missing_file() {
+        let dir = tempdir().unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+        write_round_ready_benchmark_history(dir.path());
+
+        let output = handle_benchmark(
+            dir.path(),
+            &config,
+            &registry,
+            vec![
+                "baseline-template".into(),
+                "--json".into(),
+                "--from-current".into(),
+                "--name".into(),
+                "current-main".into(),
+            ],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.benchmark.baseline.v1");
+        assert_eq!(value["status"], "ready");
+        assert!(!dir
+            .path()
+            .join(".deepcli/baselines/current-main.json")
+            .exists());
+        assert_eq!(
+            value["nextActions"][0],
+            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        );
+        assert!(!value["nextActions"].as_array().unwrap().iter().any(|action| {
+            action.as_str().unwrap()
+                == "deepcli benchmark compare --baseline .deepcli/baselines/current-main.json --json"
+        }));
+        assert_eq!(
+            value["checklist"][0]["command"],
+            "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        );
     }
 
     #[test]

@@ -187,7 +187,7 @@ deepcli benchmark clean --dry-run --json
 
 当 benchmark evidence 仍为 ready 但 `freshness.refreshRecommended=true` 时，`scorecard --json`、`round --json` 和 `recipes sota --json` 的顶层 `nextActions[0]` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，让用户先刷新 aging/stale 证据，再继续 preflight、gate 或 baseline 对比。
 
-`benchmark baseline-template --from-current` 会从最新 required benchmark artifact 预填每个 case 的 `status` 和 `durationMs`；证据完整时输出 `status=ready` 的 baseline，适合把当前版本、旧版本或手工跑完的对照版本捕获成后续 compare 可直接读取的本地基线。
+`benchmark baseline-template --from-current` 会从最新 required benchmark artifact 预填每个 case 的 `status` 和 `durationMs`；证据完整时输出 `status=ready` 的 baseline，适合把当前版本、旧版本或手工跑完的对照版本捕获成后续 compare 可直接读取的本地基线。未传 `--output` 时只输出 JSON 预览，`nextActions` 会先提示带 `--output` 的持久化命令，不会让用户 compare 一个尚未写入的默认文件。
 
 准备本地环境：
 
