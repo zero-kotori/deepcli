@@ -3420,9 +3420,14 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli recipes release" => "Open release workflow",
         "deepcli completion json" => "Export command catalog",
         "deepcli status --json" => "Inspect current status",
+        command if command.starts_with("deepcli usage ") => "Inspect session usage",
+        command if command.starts_with("deepcli trace ") => "Inspect session trace",
+        command if command.starts_with("deepcli next ") => "Inspect recovery actions",
+        command if command.starts_with("deepcli logs") => "Inspect local logs",
         "deepcli review" => "Review current diff",
         "deepcli test discover --json" => "Discover test commands",
         "deepcli resume" => "Resume saved work",
+        command if command.starts_with("deepcli resume ") => "Resume saved work",
         "deepcli sessions --all --limit 20" => "List saved sessions",
         "deepcli next --json" => "Inspect recovery actions",
         "deepcli handoff --pr" => "Prepare PR handoff",
@@ -3447,6 +3452,13 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
             "Create full support bundle"
         }
         "deepcli session diagnose --json" => "Inspect session diagnostics",
+        command if command.starts_with("deepcli session diagnose ") => {
+            "Inspect session diagnostics"
+        }
+        command if command.starts_with("deepcli session tools --failed") => "Inspect failed tools",
+        command if command.starts_with("deepcli session tests ") => "Inspect session tests",
+        command if command.starts_with("deepcli approval list ") => "Review approvals",
+        command if command.starts_with("deepcli btw list ") => "Review by-the-way questions",
         command if command.starts_with("deepcli support ") || command == "deepcli support" => {
             "Create support bundle"
         }
@@ -11867,6 +11879,10 @@ fn format_status_report_json(context: &CommandContext<'_>, report: &str) -> Resu
         )
     };
 
+    let checklist = session_value
+        .get("checklist")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.status.v1",
         "status": "ok",
@@ -11876,6 +11892,7 @@ fn format_status_report_json(context: &CommandContext<'_>, report: &str) -> Resu
         "tokenWarningThreshold": context.config.usage.token_warning_threshold,
         "providerTurnTimeoutSeconds": context.config.agent.provider_turn_timeout_seconds,
         "sessionSource": session_source,
+        "checklist": checklist,
         "session": session_value,
         "note": note,
         "report": report,
@@ -11888,6 +11905,7 @@ fn status_session_json(session: &Session) -> Result<Value> {
     let usage = summarize_audit_usage(&audits);
     let has_next_action_signals = session_has_next_action_signals(session)?;
     let short = short_id(&session.id());
+    let next_actions = status_next_actions(&short, has_next_action_signals);
     let plan = session.load_plan()?.map(|plan| {
         let completed = plan
             .steps
@@ -11941,7 +11959,8 @@ fn status_session_json(session: &Session) -> Result<Value> {
         },
         "plan": plan.unwrap_or(Value::Null),
         "nextActionSignals": has_next_action_signals,
-        "nextActions": status_next_actions(&short, has_next_action_signals),
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
     }))
 }
 
@@ -12281,17 +12300,23 @@ fn format_usage_report(
 }
 
 fn format_usage_report_json(workspace: &Path, usage: &UsageReport) -> Result<String> {
+    let session = usage
+        .session
+        .as_ref()
+        .map(format_usage_session_json)
+        .transpose()?
+        .unwrap_or(Value::Null);
+    let checklist = session
+        .get("checklist")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.usage.v1",
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "sessionSource": usage.session_source,
-        "session": usage
-            .session
-            .as_ref()
-            .map(format_usage_session_json)
-            .transpose()?
-            .unwrap_or(Value::Null),
+        "checklist": checklist,
+        "session": session,
         "note": usage.note.as_deref(),
         "report": usage.report.as_str(),
     }))?)
@@ -12306,6 +12331,10 @@ fn format_usage_session_json(usage: &UsageSessionReport) -> Result<Value> {
             Some(truncate_display(trimmed, 1_000))
         }
     });
+    let next_actions = vec![
+        format!("deepcli trace --limit 20 {}", short_id(&usage.session.id())),
+        format!("deepcli session diagnose {}", short_id(&usage.session.id())),
+    ];
     Ok(json!({
         "id": usage.session.id().to_string(),
         "shortId": short_id(&usage.session.id()),
@@ -12354,10 +12383,8 @@ fn format_usage_session_json(usage: &UsageSessionReport) -> Result<Value> {
         "failedTools": count_failed_tool_events(&usage.audits),
         "failedTests": count_failed_test_events(&usage.audits),
         "summaryPreview": summary_preview,
-        "nextActions": vec![
-            format!("deepcli trace --limit 20 {}", short_id(&usage.session.id())),
-            format!("deepcli session diagnose {}", short_id(&usage.session.id())),
-        ],
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
     }))
 }
 
@@ -12999,6 +13026,7 @@ fn format_logs_report_json(workspace: &Path, report: &LogsReport) -> Result<Stri
         "lineCount": shown_lines,
         "totalLines": total_lines,
         "truncated": total_lines > shown_lines,
+        "checklist": local_action_checklist(&report.next_actions),
         "nextActions": report.next_actions,
         "report": report.report,
     }))?)
@@ -23555,6 +23583,7 @@ fn format_session_next_json(
     note: Option<&str>,
     report: &str,
 ) -> Result<String> {
+    let next_actions = session_next_action_items(session)?;
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.next.v1",
         "status": "ok",
@@ -23562,7 +23591,8 @@ fn format_session_next_json(
         "note": note,
         "session": session_next_session_json(session)?,
         "signals": session_next_signals_json(session)?,
-        "nextActions": session_next_action_items(session)?,
+        "checklist": local_action_checklist(&next_actions),
+        "nextActions": next_actions,
         "quickLinks": session_quick_link_items(session),
         "report": report,
     }))?)
@@ -23962,6 +23992,7 @@ fn format_session_diagnosis_json(
         (!redacted.is_empty()).then(|| truncate_display(&redacted, 600))
     });
 
+    let recommended_next_actions = session_next_action_items(session)?;
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.diagnose.v1",
         "status": "ok",
@@ -24011,7 +24042,8 @@ fn format_session_diagnosis_json(
             .as_ref()
             .map(session_diagnosis_plan_json)
             .unwrap_or(Value::Null),
-        "recommendedNextActions": session_next_action_items(session)?,
+        "checklist": local_action_checklist(&recommended_next_actions),
+        "recommendedNextActions": recommended_next_actions,
         "quickLinks": session_quick_link_items(session),
         "report": report,
     }))?)
@@ -39289,6 +39321,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["lines"][1], "last");
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli support"));
@@ -39306,6 +39339,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(empty_value["status"], "no_logs");
         let empty_next_actions = json_string_array(&empty_value["nextActions"]);
         assert_executable_deepcli_actions(&empty_next_actions);
+        assert_checklist_matches_executable_actions(&empty_value, &empty_next_actions);
         assert_eq!(
             empty_next_actions[0],
             "deepcli diagnose --bundle .deepcli/support/latest"
@@ -39455,6 +39489,12 @@ diff --git a/docs/b.md b/docs/b.md
         let short = value["session"]["shortId"].as_str().unwrap();
         let next_actions = json_string_array(&value["session"]["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert_checklist_matches_executable_actions(&value["session"], &next_actions);
+        assert_eq!(
+            json_checklist_labels(&value),
+            vec!["Inspect session usage", "Inspect session trace"]
+        );
         assert_eq!(
             next_actions,
             vec![
@@ -39506,6 +39546,12 @@ diff --git a/docs/b.md b/docs/b.md
         let short = value["session"]["shortId"].as_str().unwrap();
         let next_actions = json_string_array(&value["session"]["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert_checklist_matches_executable_actions(&value["session"], &next_actions);
+        assert_eq!(
+            json_checklist_labels(&value),
+            vec!["Inspect recovery actions", "Inspect session diagnostics"]
+        );
         assert_eq!(
             next_actions,
             vec![
@@ -39694,6 +39740,12 @@ diff --git a/docs/b.md b/docs/b.md
         let short = value["session"]["shortId"].as_str().unwrap();
         let next_actions = json_string_array(&value["session"]["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert_checklist_matches_executable_actions(&value["session"], &next_actions);
+        assert_eq!(
+            json_checklist_labels(&value),
+            vec!["Inspect session trace", "Inspect session diagnostics"]
+        );
         assert_eq!(
             next_actions,
             vec![
@@ -40231,6 +40283,14 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(next_actions
             .iter()
             .any(|item| item.as_str() == Some(&format!("deepcli resume {short}"))));
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let labels = json_checklist_labels(&value);
+        assert!(labels.contains(&"Review approvals".to_string()));
+        assert!(labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(labels.contains(&"Inspect failed tools".to_string()));
+        assert!(labels.contains(&"Inspect session tests".to_string()));
+        assert!(labels.contains(&"Resume saved work".to_string()));
         let quick_links = value["quickLinks"].as_array().unwrap();
         assert!(quick_links
             .iter()
@@ -40322,6 +40382,14 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(recommended.iter().any(|item| {
             item.as_str() == Some(&format!("deepcli approval list {short} --json"))
         }));
+        let recommended_strings = json_string_array(&value["recommendedNextActions"]);
+        assert_checklist_matches_executable_actions(&value, &recommended_strings);
+        let labels = json_checklist_labels(&value);
+        assert!(labels.contains(&"Review approvals".to_string()));
+        assert!(labels.contains(&"Review by-the-way questions".to_string()));
+        assert!(labels.contains(&"Inspect failed tools".to_string()));
+        assert!(labels.contains(&"Inspect session tests".to_string()));
+        assert!(labels.contains(&"Resume saved work".to_string()));
         let quick_links = value["quickLinks"].as_array().unwrap();
         assert!(quick_links
             .iter()
@@ -42114,6 +42182,15 @@ diff --git a/docs/b.md b/docs/b.md
             .expect("expected array")
             .iter()
             .map(|item| item.as_str().expect("expected string").to_string())
+            .collect()
+    }
+
+    fn json_checklist_labels(value: &Value) -> Vec<String> {
+        value["checklist"]
+            .as_array()
+            .expect("expected checklist")
+            .iter()
+            .map(|item| item["label"].as_str().expect("expected label").to_string())
             .collect()
     }
 
