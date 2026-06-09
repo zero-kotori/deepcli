@@ -682,6 +682,8 @@ cargo test git_write
 ./scripts/deepcli model list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli completion status zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli completion install zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli env check docker --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli env plan docker --smoke --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli test discover --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli test run --json -- 'printf ok' | jq '{status,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli prompt list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
@@ -778,6 +780,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli session list --json` 与 `deepcli session show|history|summary|tools|tests|diffs|backups --json` 已经是恢复历史页和 TUI 面板的数据源，但缺少顶层 `nextActions` 与 `checklist[]`，外部 UI 只能展示会话数据，不能直接给恢复预览、历史、next、diagnose、列表和帮助动作命名。
    - 结果：Session list JSON 围绕首个展示会话输出 resume preview、history、next、diagnose、list-all、prune-empty dry-run 和 help 动作，并从这些动作派生 checklist；Session inspect JSON 输出同一会话的 resume preview、next、diagnose、session list 和 help 动作，并派生 checklist。
    - 目的：恢复历史页、session 检查页和 TUI 多个观察面板可以直接渲染下一步按钮，不必从 report 文本或 session id 自行拼命令。
+
+129. Environment Inspect JSON 动作清单
+   - 产品缺口：`deepcli env check|plan|setup|test ... --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，Environment 面板、安装向导和验收脚本仍要自行给检查、计划、安装、环境测试、accept 和 gate 动作命名。
+   - 结果：Environment inspect JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；未 ready 环境展示 `Set up local environment` 与 `Inspect environment plan`，ready/setup/test 场景展示 `Run environment test`、`Discover test commands`、`Run acceptance checks` 和 `Run delivery gate`。
+   - 目的：Docker/编译器环境从预检、安装计划、setup、smoke test 到验收 gate 的链路可以直接作为结构化按钮队列呈现，推进 deepcli 自发环境配置和测试体验。
 
 ## 下一步建议
 

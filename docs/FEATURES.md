@@ -143,7 +143,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 - `deepcli env test compiler --json`
 
 环境 setup/test 走权限和工具审计路径；只读 check/plan 可作为快速预检。
-环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli setup docker --smoke` 和 `deepcli env plan docker --smoke --json`；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
+环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli setup docker --smoke` 和 `deepcli env plan docker --smoke --json`，并从这些动作派生 `checklist[]`，让 Environment 面板直接渲染检查、计划、安装、环境测试、验收和 gate 动作；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
 `health/doctor --json` 复用同一可执行动作契约：缺凭据时给出 `deepcli credentials set/import-env/template ...`，环境未就绪时给出 `deepcli setup ... --smoke` 或 `deepcli env test compiler`，`doctor shell --json` 的 PATH 和 completion 建议直接给出可复制命令；顶层 `checklist[]` 从这些可执行动作派生，便于健康面板直接渲染。
 
 ## 测试、验收与交付

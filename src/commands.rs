@@ -3484,6 +3484,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli doctor shell --json" => "Check shell install",
         "deepcli env check docker --json" => "Check Docker environment",
         command if command.starts_with("deepcli env check ") => "Check local environment",
+        command if command.starts_with("deepcli env plan ") => "Inspect environment plan",
+        command if command.starts_with("deepcli env test ") => "Run environment test",
         command if command.starts_with("deepcli setup ") => "Set up local environment",
         "deepcli diagnose --json" => "Collect diagnostics",
         "deepcli diagnose --full-env --json" => "Run full diagnostics",
@@ -3532,6 +3534,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli round --json --run-benchmark --fail-on-command" => "Refresh benchmark evidence",
         SCORECARD_ROUND_REPORT_ACTION => "Review current product round",
         "deepcli accept --json" => "Run acceptance checks",
+        command if command.starts_with("deepcli accept ") => "Run acceptance checks",
+        command if command.starts_with("deepcli gate ") => "Run delivery gate",
         _ => generic_recipe_command_label(command),
     }
 }
@@ -25632,6 +25636,8 @@ fn format_environment_check_json(
     report: &EnvironmentReport,
     text: &str,
 ) -> Result<String> {
+    let next_actions = environment_check_next_actions(report);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.env.inspect.v1",
         "status": environment_status(report.ready),
@@ -25641,7 +25647,8 @@ fn format_environment_check_json(
         "ready": report.ready,
         "checks": environment_checks_json(report),
         "recommendedAction": report.recommended_action.as_deref().map(|action| redact_sensitive_text(&with_smoke(action))),
-        "nextActions": environment_check_next_actions(report),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(text),
         "format": "json",
     }))?)
@@ -25666,6 +25673,9 @@ fn format_environment_plan_json(
     };
     let would_run = environment_plan_steps(report, effective_target, smoke_test);
     let commands = environment_plan_commands(report, effective_target, smoke_test, compiler_test);
+    let next_actions =
+        environment_plan_next_actions(report, effective_target, smoke_test, compiler_test);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.env.inspect.v1",
         "status": environment_status(report.ready),
@@ -25690,7 +25700,8 @@ fn format_environment_plan_json(
             .cloned()
             .map(|command| discovered_test_command_json(workspace, json!(command))),
         "recommendedAction": report.recommended_action.as_deref().map(|action| redact_sensitive_text(&with_smoke(action))),
-        "nextActions": environment_plan_next_actions(report, effective_target, smoke_test, compiler_test),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(text),
         "format": "json",
     }))?)
@@ -25702,6 +25713,8 @@ fn format_environment_setup_result_json(
     setup: &EnvironmentSetupResult,
     text: &str,
 ) -> Result<String> {
+    let next_actions = environment_setup_next_actions(kind, setup);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.env.inspect.v1",
         "status": if setup.ready { "ready" } else { "failed" },
@@ -25712,7 +25725,8 @@ fn format_environment_setup_result_json(
         "before": environment_report_json(&setup.before),
         "after": environment_report_json(&setup.after),
         "actions": setup.actions.iter().map(environment_action_json).collect::<Vec<_>>(),
-        "nextActions": environment_setup_next_actions(kind, setup),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(text),
         "format": "json",
     }))?)
@@ -25740,6 +25754,8 @@ fn format_environment_test_run_json(
         .and_then(Value::as_str)
         .map(redact_sensitive_text)
         .unwrap_or_default();
+    let next_actions = environment_test_next_actions(target, passed);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.env.inspect.v1",
         "status": if passed { "ready" } else { "failed" },
@@ -25754,7 +25770,8 @@ fn format_environment_test_run_json(
         "stderr": stderr,
         "stdoutChars": stdout.chars().count(),
         "stderrChars": stderr.chars().count(),
-        "nextActions": environment_test_next_actions(target, passed),
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": redact_sensitive_text(text),
         "format": "json",
     }))?)
@@ -43409,6 +43426,11 @@ diff --git a/docs/b.md b/docs/b.md
                 .all(|action| !action.as_str().unwrap().starts_with("run `")),
             "environment JSON nextActions should be directly executable commands: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Set up local environment".to_string()));
+        assert!(checklist_labels.contains(&"Inspect environment plan".to_string()));
     }
 
     #[test]
@@ -43476,6 +43498,11 @@ diff --git a/docs/b.md b/docs/b.md
                 .all(|action| !action.as_str().unwrap().starts_with("run `")),
             "environment JSON nextActions should be directly executable commands: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Set up local environment".to_string()));
+        assert!(checklist_labels.contains(&"Run environment test".to_string()));
         assert_eq!(
             value["compilerTest"]["command"],
             "docker run --rm maxxing/compiler-dev autotest -koopa -s lv1"
@@ -43536,6 +43563,11 @@ diff --git a/docs/b.md b/docs/b.md
                 .all(|action| !action.as_str().unwrap().starts_with("run `")),
             "environment JSON nextActions should be directly executable commands: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run environment test".to_string()));
+        assert!(checklist_labels.contains(&"Discover test commands".to_string()));
 
         let output = format_environment_setup_result_json(
             dir.path(),
@@ -43558,6 +43590,11 @@ diff --git a/docs/b.md b/docs/b.md
                 .all(|action| !action.as_str().unwrap().starts_with("run `")),
             "environment JSON nextActions should be directly executable commands: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run acceptance checks".to_string()));
+        assert!(checklist_labels.contains(&"Run delivery gate".to_string()));
     }
 
     #[test]
@@ -43593,6 +43630,11 @@ diff --git a/docs/b.md b/docs/b.md
                 .all(|action| !action.as_str().unwrap().starts_with("run `")),
             "environment JSON nextActions should be directly executable commands: {next_actions:?}"
         );
+        let next_action_strings = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &next_action_strings);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Run acceptance checks".to_string()));
+        assert!(checklist_labels.contains(&"Run delivery gate".to_string()));
     }
 
     fn test_environment_check(name: &str, available: bool) -> EnvironmentCheck {
