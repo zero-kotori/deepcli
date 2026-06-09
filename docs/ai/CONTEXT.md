@@ -847,6 +847,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.recipes.v1` 在 `sota` topic 下复用当前 `round` 的 `opportunities[]`，普通 topic 返回空数组；文本模式在有机会时也展示 opportunities。
    - 目的：外部产品循环页、TUI recipe 面板和脚本入口可以在同一份 SOTA recipe 报告里同时渲染动作按钮和机会说明，不必额外调用 round 或自行解释动作原因。
 
+141. Product Opportunities First-Class Entry
+   - 产品缺口：`scorecard`、`round` 和 `recipes sota` 已经能输出机会对象，但用户或外部 UI 若只想查看“当前可继续推进的产品机会”，仍必须打开完整 round/recipe 报告并从中抽取 `opportunities[]`。
+   - 结果：新增 `deepcli opportunities --json` 与 `/opportunities`/`/opportunity`，输出稳定 `deepcli.opportunities.v1`，复用当前 `round` 的机会对象，顶层提供 `nextActions` 和 `checklist[]`；TUI 运行中也可作为本地只读旁路命令执行。
+   - 目的：产品循环页、TUI 面板和脚本可以直接渲染机会卡片和动作按钮，不需要读取完整 round 报告或复制机会判断逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

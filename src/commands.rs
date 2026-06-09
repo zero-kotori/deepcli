@@ -58,6 +58,7 @@ pub enum SlashCommand {
     Quickstart { args: Vec<String> },
     Recipes { args: Vec<String> },
     Scorecard { args: Vec<String> },
+    Opportunities { args: Vec<String> },
     Benchmark { args: Vec<String> },
     Round { args: Vec<String> },
     Selftest { args: Vec<String> },
@@ -134,6 +135,7 @@ impl CommandRouter {
                 SlashCommand::Recipes { args }
             }
             "/scorecard" | "/sota" => SlashCommand::Scorecard { args },
+            "/opportunities" | "/opportunity" => SlashCommand::Opportunities { args },
             "/benchmark" | "/bench" => SlashCommand::Benchmark { args },
             "/round" | "/iterate" | "/iteration" => SlashCommand::Round { args },
             "/selftest" | "/self-test" => SlashCommand::Selftest { args },
@@ -275,6 +277,9 @@ impl CommandRouter {
             }
             SlashCommand::Scorecard { args } => {
                 handle_scorecard(context.workspace, context.config, context.registry, args)
+            }
+            SlashCommand::Opportunities { args } => {
+                handle_opportunities(context.workspace, context.config, context.registry, args)
             }
             SlashCommand::Benchmark { args } => {
                 handle_benchmark(context.workspace, context.config, context.registry, args)
@@ -485,6 +490,7 @@ impl CommandRouter {
             "/quickstart",
             "/recipes",
             "/scorecard",
+            "/opportunities",
             "/benchmark",
             "/round",
             "/selftest",
@@ -747,6 +753,24 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli deepseek scorecard --json",
             ],
             notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema; top-level `checklist[]` labels the global next-action queue while `categories[].checklist[]` labels category-specific actions. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, and baseline compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
+        },
+        CommandHelp {
+            name: "/opportunities",
+            listing: "/opportunities [--json] [--output path]",
+            summary: "List current non-blocking product opportunities and their executable action checklist.",
+            usage: &[
+                "/opportunities",
+                "/opportunities --json",
+                "/opportunities --output <workspace-relative-path>",
+                "/opportunity --json",
+                "deepcli opportunities --json",
+            ],
+            examples: &[
+                "/opportunities",
+                "/opportunities --json --output .deepcli/exports/opportunities.json",
+                "deepcli opportunity --json",
+            ],
+            notes: &["`/opportunities` is a local read-only product-loop report. It reuses the current `/round` opportunity objects instead of defining a separate source of truth, so UI surfaces can render opportunity cards without opening the full round report. JSON uses the stable `deepcli.opportunities.v1` schema with top-level `opportunities[]`, executable `nextActions`, and matching `checklist[]`; when the round is not ready and no non-blocking opportunities are available, next actions fall back to the round remediation queue."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -1865,6 +1889,8 @@ fn normalize_help_topic(topic: &str) -> String {
         "/benchmark".to_string()
     } else if normalized == "/sota" {
         "/scorecard".to_string()
+    } else if normalized == "/opportunity" {
+        "/opportunities".to_string()
     } else if matches!(normalized.as_str(), "/iterate" | "/iteration") {
         "/round".to_string()
     } else {
@@ -2817,6 +2843,139 @@ fn parse_scorecard_threshold(raw: &str) -> Result<u8> {
         bail!("score threshold must be between 0 and 100");
     }
     Ok(value)
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OpportunitiesOptions {
+    json_output: bool,
+    output_path: Option<String>,
+}
+
+pub(crate) fn handle_opportunities(
+    workspace: &Path,
+    config: &AppConfig,
+    registry: &ToolRegistry,
+    args: Vec<String>,
+) -> Result<String> {
+    let options = parse_opportunities_options(&args)?;
+    let round = build_round_report(
+        workspace,
+        config,
+        registry,
+        DEFAULT_ROUND_SCORE_THRESHOLD,
+        None,
+    );
+    let next_actions = opportunity_next_actions(&round);
+    let report = format_opportunities_text(workspace, &round, &next_actions);
+    let output = if options.json_output {
+        format_opportunities_json(workspace, &round, &next_actions, &report)?
+    } else {
+        report
+    };
+    if let Some(output_path) = &options.output_path {
+        write_command_output(workspace, output_path, &output)?;
+    }
+    Ok(output)
+}
+
+fn parse_opportunities_options(args: &[String]) -> Result<OpportunitiesOptions> {
+    let mut options = OpportunitiesOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--json" => {
+                options.json_output = true;
+                index += 1;
+            }
+            "--output" | "-o" => {
+                let raw = required_arg(args, index + 1, "output path")?;
+                set_command_output_path(&mut options.output_path, raw)?;
+                index += 2;
+            }
+            value if value.starts_with("--output=") => {
+                set_command_output_path(
+                    &mut options.output_path,
+                    value.trim_start_matches("--output="),
+                )?;
+                index += 1;
+            }
+            value => bail!("unsupported /opportunities option `{value}`"),
+        }
+    }
+    Ok(options)
+}
+
+fn opportunity_next_actions(round: &RoundReport) -> Vec<String> {
+    let mut actions = round
+        .opportunities
+        .iter()
+        .flat_map(|opportunity| opportunity.next_actions.clone())
+        .collect::<Vec<_>>();
+    if actions.is_empty() {
+        actions.extend(round.next_actions.clone());
+    }
+    dedup_preserve_order(actions)
+}
+
+fn format_opportunities_text(
+    workspace: &Path,
+    round: &RoundReport,
+    next_actions: &[String],
+) -> String {
+    let mut lines = vec![
+        "deepcli opportunities".to_string(),
+        format!("workspace: {}", workspace.display()),
+        format!("round status: {}", round.status),
+        format!("opportunities: {}", round.opportunities.len()),
+    ];
+    if round.opportunities.is_empty() {
+        lines.push(
+            "no non-blocking opportunities are available; follow the round actions first"
+                .to_string(),
+        );
+    } else {
+        for opportunity in &round.opportunities {
+            lines.push(format!(
+                "- {}: {} ({})",
+                opportunity.id, opportunity.title, opportunity.status
+            ));
+            lines.push(format!("  summary: {}", opportunity.summary));
+            lines.push(format!("  impact: {}", opportunity.impact));
+            lines.push("  next actions:".to_string());
+            lines.extend(
+                opportunity
+                    .next_actions
+                    .iter()
+                    .map(|action| format!("    - {action}")),
+            );
+        }
+    }
+    lines.push("next actions:".to_string());
+    lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
+    lines.join("\n")
+}
+
+fn format_opportunities_json(
+    workspace: &Path,
+    round: &RoundReport,
+    next_actions: &[String],
+    report: &str,
+) -> Result<String> {
+    Ok(serde_json::to_string_pretty(&json!({
+        "schema": "deepcli.opportunities.v1",
+        "status": round.status,
+        "ready": round.status == "ready",
+        "workspace": workspace.display().to_string(),
+        "source": {
+            "schema": "deepcli.round.v1",
+            "command": "deepcli round --json",
+        },
+        "opportunityCount": round.opportunities.len(),
+        "opportunities": scorecard_opportunities_json(&round.opportunities),
+        "nextActions": next_actions,
+        "checklist": scorecard_action_checklist(next_actions),
+        "report": report,
+    }))?)
 }
 
 fn build_scorecard_report(
@@ -12031,6 +12190,7 @@ fn is_running_safe_command_name(name: &str) -> bool {
         "/help"
             | "/recipes"
             | "/scorecard"
+            | "/opportunities"
             | "/benchmark"
             | "/round"
             | "/selftest"
@@ -32108,6 +32268,18 @@ mod tests {
             })
         );
         assert_eq!(
+            CommandRouter::parse("/opportunities --json").unwrap(),
+            Some(SlashCommand::Opportunities {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
+            CommandRouter::parse("/opportunity --json").unwrap(),
+            Some(SlashCommand::Opportunities {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
             CommandRouter::parse("/round --json").unwrap(),
             Some(SlashCommand::Round {
                 args: vec!["--json".to_string()]
@@ -34651,6 +34823,12 @@ mod tests {
         assert!(scorecard_help.contains("sustained product loop"));
         assert!(scorecard_help.contains("deepcli benchmark --fail-below 85"));
 
+        let opportunities_help = CommandRouter::help_for(&["opportunity".to_string()]).unwrap();
+        assert!(opportunities_help.contains("/opportunities - "));
+        assert!(opportunities_help.contains("running-safe: yes"));
+        assert!(opportunities_help.contains("deepcli.opportunities.v1"));
+        assert!(opportunities_help.contains("deepcli opportunities --json"));
+
         let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
         assert!(bench_help.contains("/benchmark - "));
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
@@ -35617,6 +35795,34 @@ mod tests {
             baseline_opportunity["checklist"][0]["command"],
             baseline_opportunity["nextActions"][0]
         );
+    }
+
+    #[test]
+    fn opportunities_json_lists_current_round_product_opportunities() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output =
+            handle_opportunities(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.opportunities.v1");
+        assert_eq!(value["status"], "ready");
+        assert_eq!(value["ready"], true);
+        assert_eq!(value["source"]["command"], "deepcli round --json");
+        assert!(value["opportunityCount"].as_u64().unwrap() >= 2);
+        let opportunities = value["opportunities"].as_array().unwrap();
+        assert!(opportunities
+            .iter()
+            .any(|opportunity| opportunity["id"] == "competitor_baseline"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert!(next_actions.iter().any(|action| {
+            action == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
+        }));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
     }
 
     #[test]

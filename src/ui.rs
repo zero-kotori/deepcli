@@ -1,7 +1,7 @@
 use crate::agents::AgentStore;
 use crate::commands::{
     handle_approval, handle_benchmark, handle_completion_local, handle_fork, handle_git,
-    handle_logs, handle_preflight, handle_privacy_scan, handle_recipes,
+    handle_logs, handle_opportunities, handle_preflight, handle_privacy_scan, handle_recipes,
     handle_restore_backup_dry_run, handle_round, handle_scorecard, handle_selftest_local,
     handle_session, handle_terminal, handle_trace, handle_usage, list_resumable_sessions,
     CommandHelpSummary, CommandRouter, SlashCommand,
@@ -2607,6 +2607,14 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             });
             true
         }
+        SlashCommand::Opportunities { args } => {
+            push_running_command_result(state, |active| {
+                ensure_running_no_output(&args, "/opportunities")?;
+                let (config, registry) = running_local_product_context(&active.workspace)?;
+                handle_opportunities(&active.workspace, &config, &registry, args)
+            });
+            true
+        }
         SlashCommand::Round { args } => {
             push_running_command_result(state, |active| {
                 ensure_running_no_output(&args, "/round")?;
@@ -2692,7 +2700,7 @@ fn handle_running_tui_local_command(state: &mut TuiState, input: &str) -> bool {
             state.chat.push(ChatLine {
                 role: "deepcli".to_string(),
                 content:
-                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`；运行中旁路命令不写 `--output` artifact。"
+                    "Agent 正在运行；当前支持本地 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、read-only `/session`、`/session restore-backup --dry-run --json`、`/terminal`、`/stop`、`/quit` 和 `/btw ask/list/answer/clear`；运行中旁路命令不写 `--output` artifact。"
                         .to_string(),
             });
             state.last_event = "running command unsupported".to_string();
@@ -3193,7 +3201,7 @@ fn submit_tui_input(
         state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content:
-                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项；需要写 `--output` artifact 时请等待任务结束或先 `/stop`。"
+                "Agent 正在运行；当前可用 `/help`、`/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark`、`/selftest`、`/preflight --dry-run`、`/completion`、`/approval`、read-only `/git`、`/session`、`/terminal`、`/stop`、`/quit` 或 `/btw ask/list/answer/clear` 处理旁路事项；需要写 `--output` artifact 时请等待任务结束或先 `/stop`。"
                     .to_string(),
         });
         state.last_event = "input deferred while running".to_string();
@@ -5731,14 +5739,15 @@ fn running_safe_palette_priority(name: &str) -> usize {
         "/completion" => 9,
         "/round" => 10,
         "/scorecard" => 11,
-        "/benchmark" => 12,
-        "/recipes" => 13,
-        "/fork" => 14,
+        "/opportunities" => 12,
+        "/benchmark" => 13,
+        "/recipes" => 14,
         "/privacy" => 15,
-        "/approval" => 16,
-        "/session" => 17,
-        "/terminal" => 18,
-        "/btw" => 19,
+        "/fork" => 16,
+        "/approval" => 17,
+        "/session" => 18,
+        "/terminal" => 19,
+        "/btw" => 20,
         _ => 100,
     }
 }
@@ -6820,6 +6829,7 @@ mod tests {
             "/help",
             "/recipes",
             "/scorecard",
+            "/opportunities",
             "/benchmark",
             "/round",
             "/selftest",
@@ -6901,6 +6911,9 @@ mod tests {
         assert!(running_suggestions
             .iter()
             .any(|summary| summary.name == "/round" && summary.running_safe));
+        assert!(running_suggestions
+            .iter()
+            .any(|summary| summary.name == "/opportunities" && summary.running_safe));
         assert!(running_suggestions
             .iter()
             .any(|summary| summary.name == "/selftest" && summary.running_safe));

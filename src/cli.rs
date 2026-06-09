@@ -353,6 +353,8 @@ fn top_level_entries() -> &'static [&'static str] {
         "workflow",
         "workflows",
         "scorecard",
+        "opportunities",
+        "opportunity",
         "benchmark",
         "bench",
         "sota",
@@ -575,6 +577,7 @@ fn top_level_help_topic(value: &str) -> Option<String> {
     match value {
         "sessions" | "history" => Some("session".to_string()),
         "models" | "providers" => Some("model".to_string()),
+        "opportunity" => Some("opportunities".to_string()),
         alias if is_top_level_slash_alias(alias) => Some(alias.to_string()),
         _ => None,
     }
@@ -593,6 +596,8 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "workflow"
             | "workflows"
             | "scorecard"
+            | "opportunities"
+            | "opportunity"
             | "benchmark"
             | "bench"
             | "sota"
@@ -714,6 +719,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Quickstart { .. }
         | SlashCommand::Recipes { .. }
         | SlashCommand::Scorecard { .. }
+        | SlashCommand::Opportunities { .. }
         | SlashCommand::Benchmark { .. }
         | SlashCommand::Round { .. }
         | SlashCommand::Selftest { .. }
@@ -1337,6 +1343,12 @@ mod tests {
             })
         );
         assert_eq!(
+            parse_one_shot_command(&["opportunities".into(), "--json".into()]).unwrap(),
+            Some(SlashCommand::Opportunities {
+                args: vec!["--json".to_string()]
+            })
+        );
+        assert_eq!(
             parse_one_shot_command(&["round".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Round {
                 args: vec!["--json".to_string()]
@@ -1346,6 +1358,12 @@ mod tests {
             parse_one_shot_command(&["fork".into(), "--help".into()]).unwrap(),
             Some(SlashCommand::Help {
                 args: vec!["fork".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&["opportunity".into(), "--help".into()]).unwrap(),
+            Some(SlashCommand::Help {
+                args: vec!["opportunities".to_string()]
             })
         );
         assert_eq!(
