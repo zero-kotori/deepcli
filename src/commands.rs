@@ -1209,7 +1209,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/switch deepseek deepseek-v4-pro",
                 "/model set kimi kimi-for-coding",
             ],
-            notes: &["Model switches update the active session when there is one, and always update the project config. As one-shot commands, `/model set`, `/model <provider>`, `/provider <provider>`, `/use`, and `/switch` run locally without creating an empty session or calling a provider. Use `--json` for the stable `deepcli.model.inspect.v1` schema on read-only model commands and `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Model switches update the active session when there is one, and always update the project config. As one-shot commands, `/model set`, `/model <provider>`, `/provider <provider>`, `/use`, and `/switch` run locally without creating an empty session or calling a provider. Use `--json` for the stable `deepcli.model.inspect.v1` schema on read-only model commands; the JSON includes executable `nextActions` plus a matching `checklist[]` for model/settings UIs. Use `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/provider",
@@ -3440,6 +3440,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli model list" => "List configured models",
         "deepcli model list --json" => "List configured models",
         "deepcli model show --json" => "Inspect active model",
+        "deepcli help model" => "Open model help",
+        command if command.starts_with("deepcli model set ") => "Switch configured model",
         "deepcli use deepseek deepseek-v4-pro" => "Switch to DeepSeek v4-pro",
         "deepcli doctor --quick" => "Run quick diagnostics",
         "deepcli doctor shell --json" => "Check shell install",
@@ -17954,6 +17956,7 @@ fn format_model_show_json(
         .get(selected_provider)
         .ok_or_else(|| anyhow::anyhow!("provider `{selected_provider}` is not configured"))?;
     let provider_json = model_provider_entry_json(workspace, config, selected_provider, provider);
+    let next_actions = model_next_actions(config, &[selected_provider.to_string()]);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.model.inspect.v1",
         "status": "ok",
@@ -17962,7 +17965,8 @@ fn format_model_show_json(
         "defaultProvider": config.default_provider,
         "activeSession": active_session,
         "provider": provider_json,
-        "nextActions": model_next_actions(config, &[selected_provider.to_string()]),
+        "nextActions": next_actions,
+        "checklist": local_action_checklist(&next_actions),
         "report": redact_sensitive_text(report),
         "format": "json",
     }))?)
@@ -17983,6 +17987,7 @@ fn format_model_list_json(workspace: &Path, config: &AppConfig, report: &str) ->
         .filter(|provider| provider["apiKey"] == "missing")
         .count();
     let provider_names = config.providers.keys().cloned().collect::<Vec<_>>();
+    let next_actions = model_next_actions(config, &provider_names);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.model.inspect.v1",
         "status": "ok",
@@ -17993,7 +17998,8 @@ fn format_model_list_json(workspace: &Path, config: &AppConfig, report: &str) ->
         "configuredProviders": configured_providers,
         "missingProviders": missing_providers,
         "providers": providers,
-        "nextActions": model_next_actions(config, &provider_names),
+        "nextActions": next_actions,
+        "checklist": local_action_checklist(&next_actions),
         "report": redact_sensitive_text(report),
         "format": "json",
     }))?)
@@ -45208,6 +45214,10 @@ diff --git a/docs/skip.md b/docs/skip.md
             .contains("default provider: deepseek"));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"List configured models".to_string()));
+        assert!(checklist_labels.contains(&"Open model help".to_string()));
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli model list --json"));
@@ -45246,6 +45256,9 @@ diff --git a/docs/skip.md b/docs/skip.md
             .any(|provider| provider["provider"] == "deepseek" && provider["isDefault"] == true));
         let next_actions = json_string_array(&value["nextActions"]);
         assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Switch configured model".to_string()));
         assert!(next_actions
             .iter()
             .any(|action| action == "deepcli model set kimi"));
