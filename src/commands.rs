@@ -3440,6 +3440,10 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli test discover --json" => "Discover test commands",
         command if command.starts_with("deepcli test run ") => "Run test command",
         "deepcli help test" => "Open test help",
+        "deepcli prompt list --json" => "List prompts",
+        command if command.starts_with("deepcli prompt get ") => "Open prompt",
+        command if command.starts_with("deepcli prompt render ") => "Render prompt",
+        "deepcli help prompt" => "Open prompt help",
         "deepcli git status --json" => "Inspect git status",
         "deepcli git diff --json" => "Inspect git diff",
         "deepcli git message --json" => "Prepare commit message",
@@ -30419,6 +30423,8 @@ fn format_prompt_list_json(
     prompts: &[crate::prompts::Prompt],
     report: &str,
 ) -> Result<String> {
+    let next_actions = prompt_next_actions(prompts.first().map(|prompt| prompt.name.as_str()));
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.prompt.inspect.v1",
         "status": "ok",
@@ -30429,20 +30435,24 @@ fn format_prompt_list_json(
             .iter()
             .map(|prompt| prompt_summary_json(workspace, prompt))
             .collect::<Vec<_>>(),
-        "nextActions": prompt_next_actions(prompts.first().map(|prompt| prompt.name.as_str())),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": report,
         "format": "json",
     }))?)
 }
 
 fn format_prompt_get_json(workspace: &Path, prompt: &crate::prompts::Prompt) -> Result<String> {
+    let next_actions = prompt_next_actions(Some(&prompt.name));
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.prompt.inspect.v1",
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "get",
         "prompt": prompt_detail_json(workspace, prompt),
-        "nextActions": prompt_next_actions(Some(&prompt.name)),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": prompt.body.as_str(),
         "format": "json",
     }))?)
@@ -30453,6 +30463,8 @@ fn format_prompt_render_json(workspace: &Path, raw: &Value, rendered: &str) -> R
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("<unknown>");
+    let next_actions = prompt_next_actions(Some(name));
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.prompt.inspect.v1",
         "status": "ok",
@@ -30465,7 +30477,8 @@ fn format_prompt_render_json(workspace: &Path, raw: &Value, rendered: &str) -> R
         "context": raw.get("context").cloned().unwrap_or(Value::Null),
         "rendered": rendered,
         "renderedChars": rendered.chars().count(),
-        "nextActions": prompt_next_actions(Some(name)),
+        "checklist": checklist,
+        "nextActions": next_actions,
         "report": rendered,
         "format": "json",
     }))?)
@@ -38647,6 +38660,11 @@ mod tests {
             }));
         let list_next_actions = json_string_array(&list_value["nextActions"]);
         assert_executable_deepcli_actions(&list_next_actions);
+        assert_checklist_matches_executable_actions(&list_value, &list_next_actions);
+        let list_checklist_labels = json_checklist_labels(&list_value);
+        assert!(list_checklist_labels.contains(&"Open prompt".to_string()));
+        assert!(list_checklist_labels.contains(&"Render prompt".to_string()));
+        assert!(list_checklist_labels.contains(&"Open prompt help".to_string()));
         assert!(list_next_actions
             .iter()
             .any(|action| action.starts_with("deepcli prompt render ")));
@@ -38677,6 +38695,11 @@ mod tests {
         assert_eq!(get_value["report"], "Review {{file}} for {{task}}");
         let get_next_actions = json_string_array(&get_value["nextActions"]);
         assert_executable_deepcli_actions(&get_next_actions);
+        assert_checklist_matches_executable_actions(&get_value, &get_next_actions);
+        let get_checklist_labels = json_checklist_labels(&get_value);
+        assert!(get_checklist_labels.contains(&"Open prompt".to_string()));
+        assert!(get_checklist_labels.contains(&"Render prompt".to_string()));
+        assert!(get_checklist_labels.contains(&"Open prompt help".to_string()));
         assert!(get_next_actions
             .iter()
             .any(|action| action == "deepcli prompt get reviewer"));
@@ -38724,6 +38747,13 @@ mod tests {
             .unwrap()
             .contains("review src/lib.rs pub fn ok()"));
         assert_eq!(value["report"], value["rendered"]);
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Open prompt".to_string()));
+        assert!(checklist_labels.contains(&"Render prompt".to_string()));
+        assert!(checklist_labels.contains(&"Open prompt help".to_string()));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/rendered-prompt.json")).unwrap();

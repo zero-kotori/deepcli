@@ -462,7 +462,7 @@ MVP 可使用本地 JSONL：
 - `/git`
 - `/web search <query>`，复用 `web_search` 工具和权限引擎；`/web <query>` 与 `/search <query>` 作为便捷形式；工具输出优先展示答案、摘要和来源，摘要为空时回退展示 DuckDuckGo RelatedTopics。
 - `/prompt list|get <name>|render <name> [--file path] [key=value...] [--json] [--output path]|save <name> <body>|delete <name>`
-- `/prompt list|get|render` 默认保持现有终端文本；`--json` 输出 `deepcli.prompt.inspect.v1`，list 包含 promptCount、prompt 名称、描述、来源、路径、正文长度和预览，get 包含完整 prompt 正文，render 包含 prompt 元数据、渲染上下文、rendered 文本和 renderedChars；顶层 `nextActions` 使用可直接执行的 `deepcli ...` 命令，有具体 prompt 时优先给出具体名称；`--output` 通过 workspace path 校验写入当前格式，用于 TUI prompt 面板、外部 prompt 管理页、issue 附件和脚本化 prompt 验收。`save/delete` 仍作为写操作走原有文件权限路径。
+- `/prompt list|get|render` 默认保持现有终端文本；`--json` 输出 `deepcli.prompt.inspect.v1`，list 包含 promptCount、prompt 名称、描述、来源、路径、正文长度和预览，get 包含完整 prompt 正文，render 包含 prompt 元数据、渲染上下文、rendered 文本和 renderedChars；顶层 `nextActions` 使用可直接执行的 `deepcli ...` 命令，有具体 prompt 时优先给出具体名称，并从这些动作派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；`--output` 通过 workspace path 校验写入当前格式，用于 TUI prompt 面板、外部 prompt 管理页、issue 附件和脚本化 prompt 验收。`save/delete` 仍作为写操作走原有文件权限路径。
 - `/skill list [--json] [--output path]|generate <name> <description>|run <name> [--json] [--output path]`
 - `/skill list|run` 默认保持现有终端文本；`--json` 输出 `deepcli.skill.inspect.v1`，list 包含 skillCount、Skill 名称、描述、触发条件、最大深度、创建时间、metadataPath 和 instructionPath，run 包含同类元数据、instructions、instructionChars、nextActions 和原始 report；顶层 `nextActions` 使用可直接执行的 `deepcli ...` 命令，有具体 skill 时优先给出具体名称；`--output` 通过 workspace path 校验写入当前格式，用于 TUI Skill 面板、外部插件页、issue 附件和脚本化 Skill 验收。`generate` 仍作为写操作走原有文件权限路径。
 - `/agent list [--json] [--output path]|show <id> [--json] [--output path]|spawn <task>`

@@ -84,7 +84,7 @@ deepcli 当前面向 DeepSeek-compatible providers，并内置 DeepSeek/Kimi 相
 - `deepcli provider [provider] [model]`
 - `deepcli providers --json`
 
-Status、Usage、Completion、验收交付、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，并同步派生顶层 `checklist[]` 和 `session.checklist[]`；`completion status/install --json`、`git status|diff|branch|message --json`、`test discover/run --json`、`model show/list --json` 和 `logs --json` 也从顶层 `nextActions` 派生 `checklist[]`，方便 shell 安装面板、Git 面板、测试面板、模型设置页、观测面板和外部 UI 直接渲染动作按钮；completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
+Status、Usage、Completion、验收交付、模型、超时、日志、Test、Prompt、Skill 和 Agent 查看类 JSON 的结构化 `nextActions` 都是可直接执行的 `deepcli ...` 命令，不包含 `<...>` 占位动作；`status.session.nextActions` 会根据会话信号给出 `deepcli next/session diagnose` 或 `deepcli usage/trace`，`usage.session.nextActions` 会给出 `deepcli trace` 和 `deepcli session diagnose`，并同步派生顶层 `checklist[]` 和 `session.checklist[]`；`completion status/install --json`、`git status|diff|branch|message --json`、`test discover/run --json`、`prompt list|get|render --json`、`model show/list --json` 和 `logs --json` 也从顶层 `nextActions` 派生 `checklist[]`，方便 shell 安装面板、Git 面板、测试面板、Prompt 面板、模型设置页、观测面板和外部 UI 直接渲染动作按钮；completion 缺失或过期时会给出具体 shell 的 `deepcli completion install ... --force`，有具体条目时会优先输出具体 test command、prompt 名称、skill 名称或 agent 短 id，说明性上下文留在 `report`、help 或条目字段。
 
 凭据相关命令都在本地执行，不需要先创建会话或调用 provider：
 
@@ -227,7 +227,7 @@ deepcli 提供可扩展的任务能力库：
 - `deepcli skill list|run`
 - `deepcli agent list|show`
 
-这些命令支持 JSON 输出，可用于 TUI 面板、外部 UI 或脚本化集成。
+这些命令支持 JSON 输出，可用于 TUI 面板、外部 UI 或脚本化集成；`prompt list|get|render --json` 会从可执行 `nextActions` 派生 `checklist[]`，Prompt 面板可直接渲染打开、渲染和帮助动作。
 
 ## 安全与权限
 

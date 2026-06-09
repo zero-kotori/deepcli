@@ -684,6 +684,8 @@ cargo test git_write
 ./scripts/deepcli completion install zsh --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli test discover --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli test run --json -- 'printf ok' | jq '{status,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli prompt list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli prompt render code-review --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search compiler --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search __definitely_no_deepcli_match__ --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli next --json | jq '{checklist:.checklist[0:4],quickLinkChecklist:.quickLinkChecklist[0:4],nextActions:.nextActions[0:4],quickLinks:.quickLinks[0:4]}'
@@ -750,6 +752,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli git status|diff|branch|message --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，Git 面板和外部编码工作流 UI 仍要自行给 diff、commit message、review、gate 和帮助动作命名。
    - 结果：Git 只读 inspect JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；Git status 场景会直接展示 `Inspect git diff`、`Prepare commit message` 和 `Review current diff`。
    - 目的：编码后的 Git 状态、diff、提交信息建议和 review/gate 链路可以直接作为按钮队列呈现，减少用户在修改后进入验收和提交阶段的手动判断。
+
+125. Prompt Inspect JSON 动作清单
+   - 产品缺口：`deepcli prompt list|get|render --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，Prompt 面板、外部 prompt 管理页或脚本化验收仍要自行给打开、渲染和帮助动作命名。
+   - 结果：Prompt inspect JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；具体 prompt 场景会展示 `Open prompt`、`Render prompt` 和 `Open prompt help`。
+   - 目的：用户在编程前复用、查看和渲染 prompt 时，可以直接从结构化动作队列进入下一步，Prompt 面板不必解析命令字符串。
 
 ## 下一步建议
 
