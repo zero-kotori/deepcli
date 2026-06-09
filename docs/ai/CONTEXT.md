@@ -690,6 +690,8 @@ cargo test git_write
 ./scripts/deepcli agent list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli approval list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli btw list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli session list --json | jq '{checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
+./scripts/deepcli session history --json | jq '{kind,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search compiler --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli session search __definitely_no_deepcli_match__ --json | jq '{hitCount,checklist:.checklist[0:4],nextActions:.nextActions[0:4]}'
 ./scripts/deepcli next --json | jq '{checklist:.checklist[0:4],quickLinkChecklist:.quickLinkChecklist[0:4],nextActions:.nextActions[0:4],quickLinks:.quickLinks[0:4]}'
@@ -771,6 +773,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli approval list|approve|deny|clear --json` 与 `deepcli btw list|answer|clear --json` 已经输出可执行 `nextActions`，但缺少顶层 `checklist[]`，协作队列面板仍要自行给批准、拒绝、复查、查看全部和帮助动作命名。
    - 结果：Approval/BTW list 和 action JSON 从顶层 `nextActions` 派生 `checklist[]`，每项包含 `step`、`label` 和 `command`；Approval pending 场景会展示 `Approve request`、`Deny request`、`Review approvals` 和 `Open approval help`，BTW 场景会展示 `Review by-the-way questions` 和 `Open by-the-way help`。
    - 目的：运行中 TUI 与外部协作 UI 可以直接渲染审批和旁路问题处理闭环，不必解析命令字符串或猜测按钮文案。
+
+128. Session List/Inspect JSON 动作清单
+   - 产品缺口：`deepcli session list --json` 与 `deepcli session show|history|summary|tools|tests|diffs|backups --json` 已经是恢复历史页和 TUI 面板的数据源，但缺少顶层 `nextActions` 与 `checklist[]`，外部 UI 只能展示会话数据，不能直接给恢复预览、历史、next、diagnose、列表和帮助动作命名。
+   - 结果：Session list JSON 围绕首个展示会话输出 resume preview、history、next、diagnose、list-all、prune-empty dry-run 和 help 动作，并从这些动作派生 checklist；Session inspect JSON 输出同一会话的 resume preview、next、diagnose、session list 和 help 动作，并派生 checklist。
+   - 目的：恢复历史页、session 检查页和 TUI 多个观察面板可以直接渲染下一步按钮，不必从 report 文本或 session id 自行拼命令。
 
 ## 下一步建议
 

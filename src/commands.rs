@@ -3497,9 +3497,14 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         }
         command if command.starts_with("deepcli session next ") => "Inspect recovery actions",
         command if command.starts_with("deepcli session list") => "List saved sessions",
+        command if command.starts_with("deepcli session prune-empty ") => {
+            "Preview empty session cleanup"
+        }
         command if command.starts_with("deepcli session tools --failed") => "Inspect failed tools",
         command if command.starts_with("deepcli session tests ") => "Inspect session tests",
         command if command.starts_with("deepcli session history ") => "Inspect session history",
+        command if command.starts_with("deepcli session summary ") => "Inspect session summary",
+        "deepcli help session" => "Open session help",
         command if command.starts_with("deepcli approval approve ") => "Approve request",
         command if command.starts_with("deepcli approval deny ") => "Deny request",
         command if command.starts_with("deepcli approval list ") => "Review approvals",
@@ -21944,6 +21949,8 @@ fn format_session_list_json(
         .take(shown)
         .map(|metadata| session_list_item_json(store, metadata))
         .collect::<Result<Vec<_>>>()?;
+    let next_actions = session_list_next_actions(report);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.list.v1",
         "status": "ok",
@@ -21955,8 +21962,47 @@ fn format_session_list_json(
         "shownSessions": sessions.len(),
         "hiddenEmptySessions": report.hidden_empty,
         "sessions": sessions,
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": text,
     }))?)
+}
+
+fn session_list_next_actions(report: &SessionListReport) -> Vec<String> {
+    let shown = report.options.limit.map_or(report.sessions.len(), |limit| {
+        report.sessions.len().min(limit)
+    });
+    let mut actions = Vec::new();
+    if let Some(metadata) = report.sessions.iter().take(shown).next() {
+        let short = short_id(&metadata.id);
+        push_unique_action(
+            &mut actions,
+            format!("deepcli resume {short} --dry-run --json"),
+        );
+        push_unique_action(
+            &mut actions,
+            format!("deepcli session history {short} --limit 20 --json"),
+        );
+        push_unique_action(&mut actions, format!("deepcli session next {short} --json"));
+        push_unique_action(
+            &mut actions,
+            format!("deepcli session diagnose {short} --json"),
+        );
+    } else {
+        push_unique_action(&mut actions, "deepcli resume --dry-run --json".to_string());
+    }
+    if !report.options.include_all && report.hidden_empty > 0 {
+        push_unique_action(
+            &mut actions,
+            "deepcli session list --all --limit 20 --json".to_string(),
+        );
+    }
+    push_unique_action(
+        &mut actions,
+        "deepcli session prune-empty --dry-run --json".to_string(),
+    );
+    push_unique_action(&mut actions, "deepcli help session".to_string());
+    actions
 }
 
 fn session_list_item_json(store: &SessionStore, metadata: &SessionMetadata) -> Result<Value> {
@@ -23283,6 +23329,8 @@ fn format_session_inspect_json(
     report: &str,
 ) -> Result<String> {
     let activity = session.activity_summary()?;
+    let next_actions = session_inspect_next_actions(session);
+    let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.inspect.v1",
         "status": "ok",
@@ -23293,8 +23341,30 @@ fn format_session_inspect_json(
         "session": session_inspect_metadata_json(session),
         "activity": session_activity_json(&activity),
         "payload": payload,
+        "nextActions": next_actions,
+        "checklist": checklist,
         "report": report,
     }))?)
+}
+
+fn session_inspect_next_actions(session: &Session) -> Vec<String> {
+    let short = short_id(&session.id());
+    let mut actions = Vec::new();
+    push_unique_action(
+        &mut actions,
+        format!("deepcli resume {short} --dry-run --json"),
+    );
+    push_unique_action(&mut actions, format!("deepcli session next {short} --json"));
+    push_unique_action(
+        &mut actions,
+        format!("deepcli session diagnose {short} --json"),
+    );
+    push_unique_action(
+        &mut actions,
+        "deepcli session list --all --limit 20 --json".to_string(),
+    );
+    push_unique_action(&mut actions, "deepcli help session".to_string());
+    actions
 }
 
 fn session_inspect_metadata_json(session: &Session) -> Value {
@@ -40203,6 +40273,20 @@ diff --git a/docs/b.md b/docs/b.md
             .as_str()
             .unwrap()
             .contains("latest session with messages"));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert!(next_actions.iter().any(|action| action
+            == &format!("deepcli session next {} --json", short_id(&populated.id()))));
+        assert!(next_actions.iter().any(|action| action
+            == &format!(
+                "deepcli session diagnose {} --json",
+                short_id(&populated.id())
+            )));
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Inspect recovery actions".to_string()));
+        assert!(checklist_labels.contains(&"Inspect session diagnostics".to_string()));
+        assert!(checklist_labels.contains(&"List saved sessions".to_string()));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/session-history.json")).unwrap();
         assert_eq!(written, history_json);
@@ -41318,6 +41402,25 @@ diff --git a/docs/b.md b/docs/b.md
             .unwrap()
             .iter()
             .any(|item| item["metadata"]["id"] == populated.id().to_string()));
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_executable_deepcli_actions(&next_actions);
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert!(next_actions.iter().any(|action| action
+            == &format!(
+                "deepcli resume {} --dry-run --json",
+                short_id(&populated.id())
+            )));
+        assert!(next_actions.iter().any(|action| action
+            == &format!(
+                "deepcli session history {} --limit 20 --json",
+                short_id(&populated.id())
+            )));
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Resume preview".to_string()));
+        assert!(checklist_labels.contains(&"Inspect session history".to_string()));
+        assert!(checklist_labels.contains(&"Inspect recovery actions".to_string()));
+        assert!(checklist_labels.contains(&"Inspect session diagnostics".to_string()));
+        assert!(checklist_labels.contains(&"Open session help".to_string()));
         assert!(!json_output.contains("sk-list-secret"));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/sessions.json")).unwrap();
