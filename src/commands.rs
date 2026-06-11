@@ -8320,9 +8320,10 @@ fn format_benchmark_cleanup_json(
 ) -> Result<String> {
     let next_actions = benchmark_cleanup_next_actions(options, candidates.is_empty());
     let checklist = benchmark_action_checklist(&next_actions);
+    let status = benchmark_cleanup_status(options, candidates, deleted);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.cleanup.v1",
-        "status": benchmark_cleanup_status(options, candidates, deleted),
+        "status": status,
         "workspace": workspace.display().to_string(),
         "dryRun": !options.force,
         "force": options.force,
@@ -8332,6 +8333,14 @@ fn format_benchmark_cleanup_json(
         "artifactCount": artifacts.len(),
         "candidateCount": candidates.len(),
         "deletedCount": deleted.len(),
+        "summary": benchmark_cleanup_summary_json(
+            options,
+            artifacts.len(),
+            candidates.len(),
+            deleted.len(),
+            status,
+            &checklist,
+        ),
         "candidates": candidates
             .iter()
             .map(|artifact| benchmark_artifact_summary_json(artifact))
@@ -8341,6 +8350,43 @@ fn format_benchmark_cleanup_json(
         "checklist": checklist,
         "report": format_benchmark_cleanup_text(workspace, options, artifacts, candidates, deleted),
     }))?)
+}
+
+fn benchmark_cleanup_summary_json(
+    options: &BenchmarkCleanupOptions,
+    artifact_count: usize,
+    candidate_count: usize,
+    deleted_count: usize,
+    status: &str,
+    checklist: &[Value],
+) -> Value {
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": status,
+        "dryRun": !options.force,
+        "force": options.force,
+        "artifactCount": artifact_count,
+        "candidateCount": candidate_count,
+        "deletedCount": deleted_count,
+        "keep": benchmark_cleanup_keep_count(options),
+        "olderThanDays": options.older_than_days,
+        "all": options.all,
+        "willDelete": options.force && candidate_count > 0,
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn benchmark_cleanup_status(
@@ -38971,6 +39017,22 @@ mod tests {
         assert_eq!(dry_value["artifactCount"], 3);
         assert_eq!(dry_value["candidateCount"], 2);
         assert_eq!(dry_value["deletedCount"], 0);
+        assert_eq!(dry_value["summary"]["status"], "planned");
+        assert_eq!(dry_value["summary"]["dryRun"], true);
+        assert_eq!(dry_value["summary"]["artifactCount"], 3);
+        assert_eq!(dry_value["summary"]["candidateCount"], 2);
+        assert_eq!(dry_value["summary"]["deletedCount"], 0);
+        assert_eq!(dry_value["summary"]["keep"], 1);
+        assert_eq!(dry_value["summary"]["olderThanDays"], Value::Null);
+        assert_eq!(dry_value["summary"]["willDelete"], false);
+        assert_eq!(
+            dry_value["summary"]["recommendedAction"],
+            dry_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            dry_value["summary"]["recommendedActionLabel"],
+            dry_value["checklist"][0]["label"]
+        );
         assert_eq!(dry_value["candidates"][0]["artifactPath"], old_path);
         assert_eq!(dry_value["candidates"][1]["artifactPath"], oldest_path);
         assert!(dry_value["nextActions"]
@@ -39011,6 +39073,19 @@ mod tests {
         assert_eq!(forced_value["status"], "deleted");
         assert_eq!(forced_value["dryRun"], false);
         assert_eq!(forced_value["deletedCount"], 2);
+        assert_eq!(forced_value["summary"]["status"], "deleted");
+        assert_eq!(forced_value["summary"]["dryRun"], false);
+        assert_eq!(forced_value["summary"]["candidateCount"], 2);
+        assert_eq!(forced_value["summary"]["deletedCount"], 2);
+        assert_eq!(forced_value["summary"]["willDelete"], true);
+        assert_eq!(
+            forced_value["summary"]["recommendedAction"],
+            forced_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            forced_value["summary"]["recommendedActionLabel"],
+            forced_value["checklist"][0]["label"]
+        );
         assert_benchmark_checklist_matches_next_actions(&forced_value);
         assert!(dir.path().join(&newest_path).exists());
         assert!(!dir.path().join(&old_path).exists());

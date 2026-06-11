@@ -997,6 +997,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.presets.v1` 增加顶层 `summary`，包含 status、presetCount、defaultSuitePresetCount、requiredEvidencePresetCount、optionalPresetCount、defaultSuiteAction、defaultSuitePresets、requiredEvidencePresets，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`；每个 preset 条目也标出 `defaultSuite` 与 `requiredEvidence`。
    - 目的：证据采集页、TUI benchmark 面板和脚本可以直接渲染默认必跑项、可选项和主 CTA，不再复制 preset 分类逻辑。
 
+171. Benchmark Cleanup Summary
+   - 产品缺口：`deepcli benchmark clean --dry-run --json` 是删除本地 benchmark evidence 前的确认页，但页头若要展示候选数、保留策略、是否会真实删除以及确认按钮，仍需要拼接多个字段或解析 `report`。
+   - 结果：`deepcli.benchmark.cleanup.v1` 增加顶层 `summary`，包含 status、dryRun、force、artifactCount、candidateCount、deletedCount、keep、olderThanDays、all、willDelete，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：清理确认页、TUI benchmark 维护面板和脚本可以直接渲染删除风险、保留策略和主 CTA，不再复制 cleanup 聚合逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
