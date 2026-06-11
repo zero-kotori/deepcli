@@ -8286,10 +8286,56 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "artifactCount": artifacts.len(),
+        "summary": benchmark_list_summary_json(artifacts, &checklist),
         "artifacts": artifacts.iter().map(benchmark_artifact_summary_json).collect::<Vec<_>>(),
         "nextActions": next_actions,
         "checklist": checklist,
     }))?)
+}
+
+fn benchmark_list_summary_json(artifacts: &[BenchmarkArtifact], checklist: &[Value]) -> Value {
+    let latest = artifacts.first();
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": "ok",
+        "artifactCount": artifacts.len(),
+        "latestArtifactPath": latest
+            .map(|artifact| Value::from(artifact.relative_path.clone()))
+            .unwrap_or(Value::Null),
+        "latestCreatedAt": latest
+            .and_then(|artifact| artifact.value.get("createdAt"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "latestSuite": latest
+            .and_then(|artifact| artifact.value.get("suite"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "latestCase": latest
+            .and_then(|artifact| artifact.value.get("case"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "latestPreset": latest
+            .and_then(|artifact| artifact.value.get("preset"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "latestStatus": latest
+            .map(|artifact| Value::from(benchmark_artifact_status(&artifact.value)))
+            .unwrap_or(Value::Null),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn benchmark_list_next_actions(workspace: &Path) -> Vec<String> {
@@ -39199,6 +39245,25 @@ mod tests {
         let list_value: Value = serde_json::from_str(&list).unwrap();
         assert_eq!(list_value["schema"], "deepcli.benchmark.list.v1");
         assert_eq!(list_value["artifactCount"], 1);
+        assert_eq!(list_value["summary"]["status"], "ok");
+        assert_eq!(list_value["summary"]["artifactCount"], 1);
+        assert_eq!(list_value["summary"]["latestArtifactPath"], artifact_path);
+        assert_eq!(list_value["summary"]["latestSuite"], "product");
+        assert_eq!(list_value["summary"]["latestCase"], "scorecard");
+        assert_eq!(list_value["summary"]["latestPreset"], Value::Null);
+        assert_eq!(list_value["summary"]["latestStatus"], "recorded");
+        assert_eq!(
+            list_value["summary"]["latestCreatedAt"],
+            record_value["createdAt"]
+        );
+        assert_eq!(
+            list_value["summary"]["recommendedAction"],
+            list_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            list_value["summary"]["recommendedActionLabel"],
+            list_value["checklist"][0]["label"]
+        );
         assert_eq!(list_value["artifacts"][0]["artifactPath"], artifact_path);
         assert!(list_value["nextActions"]
             .as_array()

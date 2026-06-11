@@ -1002,6 +1002,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.cleanup.v1` 增加顶层 `summary`，包含 status、dryRun、force、artifactCount、candidateCount、deletedCount、keep、olderThanDays、all、willDelete，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：清理确认页、TUI benchmark 维护面板和脚本可以直接渲染删除风险、保留策略和主 CTA，不再复制 cleanup 聚合逻辑。
 
+172. Benchmark List Summary
+   - 产品缺口：`deepcli benchmark list --json` 是本地 benchmark artifact 列表页，但页头若要展示 artifact 总数、最新证据和主推荐按钮，仍需要扫描 `artifacts[]` 或复制 checklist 推导逻辑。
+   - 结果：`deepcli.benchmark.list.v1` 增加顶层 `summary`，包含 status、artifactCount、latestArtifactPath、latestCreatedAt、latestSuite、latestCase、latestPreset、latestStatus，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：artifact 列表页、TUI benchmark 面板和脚本可以直接渲染最新证据、总量和主 CTA，不再复制 list 聚合逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
