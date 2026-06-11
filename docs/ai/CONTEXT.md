@@ -937,6 +937,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：ready round 顶层 baseline 队列现在复用 `opportunity_baseline_next_actions`，在 `deepcli opportunities --json` 后先输出 `deepcli benchmark baselines --json`，再输出 current capture、competitor template 或 compare；`round.checklist[]` 与同一队列对齐。
    - 目的：产品循环页从 ready round 进入 SOTA baseline 工作流时先展示 baseline inventory 状态，减少误写本地 evidence artifact，并和 opportunities/benchmark status 的导航一致。
 
+159. Scorecard Baseline Inventory First
+   - 产品缺口：`scorecard --json` ok 后的顶层 baseline 动作仍会直接推荐 `baseline-template --from-current`、手工 competitor template 或 compare；用户或外部 UI 从评分页进入 SOTA baseline 工作流时，还没看到 baseline inventory 就可能写本地 artifact，和 round/opportunities/benchmark status 的导航不一致。
+   - 结果：ok scorecard 顶层 baseline 队列也复用 `opportunity_baseline_next_actions`，在 benchmark status 后先输出 `deepcli benchmark baselines --json`，再输出 current capture、competitor template 或 compare；`scorecard.checklist[]` 与同一队列对齐。
+   - 目的：评分页、产品循环页和机会页都先展示 baseline inventory 状态，再进入写入或对比动作，减少入口差异和误操作。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

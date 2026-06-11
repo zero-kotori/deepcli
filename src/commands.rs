@@ -752,7 +752,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli benchmark scorecard --json",
                 "deepcli deepseek scorecard --json",
             ],
-            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema; top-level `checklist[]` labels the global next-action queue while `categories[].checklist[]` labels category-specific actions. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, and baseline compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
+            notes: &["`/scorecard` is a local product readiness report. It scores command coverage, agent workflow, session continuity, verification, safety, provider/model operations, support, and benchmark evidence without creating a session or calling a provider. Use `--json` for the stable `deepcli.scorecard.v1` schema; top-level `checklist[]` labels the global next-action queue while `categories[].checklist[]` labels category-specific actions. When gaps exist, the global `nextActions` list starts with remediation actions, so a report with only benchmark evidence gaps points first to the `/round --json --run-benchmark --fail-on-command` remediation. When there are no gaps, global `nextActions` switch to the sustained product loop: round, preflight, gate, SOTA recipe, benchmark trends/status, baseline inventory, then baseline template or compare. `/sota` is an alias; `/benchmark` keeps scorecard flag compatibility and also records benchmark artifacts."],
         },
         CommandHelp {
             name: "/opportunities",
@@ -3624,7 +3624,9 @@ fn scorecard_global_next_actions(
                 "deepcli preflight --json".to_string(),
                 "deepcli gate --json".to_string(),
             ]);
-            actions.extend(sota_baseline_next_actions(workspace));
+            actions.extend(opportunity_baseline_next_actions(
+                sota_baseline_next_actions(workspace),
+            ));
             return dedup_preserve_order(actions);
         }
         let mut actions = benchmark_freshness_next_actions(benchmark_status);
@@ -3637,7 +3639,9 @@ fn scorecard_global_next_actions(
             "deepcli benchmark trends --json".to_string(),
             "deepcli benchmark status --json".to_string(),
         ]);
-        actions.extend(sota_baseline_next_actions(workspace));
+        actions.extend(opportunity_baseline_next_actions(
+            sota_baseline_next_actions(workspace),
+        ));
         return dedup_preserve_order(actions);
     }
 
@@ -36725,6 +36729,7 @@ mod tests {
                 "deepcli benchmark status --json",
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli benchmark baselines --json",
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
@@ -36742,6 +36747,10 @@ mod tests {
         );
         assert_eq!(
             checklist[7]["label"].as_str(),
+            Some("List benchmark baselines")
+        );
+        assert_eq!(
+            checklist[8]["label"].as_str(),
             Some("Capture current benchmark baseline")
         );
 
@@ -36780,16 +36789,23 @@ mod tests {
         let output =
             handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
         let value: Value = serde_json::from_str(&output).unwrap();
-        let next_actions = value["nextActions"].as_array().unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
 
-        assert!(next_actions.iter().any(|action| {
-            action.as_str().unwrap()
-                == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
-        }));
+        let baselines_index = next_actions
+            .iter()
+            .position(|action| action == "deepcli benchmark baselines --json")
+            .expect("scorecard should expose baseline inventory before compare");
+        let compare_index = next_actions
+            .iter()
+            .position(|action| {
+                action == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+            })
+            .expect("scorecard should still expose baseline compare");
+        assert!(baselines_index < compare_index);
         assert!(!next_actions.iter().any(|action| {
-            action.as_str().unwrap()
-                == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
+            action == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"
         }));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
     }
 
     #[test]
