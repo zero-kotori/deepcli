@@ -1368,7 +1368,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/fork 6155c14e --no-open",
                 "deepcli fork 6155c14e --app iTerm2 --no-open --json",
             ],
-            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. If `DEEPCLI_TERMINAL_APP` is unset, deepcli infers supported defaults from `TERM_PROGRAM`, so iTerm users get iTerm2 automatically; set `DEEPCLI_TERMINAL_APP=iTerm2` to make that terminal app explicit for fork and terminal commands, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override. Explicit flags win over the environment, and `DEEPCLI_TERMINAL_APP` wins over `TERM_PROGRAM`. Automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, executable `nextActions`, and matching `checklist[]` so UIs can explain whether the source was idle or running and provide named copy-paste actions that work from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, next actions, and checklist before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions start with `deepcli resume candidates --json` and `deepcli session list --all --limit 20 --json`, so external UIs can render candidate discovery without opening the TUI. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
+            notes: &["`/fork` copies the persisted session directory, gives the clone a new id/title, and runs `deepcli resume <new_id>` in a new macOS Terminal by default. If `DEEPCLI_TERMINAL_APP` is unset, deepcli infers supported defaults from `TERM_PROGRAM`, so iTerm users get iTerm2 automatically; set `DEEPCLI_TERMINAL_APP=iTerm2` to make that terminal app explicit for fork and terminal commands, or use `--app iTerm2` / `--terminal-app iTerm2` as a one-shot override. Explicit flags win over the environment, and `DEEPCLI_TERMINAL_APP` wins over `TERM_PROGRAM`. Automatic resume is implemented for Terminal and iTerm2, while other apps should use `--no-open` plus the workspace resume command. In the TUI, `/fork` or `/fork --current` uses the active session; in a shell, `deepcli fork` without an id chooses the latest resumable conversation in the current workspace and skips empty or diagnostic-only sessions. Use `--dry-run` or `--preview` to inspect the selected source, copy mode, planned title, terminal app, and next actions without creating a session. Use `--verify` to add a resume health check to the report, including workspace/provider/model matches and copied message/tool/test/diff/backup counts. Use `--no-open` when you want to create the fork but skip Terminal launch. The JSON report includes `contextCopy`, `terminal.app`, `terminal.autoResumeSupported`, `terminal.workspaceResumeCommand`, optional `verification`, executable `nextActions`, and matching `checklist[]` so UIs can explain whether the source was idle or running and provide named copy-paste actions that work from any shell directory; expected source-selection failures also return `deepcli.session.fork.v1` with `status=error`, `error.code`, next actions, and checklist before exiting non-zero. When shell users pass TUI-only `--current` without an active session, next actions start with `deepcli fork --dry-run --json`; other no-source next actions reuse resume-candidate recovery hints, so hidden empty sessions surface `deepcli session prune-empty --dry-run --json`, diagnostic-only sessions surface `deepcli session diagnose --limit 5 --json`, and candidate discovery remains available through `deepcli resume candidates --json`. When the source is running, the fork is still allowed but only copies persisted files; the in-memory agent task is not hot-forked."],
         },
         CommandHelp {
             name: "/diff",
@@ -12999,18 +12999,8 @@ fn resume_candidates_next_actions(candidates: &[ResumeCandidateEntry]) -> Vec<St
         push_unique_action(&mut actions, format!("deepcli resume {short}"));
         push_unique_action(&mut actions, format!("deepcli session next {short} --json"));
     } else {
-        let counts = resume_candidate_reason_counts(candidates);
-        if counts.hidden_empty > 0 {
-            push_unique_action(
-                &mut actions,
-                "deepcli session prune-empty --dry-run --json".to_string(),
-            );
-        }
-        if counts.hidden_tool_only > 0 || counts.hidden_non_resumable > 0 {
-            push_unique_action(
-                &mut actions,
-                "deepcli session diagnose --limit 5 --json".to_string(),
-            );
+        for action in resume_candidate_hidden_recovery_actions(candidates) {
+            push_unique_action(&mut actions, action);
         }
     }
     push_unique_action(
@@ -13019,6 +13009,18 @@ fn resume_candidates_next_actions(candidates: &[ResumeCandidateEntry]) -> Vec<St
     );
     push_unique_action(&mut actions, "deepcli history --limit 20".to_string());
     push_unique_action(&mut actions, "deepcli help resume".to_string());
+    actions
+}
+
+fn resume_candidate_hidden_recovery_actions(candidates: &[ResumeCandidateEntry]) -> Vec<String> {
+    let counts = resume_candidate_reason_counts(candidates);
+    let mut actions = Vec::new();
+    if counts.eligible == 0 && counts.hidden_empty > 0 {
+        actions.push("deepcli session prune-empty --dry-run --json".to_string());
+    }
+    if counts.eligible == 0 && (counts.hidden_tool_only > 0 || counts.hidden_non_resumable > 0) {
+        actions.push("deepcli session diagnose --limit 5 --json".to_string());
+    }
     actions
 }
 
@@ -21180,6 +21182,7 @@ pub(crate) fn handle_fork(
     if options.missing_current {
         return fork_source_error(
             workspace,
+            &store,
             &options,
             "no_active_session",
             "no active session is available; omit `--current` to fork the latest resumable workspace conversation, pass a session id, or inspect candidates with `deepcli resume candidates --json` and `deepcli session list --all --limit 20 --json`",
@@ -21191,6 +21194,7 @@ pub(crate) fn handle_fork(
             Err(error) => {
                 return fork_source_error(
                     workspace,
+                    &store,
                     &options,
                     "no_resumable_context",
                     &error.to_string(),
@@ -21611,11 +21615,12 @@ fn fork_preview_next_actions(
 
 fn fork_source_error(
     workspace: &Path,
+    store: &SessionStore,
     options: &ForkOptions,
     code: &str,
     message: &str,
 ) -> Result<String> {
-    let next_actions = fork_error_next_actions(code);
+    let next_actions = fork_error_next_actions(workspace, store, code);
     let report = format_fork_error_report(message, &next_actions);
     if !options.json_output {
         bail!("{}", report);
@@ -21627,17 +21632,28 @@ fn fork_source_error(
     Err(CommandExit::new(output, 1).into())
 }
 
-fn fork_error_next_actions(code: &str) -> Vec<String> {
+fn fork_error_next_actions(workspace: &Path, store: &SessionStore, code: &str) -> Vec<String> {
     let mut actions = Vec::new();
     if code == "no_active_session" {
         actions.push("deepcli fork --dry-run --json".to_string());
     }
-    actions.extend([
-        "deepcli resume candidates --json".to_string(),
+    if code == "no_resumable_context" {
+        if let Ok(candidates) = collect_resume_candidates(store, workspace) {
+            for action in resume_candidate_hidden_recovery_actions(&candidates) {
+                push_unique_action(&mut actions, action);
+            }
+        }
+    }
+    push_unique_action(&mut actions, "deepcli resume candidates --json".to_string());
+    push_unique_action(
+        &mut actions,
         "deepcli session list --all --limit 20 --json".to_string(),
+    );
+    push_unique_action(
+        &mut actions,
         "deepcli sessions --all --limit 20".to_string(),
-    ]);
-    dedup_preserve_order(actions)
+    );
+    actions
 }
 
 fn format_fork_error_report(message: &str, next_actions: &[String]) -> String {
@@ -34170,6 +34186,23 @@ mod tests {
                 Some("model".to_string()),
             )
             .unwrap();
+        let tool_only = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        tool_only
+            .append_tool_call(&ToolCallRecord {
+                tool: "git_status".to_string(),
+                input: json!({}),
+                output: json!({"clean": true}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
 
         let error = handle_fork(
             dir.path(),
@@ -34187,7 +34220,22 @@ mod tests {
         assert_eq!(value["error"]["code"], "no_resumable_context");
         assert_eq!(value["terminal"]["wouldOpen"], true);
         assert!(value["report"].as_str().unwrap().contains("fork error"));
-        assert_eq!(value["nextActions"][0], "deepcli resume candidates --json");
+        assert_eq!(
+            value["nextActions"][0],
+            "deepcli session prune-empty --dry-run --json"
+        );
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| {
+                action.as_str() == Some("deepcli session diagnose --limit 5 --json")
+            }));
+        assert!(value["nextActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action.as_str() == Some("deepcli resume candidates --json")));
         assert!(value["nextActions"]
             .as_array()
             .unwrap()
@@ -34199,6 +34247,8 @@ mod tests {
         assert_executable_deepcli_actions(&next_actions);
         assert_checklist_matches_executable_actions(&value, &next_actions);
         let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Preview empty session cleanup".to_string()));
+        assert!(checklist_labels.contains(&"Inspect session diagnostics".to_string()));
         assert!(checklist_labels.contains(&"Inspect resume candidates".to_string()));
         assert!(checklist_labels.contains(&"List saved sessions".to_string()));
     }

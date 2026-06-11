@@ -922,6 +922,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：没有 eligible 候选时，若存在 empty 候选，`nextActions[0]` 现在是 `deepcli session prune-empty --dry-run --json`；若存在 tool-only 或 non-resumable 候选，会追加 `deepcli session diagnose --limit 5 --json`；后续仍保留结构化 session list、history 和 resume help，`checklist[]` 与动作同步。
    - 目的：恢复页和 fork 失败页能直接把“没有可恢复历史”转化为安全清理和诊断按钮，减少用户误以为历史丢失的阻力。
 
+156. Fork No-Source Recovery Actions
+   - 产品缺口：上一轮让 `resume candidates --json` 能直接给出空会话清理和诊断动作，但 `fork --dry-run --json` 在没有可分支源会话时仍只推荐候选页和 session list，用户从“无法打开同样上下文的新终端”到“清理/诊断原因”还要多跳一次。
+   - 结果：`no_resumable_context` 的 fork 错误路径现在读取同一套 resume candidates 隐藏原因，先输出 `deepcli session prune-empty --dry-run --json` 和/或 `deepcli session diagnose --limit 5 --json`，再保留 `deepcli resume candidates --json`、结构化 session list 和 `deepcli sessions --all --limit 20`；`--current` 无 active session 的误用路径仍保持 `deepcli fork --dry-run --json` 为首项。
+   - 目的：fork 失败页可以直接解释和修复“没有可分支上下文”的本地原因，外部 UI 不必先跳到候选页再生成同样的清理/诊断按钮。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
