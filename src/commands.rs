@@ -756,12 +756,14 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/opportunities",
-            listing: "/opportunities [--json] [--output path]",
+            listing: "/opportunities [--json] [--priority p] [--effort e] [--output path]",
             summary: "List current non-blocking product opportunities and their executable action checklist.",
             usage: &[
                 "/opportunities",
                 "/opportunities --json",
                 "/opportunities --priority high --json",
+                "/opportunities --effort low --json",
+                "/opportunities --priority high --effort low --json",
                 "/opportunities --output <workspace-relative-path>",
                 "/opportunity --json",
                 "deepcli opportunities --json",
@@ -770,9 +772,10 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/opportunities",
                 "/opportunities --json --output .deepcli/exports/opportunities.json",
                 "deepcli opportunities --priority high --json",
+                "deepcli opportunities --effort low --json",
                 "deepcli opportunity --json",
             ],
-            notes: &["`/opportunities` is a local read-only product-loop report. It reuses the current `/round` opportunity objects instead of defining a separate source of truth, so UI surfaces can render opportunity cards without opening the full round report. JSON uses the stable `deepcli.opportunities.v1` schema with top-level `filter`, `recommendedOpportunity`, `opportunityPriorityCounts`, `availablePriorityCounts`, `opportunities[]`, executable `nextActions`, and matching `checklist[]`; `--priority high|medium|low|other` narrows the report and action queue to one priority while retaining total counts. When the round is not ready and no non-blocking opportunities are available, next actions fall back to the round remediation queue."],
+            notes: &["`/opportunities` is a local read-only product-loop report. It reuses the current `/round` opportunity objects instead of defining a separate source of truth, so UI surfaces can render opportunity cards without opening the full round report. JSON uses the stable `deepcli.opportunities.v1` schema with top-level `filter`, `recommendedOpportunity`, priority and effort counts, `opportunities[]`, executable `nextActions`, and matching `checklist[]`; `--priority high|medium|low|other` and `--effort high|medium|low|other` narrow the report and action queue while retaining total and available counts. When the round is not ready and no non-blocking opportunities are available, next actions fall back to the round remediation queue."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -2897,6 +2900,7 @@ struct OpportunitiesOptions {
     json_output: bool,
     output_path: Option<String>,
     priority_filter: Option<&'static str>,
+    effort_filter: Option<&'static str>,
 }
 
 pub(crate) fn handle_opportunities(
@@ -2958,6 +2962,20 @@ fn parse_opportunities_options(args: &[String]) -> Result<OpportunitiesOptions> 
                 )?);
                 index += 1;
             }
+            "--effort" => {
+                options.effort_filter = Some(parse_opportunity_effort_filter(required_arg(
+                    args,
+                    index + 1,
+                    "effort",
+                )?)?);
+                index += 2;
+            }
+            value if value.starts_with("--effort=") => {
+                options.effort_filter = Some(parse_opportunity_effort_filter(
+                    value.trim_start_matches("--effort="),
+                )?);
+                index += 1;
+            }
             "--output" | "-o" => {
                 let raw = required_arg(args, index + 1, "output path")?;
                 set_command_output_path(&mut options.output_path, raw)?;
@@ -2988,6 +3006,20 @@ fn parse_opportunity_priority_filter(value: &str) -> Result<&'static str> {
     }
 }
 
+fn parse_opportunity_effort_filter(value: &str) -> Result<&'static str> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "high" => Ok("high"),
+        "medium" => Ok("medium"),
+        "low" => Ok("low"),
+        "other" => Ok("other"),
+        _ => {
+            bail!(
+                "unsupported /opportunities effort `{value}`; expected high, medium, low, or other"
+            )
+        }
+    }
+}
+
 fn filtered_opportunities(
     opportunities: &[ScorecardOpportunity],
     options: &OpportunitiesOptions,
@@ -2998,6 +3030,9 @@ fn filtered_opportunities(
             options
                 .priority_filter
                 .is_none_or(|priority| opportunity.priority == priority)
+                && options
+                    .effort_filter
+                    .is_none_or(|effort| opportunity.effort == effort)
         })
         .cloned()
         .collect()
@@ -3032,6 +3067,11 @@ fn format_opportunities_text(
     ];
     if let Some(priority) = options.priority_filter {
         lines.push(format!("filter: priority={priority}"));
+    }
+    if let Some(effort) = options.effort_filter {
+        lines.push(format!("filter: effort={effort}"));
+    }
+    if options.priority_filter.is_some() || options.effort_filter.is_some() {
         lines.push(format!(
             "total opportunities: {}",
             round.opportunities.len()
@@ -3097,7 +3137,9 @@ fn format_opportunities_json(
         "filteredOutOpportunityCount": round.opportunities.len().saturating_sub(opportunities.len()),
         "recommendedOpportunity": scorecard_recommended_opportunity_json(opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(opportunities),
+        "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(opportunities),
         "availablePriorityCounts": scorecard_opportunity_priority_counts_json(&round.opportunities),
+        "availableEffortCounts": scorecard_opportunity_effort_counts_json(&round.opportunities),
         "opportunities": scorecard_opportunities_json(opportunities),
         "nextActions": next_actions,
         "checklist": scorecard_action_checklist(next_actions),
@@ -3108,6 +3150,7 @@ fn format_opportunities_json(
 fn opportunity_filter_json(options: &OpportunitiesOptions) -> Value {
     json!({
         "priority": options.priority_filter,
+        "effort": options.effort_filter,
     })
 }
 
@@ -3809,17 +3852,32 @@ fn scorecard_opportunity_priority_counts_json(opportunities: &[ScorecardOpportun
     })
 }
 
+fn scorecard_opportunity_effort_counts_json(opportunities: &[ScorecardOpportunity]) -> Value {
+    let (high, medium, low, other) = scorecard_opportunity_effort_counts(opportunities);
+    json!({
+        "high": high,
+        "medium": medium,
+        "low": low,
+        "other": other,
+    })
+}
+
 fn scorecard_opportunity_summary_text(opportunities: &[ScorecardOpportunity]) -> Vec<String> {
     let Some(recommended) = opportunities.first() else {
         return Vec::new();
     };
     let (high, medium, low, other) = scorecard_opportunity_priority_counts(opportunities);
+    let (effort_high, effort_medium, effort_low, effort_other) =
+        scorecard_opportunity_effort_counts(opportunities);
     vec![
         format!(
             "recommended opportunity: {} ({}, {})",
             recommended.id, recommended.priority, recommended.effort
         ),
         format!("priority counts: high={high} medium={medium} low={low} other={other}"),
+        format!(
+            "effort counts: high={effort_high} medium={effort_medium} low={effort_low} other={effort_other}"
+        ),
     ]
 }
 
@@ -3832,6 +3890,24 @@ fn scorecard_opportunity_priority_counts(
     let mut other = 0usize;
     for opportunity in opportunities {
         match opportunity.priority {
+            "high" => high += 1,
+            "medium" => medium += 1,
+            "low" => low += 1,
+            _ => other += 1,
+        }
+    }
+    (high, medium, low, other)
+}
+
+fn scorecard_opportunity_effort_counts(
+    opportunities: &[ScorecardOpportunity],
+) -> (usize, usize, usize, usize) {
+    let mut high = 0usize;
+    let mut medium = 0usize;
+    let mut low = 0usize;
+    let mut other = 0usize;
+    for opportunity in opportunities {
+        match opportunity.effort {
             "high" => high += 1,
             "medium" => medium += 1,
             "low" => low += 1,
@@ -36359,6 +36435,60 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("filter: priority=medium"));
+    }
+
+    #[test]
+    fn opportunities_json_filters_product_opportunities_by_effort() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_opportunities(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--effort".into(), "low".into(), "--json".into()],
+        )
+        .unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.opportunities.v1");
+        assert_eq!(value["filter"]["priority"], Value::Null);
+        assert_eq!(value["filter"]["effort"], "low");
+        assert_eq!(value["opportunityCount"], 1);
+        assert_eq!(value["totalOpportunityCount"], 2);
+        assert_eq!(value["filteredOutOpportunityCount"], 1);
+        assert_eq!(value["availableEffortCounts"]["medium"], 1);
+        assert_eq!(value["availableEffortCounts"]["low"], 1);
+        assert_eq!(value["opportunityEffortCounts"]["low"], 1);
+        assert_eq!(
+            value["recommendedOpportunity"]["id"],
+            "product_loop_experience"
+        );
+        let opportunities = value["opportunities"].as_array().unwrap();
+        assert_eq!(opportunities.len(), 1);
+        assert_eq!(opportunities[0]["effort"], "low");
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_eq!(
+            next_actions,
+            vec![
+                "deepcli round --json".to_string(),
+                "deepcli recipes sota --json".to_string()
+            ]
+        );
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+
+        let text = handle_opportunities(
+            dir.path(),
+            &config,
+            &registry,
+            vec!["--effort".into(), "low".into()],
+        )
+        .unwrap();
+        assert!(text.contains("filter: effort=low"));
+        assert!(text.contains("effort counts: high=0 medium=0 low=1 other=0"));
     }
 
     #[test]

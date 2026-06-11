@@ -154,6 +154,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 - `deepcli recipes sota --json`
 - `deepcli opportunities --json`
 - `deepcli opportunities --priority high --json`
+- `deepcli opportunities --effort low --json`
 - `deepcli recipes release --json`
 - `deepcli goal "完整实现当前项目文档中的全部需求" --json`
 - `deepcli goal status --json`
@@ -209,7 +210,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `recipes sota --json` 顶层还会输出非阻塞 `recommendedOpportunity`、`opportunityPriorityCounts` 和 `opportunities[]`，复用当前 `round` 的机会对象，供 TUI、外部产品循环页或脚本在同一个入口展示机会说明、影响、优先级、成本、状态和动作清单；文本模式会在机会列表前展示推荐机会与优先级计数。
 
-`opportunities --json` 是机会对象的一等只读入口，输出稳定 `deepcli.opportunities.v1`，复用当前 `round` 的 `opportunities[]`，并给出顶层 `filter`、`recommendedOpportunity`、`opportunityPriorityCounts`、`availablePriorityCounts`、`nextActions` 和 `checklist[]`；`--priority high|medium|low|other` 会把机会列表、推荐机会和动作队列收敛到指定优先级，同时保留总机会数、过滤掉的数量和全量优先级计数；文本模式同样展示 `recommended opportunity` 和 `priority counts` 摘要；每个机会都包含 `impact`、`priority` 和 `effort`，供 TUI、外部 UI 或脚本直接展示收益、优先级与执行成本；ready 的 `scorecard`、`round` 和 `recipes sota` 顶层动作会包含 `deepcli opportunities --json`，供 TUI、外部 UI 或脚本直接打开机会页；benchmark evidence ready 但 freshness 为 aging 时，机会页会优先展示刷新 benchmark evidence 的高优先级低成本机会；baseline 机会的首个动作是 `deepcli benchmark baselines --json`，让用户或外部 UI 先看到 empty/needs_default/ready inventory，再执行 baseline 写入或 compare；当 round 尚未 ready 且没有非阻塞机会时，动作会回退到 round 修复队列。
+`opportunities --json` 是机会对象的一等只读入口，输出稳定 `deepcli.opportunities.v1`，复用当前 `round` 的 `opportunities[]`，并给出顶层 `filter`、`recommendedOpportunity`、`opportunityPriorityCounts`、`opportunityEffortCounts`、`availablePriorityCounts`、`availableEffortCounts`、`nextActions` 和 `checklist[]`；`--priority high|medium|low|other` 和 `--effort high|medium|low|other` 会把机会列表、推荐机会和动作队列收敛到指定优先级或执行成本，同时保留总机会数、过滤掉的数量和全量计数；文本模式同样展示 `recommended opportunity`、`priority counts` 和 `effort counts` 摘要；每个机会都包含 `impact`、`priority` 和 `effort`，供 TUI、外部 UI 或脚本直接展示收益、优先级与执行成本；ready 的 `scorecard`、`round` 和 `recipes sota` 顶层动作会包含 `deepcli opportunities --json`，供 TUI、外部 UI 或脚本直接打开机会页；benchmark evidence ready 但 freshness 为 aging 时，机会页会优先展示刷新 benchmark evidence 的高优先级低成本机会；baseline 机会的首个动作是 `deepcli benchmark baselines --json`，让用户或外部 UI 先看到 empty/needs_default/ready inventory，再执行 baseline 写入或 compare；当 round 尚未 ready 且没有非阻塞机会时，动作会回退到 round 修复队列。
 
 当 `deepcli benchmark status --json` 已经 ready 时，顶层 `nextActions` 会在 `deepcli recipes sota --json` 后直接给出 `deepcli benchmark baselines --json`，让用户或外部 UI 先打开 baseline inventory，再进入 preset 探索、重新执行或 gate。
 

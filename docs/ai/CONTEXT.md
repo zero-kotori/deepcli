@@ -942,6 +942,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：ok scorecard 顶层 baseline 队列也复用 `opportunity_baseline_next_actions`，在 benchmark status 后先输出 `deepcli benchmark baselines --json`，再输出 current capture、competitor template 或 compare；`scorecard.checklist[]` 与同一队列对齐。
    - 目的：评分页、产品循环页和机会页都先展示 baseline inventory 状态，再进入写入或对比动作，减少入口差异和误操作。
 
+160. Opportunity Effort Filter
+   - 产品缺口：机会对象已经有 `effort` 字段，但 `/opportunities` 只能按 priority 过滤；用户或外部 UI 想先处理低成本机会时仍要自己扫描数组、重建推荐机会和动作队列。
+   - 结果：`/opportunities` 和 `deepcli opportunities` 增加 `--effort high|medium|low|other`，可与 `--priority` 组合取交集；JSON 增加 `opportunityEffortCounts` 和 `availableEffortCounts`，文本摘要增加 `effort counts`，过滤会同步影响 `opportunities[]`、`recommendedOpportunity`、当前计数、`nextActions` 和 `checklist[]`。
+   - 目的：机会页可以直接聚焦低成本或指定成本的动作队列，TUI/外部 UI 能用同一入口实现成本 tab 或快捷筛选，不需要复制 deepcli 的机会过滤逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
