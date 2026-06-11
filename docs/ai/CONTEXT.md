@@ -947,6 +947,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`/opportunities` 和 `deepcli opportunities` 增加 `--effort high|medium|low|other`，可与 `--priority` 组合取交集；JSON 增加 `opportunityEffortCounts` 和 `availableEffortCounts`，文本摘要增加 `effort counts`，过滤会同步影响 `opportunities[]`、`recommendedOpportunity`、当前计数、`nextActions` 和 `checklist[]`。
    - 目的：机会页可以直接聚焦低成本或指定成本的动作队列，TUI/外部 UI 能用同一入口实现成本 tab 或快捷筛选，不需要复制 deepcli 的机会过滤逻辑。
 
+161. SOTA Recipe Effort Counts
+   - 产品缺口：`opportunities --json` 已经能输出 `opportunityEffortCounts`，但更常用的 `recipes sota --json` 入口只给 `opportunityPriorityCounts`，外部产品循环页若想展示成本分布仍要扫描 `opportunities[]` 或再次调用机会页。
+   - 结果：`deepcli.recipes.v1` 在 SOTA topic 下增加顶层 `opportunityEffortCounts`，复用同一套 high、medium、low、other 计数；文本模式继续通过共享机会摘要展示 `effort counts`。
+   - 目的：SOTA recipe 成为完整的产品循环入口，UI 和脚本可以直接展示主推荐、优先级分布和成本分布，不必复制机会统计逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

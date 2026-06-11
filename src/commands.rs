@@ -2628,6 +2628,7 @@ fn format_recipes_json(
         "nextActions": next_actions,
         "recommendedOpportunity": scorecard_recommended_opportunity_json(opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(opportunities),
+        "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(opportunities),
         "opportunities": scorecard_opportunities_json(opportunities),
         "report": report,
     }))?)
@@ -36320,6 +36321,8 @@ mod tests {
 
         assert_eq!(value["topic"], "sota");
         let opportunities = value["opportunities"].as_array().unwrap();
+        assert_eq!(value["opportunityEffortCounts"]["medium"], 1);
+        assert_eq!(value["opportunityEffortCounts"]["low"], 1);
         let baseline_opportunity = opportunities
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
