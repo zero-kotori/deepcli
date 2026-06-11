@@ -197,6 +197,8 @@ deepcli benchmark clean --dry-run --json
 
 当 `deepcli benchmark baselines --json` 只发现 ready 的 `.deepcli/baselines/current-main.json`、但默认 `.deepcli/baselines/competitor.json` 缺失时，顶层状态会是 `needs_default`，首个动作会先生成 competitor baseline template，再保留 current-main compare 作为辅助检查。
 
+`deepcli benchmark baselines --json` 的顶层 `summary` 会结构化展示 inventory 状态、baseline 数量、ready/needs_values/invalid 计数、默认 competitor baseline 状态、默认 baseline 是否可直接 compare、可 compare baseline 数量，以及从 checklist 派生的主推荐动作和标签；外部 baseline 页面不需要解析 `report` 或自行推导主 CTA。
+
 当 benchmark evidence 仍为 ready 但 `freshness.refreshRecommended=true` 时，`scorecard --json`、`round --json` 和 `recipes sota --json` 的顶层 `nextActions[0]` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，让用户先刷新 aging/stale 证据，再继续 preflight、gate 或 baseline 对比。
 
 当 `round --json` 已 ready 且需要推进 baseline 工作流时，顶层 `nextActions` 会先给出只读 `deepcli benchmark baselines --json`，再给出 `baseline-template` 或 `compare` 动作，让外部 UI 和终端用户先看到 baseline inventory 状态，再决定是否写入本地 baseline artifact。

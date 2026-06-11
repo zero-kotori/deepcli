@@ -9297,17 +9297,38 @@ fn format_benchmark_baselines_json(
     workspace: &Path,
     baselines: &[BenchmarkBaselineInventoryEntry],
 ) -> Result<String> {
+    let status = benchmark_baselines_status(baselines);
+    let baseline_count = baselines.len();
+    let ready_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "ready")
+        .count();
+    let needs_values_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "needs_values")
+        .count();
+    let invalid_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "invalid")
+        .count();
+    let default_baseline = benchmark_default_baseline_json(baselines);
     let next_actions = benchmark_baselines_next_actions(workspace, baselines);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.benchmark.baselines.v1",
-        "status": benchmark_baselines_status(baselines),
+        "status": status,
         "workspace": workspace.display().to_string(),
-        "baselineCount": baselines.len(),
-        "readyCount": baselines.iter().filter(|baseline| baseline.status == "ready").count(),
-        "needsValuesCount": baselines.iter().filter(|baseline| baseline.status == "needs_values").count(),
-        "invalidCount": baselines.iter().filter(|baseline| baseline.status == "invalid").count(),
-        "defaultBaseline": benchmark_default_baseline_json(baselines),
+        "summary": benchmark_baselines_summary_json(
+            status,
+            baselines,
+            &default_baseline,
+            &checklist,
+        ),
+        "baselineCount": baseline_count,
+        "readyCount": ready_count,
+        "needsValuesCount": needs_values_count,
+        "invalidCount": invalid_count,
+        "defaultBaseline": default_baseline,
         "baselines": baselines
             .iter()
             .map(benchmark_baseline_inventory_entry_json)
@@ -9316,6 +9337,65 @@ fn format_benchmark_baselines_json(
         "checklist": checklist,
         "report": format_benchmark_baselines_text(workspace, baselines),
     }))?)
+}
+
+fn benchmark_baselines_summary_json(
+    status: &str,
+    baselines: &[BenchmarkBaselineInventoryEntry],
+    default_baseline: &Value,
+    checklist: &[Value],
+) -> Value {
+    let baseline_count = baselines.len();
+    let ready_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "ready")
+        .count();
+    let needs_values_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "needs_values")
+        .count();
+    let invalid_count = baselines
+        .iter()
+        .filter(|baseline| baseline.status == "invalid")
+        .count();
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": status,
+        "baselineCount": baseline_count,
+        "readyCount": ready_count,
+        "needsValuesCount": needs_values_count,
+        "invalidCount": invalid_count,
+        "compareReady": default_baseline
+            .get("readyToCompare")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "compareReadyCount": baselines
+            .iter()
+            .filter(|baseline| baseline.ready_to_compare)
+            .count(),
+        "defaultBaselineStatus": default_baseline
+            .get("status")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "defaultBaselinePath": default_baseline
+            .get("path")
+            .cloned()
+            .unwrap_or(Value::Null),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn benchmark_baselines_status(baselines: &[BenchmarkBaselineInventoryEntry]) -> &'static str {
@@ -39583,6 +39663,18 @@ mod tests {
         assert_eq!(value["status"], "empty");
         assert_eq!(value["baselineCount"], 0);
         assert_eq!(value["defaultBaseline"]["present"], false);
+        assert_eq!(value["summary"]["status"], "empty");
+        assert_eq!(value["summary"]["baselineCount"], 0);
+        assert_eq!(value["summary"]["compareReady"], false);
+        assert_eq!(value["summary"]["defaultBaselineStatus"], "missing");
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["nextActions"][0]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         let next_actions = json_string_array(&value["nextActions"]);
         assert!(next_actions.iter().any(|action| {
             action == "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json"

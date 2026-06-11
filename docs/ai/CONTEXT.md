@@ -972,6 +972,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：当 `benchmark_freshness_refresh_action` 存在时，`benchmark_evidence` gate 的 `nextAction` 改为 `deepcli round --json --run-benchmark --fail-on-command`，`checklist[]` 同步显示 `Refresh benchmark evidence`；freshness 不需要刷新时仍保留 summary 动作。
    - 目的：round 全局动作、机会对象和 gate-level 按钮在 aging/stale benchmark evidence 上保持一致，用户从任一视图都能直接刷新证据。
 
+166. Baseline Inventory Summary
+   - 产品缺口：`deepcli benchmark baselines --json` 是 SOTA baseline 工作流第一站，但外部 UI 若要展示默认 competitor baseline 是否可 compare、主推荐动作和按钮标签，仍要扫描多个字段或解析 `report`。
+   - 结果：`deepcli.benchmark.baselines.v1` 增加顶层 `summary`，包含 status、baseline/ready/needs_values/invalid 计数、默认 baseline path/status、默认 compare readiness、可 compare baseline 数量，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：baseline inventory 可以直接渲染页头、状态徽标和主 CTA，不再复制 deepcli 的 action/checklist 推导逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
