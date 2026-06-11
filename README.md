@@ -205,6 +205,8 @@ deepcli benchmark clean --dry-run --json
 
 `deepcli benchmark list --json` 的顶层 `summary` 会结构化展示 artifact 总数、最新 artifact 的 path/createdAt/suite/case/preset/status，以及从 checklist 派生的主推荐动作和标签；artifact 列表页不需要扫描 `artifacts[]` 才能展示页头指标、最新证据和主 CTA。
 
+`deepcli benchmark record/run/show latest --json` 的 `deepcli.benchmark.record.v1` artifact 会输出顶层 `summary`，结构化展示 status、artifactPath、createdAt、suite、case、preset、execution mode、是否由 deepcli 执行、commandCount、durationMs，以及从 checklist 派生的主推荐动作和标签；artifact 详情页不需要解析 `execution`、`declaredCommands` 或复制 checklist 逻辑才能展示页头和主 CTA。
+
 当 benchmark evidence 仍为 ready 但 `freshness.refreshRecommended=true` 时，`scorecard --json`、`round --json` 和 `recipes sota --json` 的顶层 `nextActions[0]` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，让用户先刷新 aging/stale 证据，再继续 preflight、gate 或 baseline 对比。
 
 `deepcli benchmark status --json` 和 `round --json` 内嵌的 `benchmarkStatus.summary` 会结构化展示证据状态、artifact/meaningful 计数、freshness 状态与年龄、required preset 覆盖、gap 数量，以及从 checklist 派生的主推荐动作和标签；benchmark evidence 页头和 round gate 详情不需要解析 `report` 或拼接多个字段才能展示刷新 CTA。

@@ -1007,6 +1007,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.list.v1` 增加顶层 `summary`，包含 status、artifactCount、latestArtifactPath、latestCreatedAt、latestSuite、latestCase、latestPreset、latestStatus，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：artifact 列表页、TUI benchmark 面板和脚本可以直接渲染最新证据、总量和主 CTA，不再复制 list 聚合逻辑。
 
+173. Benchmark Artifact Detail Summary
+   - 产品缺口：`deepcli benchmark show latest --json` 是 artifact 详情页入口，但页头若要展示状态、suite/case/preset、执行模式、命令数、耗时和主推荐按钮，仍需要解析 `execution`、`declaredCommands` 或复制 checklist 推导逻辑。
+   - 结果：`deepcli.benchmark.record.v1` 增加顶层 `summary`，包含 status、artifactPath、createdAt、suite、case、preset、mode、ranByDeepcli、commandCount、durationMs，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`；record/run 写入新 artifact 时生成 summary，show 读取旧 artifact 时动态补齐 summary 和 checklist。
+   - 目的：artifact 详情页、TUI benchmark 面板和脚本可以直接渲染详情页头和主 CTA，不再复制 artifact 执行摘要聚合逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

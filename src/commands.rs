@@ -3989,8 +3989,63 @@ fn benchmark_value_with_action_checklist(mut value: Value) -> Value {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    value["checklist"] = Value::Array(benchmark_action_checklist(&actions));
+    let checklist = benchmark_action_checklist(&actions);
+    let summary = benchmark_artifact_detail_summary_json(&value, &checklist);
+    value["checklist"] = Value::Array(checklist);
+    value["summary"] = summary;
     value
+}
+
+fn benchmark_artifact_detail_summary_json(value: &Value, checklist: &[Value]) -> Value {
+    let execution = value.get("execution");
+    let command_count = execution
+        .and_then(|execution| execution.get("commandCount"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            execution
+                .and_then(|execution| execution.get("commands"))
+                .and_then(Value::as_array)
+                .map(|commands| commands.len() as u64)
+        })
+        .or_else(|| {
+            value
+                .get("declaredCommands")
+                .and_then(Value::as_array)
+                .map(|commands| commands.len() as u64)
+        })
+        .unwrap_or(0);
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({
+        "status": benchmark_artifact_status(value),
+        "artifactPath": value.get("artifactPath").cloned().unwrap_or(Value::Null),
+        "createdAt": value.get("createdAt").cloned().unwrap_or(Value::Null),
+        "suite": value.get("suite").cloned().unwrap_or(Value::Null),
+        "case": value.get("case").cloned().unwrap_or(Value::Null),
+        "preset": value.get("preset").cloned().unwrap_or(Value::Null),
+        "mode": execution
+            .and_then(|execution| execution.get("mode"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "ranByDeepcli": execution
+            .and_then(|execution| execution.get("ranByDeepcli"))
+            .cloned()
+            .unwrap_or(Value::Null),
+        "commandCount": command_count,
+        "durationMs": benchmark_artifact_duration_ms(value)
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn benchmark_checklist_label(command: &str) -> &'static str {
@@ -6324,14 +6379,13 @@ fn build_benchmark_record_json(
     relative_path: &str,
 ) -> Value {
     let next_actions = benchmark_artifact_next_actions();
-    let checklist = benchmark_action_checklist(&next_actions);
     let scorecard = if options.include_scorecard {
         let report = build_scorecard_report(workspace, config, registry);
         scorecard_summary_json(&report)
     } else {
         Value::Null
     };
-    json!({
+    benchmark_value_with_action_checklist(json!({
         "schema": BENCHMARK_ARTIFACT_SCHEMA,
         "createdAt": created_at.to_rfc3339(),
         "artifactPath": relative_path,
@@ -6359,8 +6413,7 @@ fn build_benchmark_record_json(
         "gitStatus": benchmark_git_status_json(workspace),
         "scorecard": scorecard,
         "nextActions": next_actions,
-        "checklist": checklist,
-    })
+    }))
 }
 
 #[derive(Debug, Clone)]
@@ -6387,14 +6440,13 @@ fn build_benchmark_run_json(
     relative_path: &str,
 ) -> Value {
     let next_actions = benchmark_artifact_next_actions();
-    let checklist = benchmark_action_checklist(&next_actions);
     let scorecard = if options.include_scorecard {
         let report = build_scorecard_report(workspace, config, registry);
         scorecard_summary_json(&report)
     } else {
         Value::Null
     };
-    json!({
+    benchmark_value_with_action_checklist(json!({
         "schema": BENCHMARK_ARTIFACT_SCHEMA,
         "createdAt": created_at.to_rfc3339(),
         "artifactPath": relative_path,
@@ -6436,8 +6488,7 @@ fn build_benchmark_run_json(
         "gitStatus": benchmark_git_status_json(workspace),
         "scorecard": scorecard,
         "nextActions": next_actions,
-        "checklist": checklist,
-    })
+    }))
 }
 
 fn benchmark_artifact_next_actions() -> Vec<String> {
@@ -39234,6 +39285,23 @@ mod tests {
         let artifact_path = record_value["artifactPath"].as_str().unwrap();
         assert!(artifact_path.starts_with(".deepcli/benchmarks/"));
         assert!(dir.path().join(artifact_path).exists());
+        assert_eq!(record_value["summary"]["status"], "recorded");
+        assert_eq!(record_value["summary"]["suite"], "product");
+        assert_eq!(record_value["summary"]["case"], "scorecard");
+        assert_eq!(record_value["summary"]["preset"], Value::Null);
+        assert_eq!(record_value["summary"]["artifactPath"], artifact_path);
+        assert_eq!(record_value["summary"]["mode"], "record_only");
+        assert_eq!(record_value["summary"]["ranByDeepcli"], false);
+        assert_eq!(record_value["summary"]["commandCount"], 1);
+        assert_eq!(record_value["summary"]["durationMs"], Value::Null);
+        assert_eq!(
+            record_value["summary"]["recommendedAction"],
+            record_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            record_value["summary"]["recommendedActionLabel"],
+            record_value["checklist"][0]["label"]
+        );
 
         let list = handle_benchmark(
             dir.path(),
@@ -39292,6 +39360,16 @@ mod tests {
         .unwrap();
         let show_value: Value = serde_json::from_str(&show).unwrap();
         assert_eq!(show_value["artifactPath"], artifact_path);
+        assert_eq!(show_value["summary"]["status"], "recorded");
+        assert_eq!(show_value["summary"]["artifactPath"], artifact_path);
+        assert_eq!(
+            show_value["summary"]["recommendedAction"],
+            show_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            show_value["summary"]["recommendedActionLabel"],
+            show_value["checklist"][0]["label"]
+        );
         assert_benchmark_checklist_matches_next_actions(&show_value);
 
         let scorecard =
