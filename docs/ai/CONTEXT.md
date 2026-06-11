@@ -912,6 +912,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：scorecard、round、recipes sota 和 opportunities 文本输出在机会列表前复用同一摘要，展示 `recommended opportunity: <id> (<priority>, <effort>)` 和 `priority counts: high=... medium=... low=... other=...`。
    - 目的：不使用 JSON 的终端用户也能直接看到本轮主推荐和机会分布，产品循环入口的人工可读体验与结构化 UI 能力保持一致。
 
+154. Product Opportunity Priority Filter
+   - 产品缺口：机会页已经有 priority、推荐机会和计数，但 `/opportunities` 仍只能返回全量机会；终端用户和外部 UI 若只想处理 high 或 medium 机会，必须自行扫描数组并重新生成动作队列。
+   - 结果：`/opportunities` 和 `deepcli opportunities` 增加 `--priority high|medium|low|other`；过滤会同步影响 `opportunities[]`、`recommendedOpportunity`、当前 `opportunityPriorityCounts`、`nextActions` 和 `checklist[]`，同时 JSON 保留 `totalOpportunityCount`、`filteredOutOpportunityCount` 和全量 `availablePriorityCounts`。
+   - 目的：机会页可以直接聚焦某个优先级的可执行动作，TUI/外部 UI 能用同一入口实现优先级 tab 或筛选按钮，而不需要复制 deepcli 的机会排序与动作展开逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
