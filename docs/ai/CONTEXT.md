@@ -952,6 +952,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.recipes.v1` 在 SOTA topic 下增加顶层 `opportunityEffortCounts`，复用同一套 high、medium、low、other 计数；文本模式继续通过共享机会摘要展示 `effort counts`。
    - 目的：SOTA recipe 成为完整的产品循环入口，UI 和脚本可以直接展示主推荐、优先级分布和成本分布，不必复制机会统计逻辑。
 
+162. Scorecard Opportunity Effort Counts
+   - 产品缺口：SOTA recipe 和 opportunities 入口已经能输出 `opportunityEffortCounts`，但 `scorecard --json` 与 `round --json` 内嵌的 `scorecard` 摘要仍只有 `opportunityPriorityCounts`，评分页和 round 页的 UI 还要扫描机会数组才能展示成本分布。
+   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 顶层都增加 `opportunityEffortCounts`，复用同一套 high、medium、low、other 计数。
+   - 目的：scorecard、round、recipes 和 opportunities 四个产品循环入口都能直接展示主推荐、优先级分布和成本分布，减少外部 UI 的重复统计逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

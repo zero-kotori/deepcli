@@ -4331,6 +4331,7 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
         "checklist": scorecard_action_checklist(&report.next_actions),
         "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
+        "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": report.report,
     }))?)
@@ -5045,6 +5046,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "checklist": scorecard_action_checklist(&report.next_actions),
         "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
+        "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": &report.report,
     }))?)
@@ -6607,6 +6609,7 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
         "gaps": report.gaps,
         "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
+        "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "categories": report.categories.iter().map(|category| json!({
             "id": category.id,
@@ -36713,6 +36716,8 @@ mod tests {
         assert_eq!(value["scoreScale"]["score"], "raw_points");
         assert_eq!(value["scoreScale"]["normalizedScore"], "percent_0_100");
         assert_eq!(value["scoreScale"]["display"], "normalizedScore");
+        assert_eq!(value["opportunityEffortCounts"]["medium"], 1);
+        assert_eq!(value["opportunityEffortCounts"]["low"], 1);
 
         let text = handle_scorecard(dir.path(), &config, &registry, Vec::new()).unwrap();
         assert!(text.contains("raw score: "));
@@ -36722,6 +36727,8 @@ mod tests {
         let summary = scorecard_summary_json(&report);
         assert_eq!(summary["normalizedScore"], summary["percent"]);
         assert_eq!(summary["scoreScale"]["display"], "normalizedScore");
+        assert_eq!(summary["opportunityEffortCounts"]["medium"], 1);
+        assert_eq!(summary["opportunityEffortCounts"]["low"], 1);
 
         let round_report = build_round_report(dir.path(), &config, &registry, 85, None);
         let round_text = format_round_text(
@@ -37377,11 +37384,15 @@ mod tests {
         );
         assert_eq!(value["opportunityPriorityCounts"]["high"], 1);
         assert_eq!(value["opportunityPriorityCounts"]["medium"], 1);
+        assert_eq!(value["opportunityEffortCounts"]["medium"], 1);
+        assert_eq!(value["opportunityEffortCounts"]["low"], 1);
         assert_eq!(
             value["scorecard"]["recommendedOpportunity"]["id"],
             opportunities[0]["id"]
         );
         assert_eq!(value["scorecard"]["opportunityPriorityCounts"]["high"], 1);
+        assert_eq!(value["scorecard"]["opportunityEffortCounts"]["medium"], 1);
+        assert_eq!(value["scorecard"]["opportunityEffortCounts"]["low"], 1);
         let baseline_opportunity = opportunities
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")

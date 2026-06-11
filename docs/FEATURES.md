@@ -212,6 +212,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `opportunities --json` 是机会对象的一等只读入口，输出稳定 `deepcli.opportunities.v1`，复用当前 `round` 的 `opportunities[]`，并给出顶层 `filter`、`recommendedOpportunity`、`opportunityPriorityCounts`、`opportunityEffortCounts`、`availablePriorityCounts`、`availableEffortCounts`、`nextActions` 和 `checklist[]`；`--priority high|medium|low|other` 和 `--effort high|medium|low|other` 会把机会列表、推荐机会和动作队列收敛到指定优先级或执行成本，同时保留总机会数、过滤掉的数量和全量计数；文本模式同样展示 `recommended opportunity`、`priority counts` 和 `effort counts` 摘要；每个机会都包含 `impact`、`priority` 和 `effort`，供 TUI、外部 UI 或脚本直接展示收益、优先级与执行成本；ready 的 `scorecard`、`round` 和 `recipes sota` 顶层动作会包含 `deepcli opportunities --json`，供 TUI、外部 UI 或脚本直接打开机会页；benchmark evidence ready 但 freshness 为 aging 时，机会页会优先展示刷新 benchmark evidence 的高优先级低成本机会；baseline 机会的首个动作是 `deepcli benchmark baselines --json`，让用户或外部 UI 先看到 empty/needs_default/ready inventory，再执行 baseline 写入或 compare；当 round 尚未 ready 且没有非阻塞机会时，动作会回退到 round 修复队列。
 
+`scorecard --json` 顶层、`round --json` 顶层和 `round --json` 内嵌的 `scorecard` 摘要都会输出 `recommendedOpportunity`、`opportunityPriorityCounts`、`opportunityEffortCounts` 和 `opportunities[]`，让评分页、round 页、TUI 或外部 UI 不必扫描机会数组就能展示主推荐、优先级分布和成本分布。
+
 当 `deepcli benchmark status --json` 已经 ready 时，顶层 `nextActions` 会在 `deepcli recipes sota --json` 后直接给出 `deepcli benchmark baselines --json`，让用户或外部 UI 先打开 baseline inventory，再进入 preset 探索、重新执行或 gate。
 
 当 `round --json` 已 ready 且需要推进 baseline 工作流时，顶层 `nextActions` 会先给出只读 `deepcli benchmark baselines --json`，再给出 `baseline-template` 或 `compare` 动作，让产品循环页、外部 UI 和终端用户先看到 baseline inventory 状态，再决定是否写入本地 baseline artifact。
