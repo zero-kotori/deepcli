@@ -2570,6 +2570,7 @@ fn format_recipes_text(
     lines.push("next actions:".to_string());
     lines.extend(next_actions.iter().map(|action| format!("  - {action}")));
     if !opportunities.is_empty() {
+        lines.extend(scorecard_opportunity_summary_text(opportunities));
         lines.push("opportunities:".to_string());
         for opportunity in opportunities {
             lines.push(format!(
@@ -2978,6 +2979,7 @@ fn format_opportunities_text(
                 .to_string(),
         );
     } else {
+        lines.extend(scorecard_opportunity_summary_text(&round.opportunities));
         for opportunity in &round.opportunities {
             lines.push(format!(
                 "- {}: {} ({})",
@@ -3711,6 +3713,32 @@ fn scorecard_recommended_opportunity_json(opportunities: &[ScorecardOpportunity]
 }
 
 fn scorecard_opportunity_priority_counts_json(opportunities: &[ScorecardOpportunity]) -> Value {
+    let (high, medium, low, other) = scorecard_opportunity_priority_counts(opportunities);
+    json!({
+        "high": high,
+        "medium": medium,
+        "low": low,
+        "other": other,
+    })
+}
+
+fn scorecard_opportunity_summary_text(opportunities: &[ScorecardOpportunity]) -> Vec<String> {
+    let Some(recommended) = opportunities.first() else {
+        return Vec::new();
+    };
+    let (high, medium, low, other) = scorecard_opportunity_priority_counts(opportunities);
+    vec![
+        format!(
+            "recommended opportunity: {} ({}, {})",
+            recommended.id, recommended.priority, recommended.effort
+        ),
+        format!("priority counts: high={high} medium={medium} low={low} other={other}"),
+    ]
+}
+
+fn scorecard_opportunity_priority_counts(
+    opportunities: &[ScorecardOpportunity],
+) -> (usize, usize, usize, usize) {
     let mut high = 0usize;
     let mut medium = 0usize;
     let mut low = 0usize;
@@ -3723,12 +3751,7 @@ fn scorecard_opportunity_priority_counts_json(opportunities: &[ScorecardOpportun
             _ => other += 1,
         }
     }
-    json!({
-        "high": high,
-        "medium": medium,
-        "low": low,
-        "other": other,
-    })
+    (high, medium, low, other)
 }
 
 fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
@@ -4074,6 +4097,7 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
         lines.extend(input.gaps.iter().map(|gap| format!("  - {gap}")));
     }
     if !input.opportunities.is_empty() {
+        lines.extend(scorecard_opportunity_summary_text(input.opportunities));
         lines.push("opportunities:".to_string());
         for opportunity in input.opportunities {
             lines.push(format!(
@@ -4791,6 +4815,7 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
         lines.extend(input.gaps.iter().map(|gap| format!("  - {gap}")));
     }
     if !input.opportunities.is_empty() {
+        lines.extend(scorecard_opportunity_summary_text(input.opportunities));
         lines.push("opportunities:".to_string());
         for opportunity in input.opportunities {
             lines.push(format!(
@@ -36058,6 +36083,10 @@ mod tests {
             action == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
         }));
         assert_checklist_matches_executable_actions(&value, &next_actions);
+
+        let text = handle_opportunities(dir.path(), &config, &registry, Vec::new()).unwrap();
+        assert!(text.contains("recommended opportunity: competitor_baseline (high, medium)"));
+        assert!(text.contains("priority counts: high=1 medium=1 low=0 other=0"));
     }
 
     #[test]
@@ -36969,6 +36998,10 @@ mod tests {
         assert_eq!(loop_opportunity["effort"], "low");
         assert_eq!(loop_opportunity["priority"], "medium");
         assert!(value["report"].as_str().unwrap().contains("opportunities:"));
+
+        let text = handle_round(dir.path(), &config, &registry, Vec::new()).unwrap();
+        assert!(text.contains("recommended opportunity: competitor_baseline (high, medium)"));
+        assert!(text.contains("priority counts: high=1 medium=1 low=0 other=0"));
     }
 
     #[test]

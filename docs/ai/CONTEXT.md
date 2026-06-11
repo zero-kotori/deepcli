@@ -907,6 +907,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：scorecard、round、recipes sota 和 opportunities JSON 增加共享的 `recommendedOpportunity` 和 `opportunityPriorityCounts`；推荐机会复用当前有序机会列表第一项，计数固定输出 high、medium、low 和 other。
    - 目的：外部 UI、TUI 面板和脚本可以直接渲染主推荐、优先级摘要和机会列表，不需要复制排序或计数逻辑。
 
+153. Product Opportunity Text Summaries
+   - 产品缺口：上一轮补齐了 JSON 的 `recommendedOpportunity` 和 `opportunityPriorityCounts`，但文本模式仍只展示完整机会列表，终端用户需要自己从多条机会里判断主推荐和优先级分布。
+   - 结果：scorecard、round、recipes sota 和 opportunities 文本输出在机会列表前复用同一摘要，展示 `recommended opportunity: <id> (<priority>, <effort>)` 和 `priority counts: high=... medium=... low=... other=...`。
+   - 目的：不使用 JSON 的终端用户也能直接看到本轮主推荐和机会分布，产品循环入口的人工可读体验与结构化 UI 能力保持一致。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
