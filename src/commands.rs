@@ -2465,6 +2465,7 @@ fn recipes_state(
                 None,
             );
             let mut actions = round.next_actions;
+            actions.retain(|action| action != "deepcli recipes sota --json");
             actions.extend(sota_baseline_next_actions(workspace));
             return RecipesState {
                 next_actions: dedup_preserve_order(actions),
@@ -4757,6 +4758,7 @@ fn build_round_report(
     next_actions.push("deepcli preflight --json".to_string());
     next_actions.push("deepcli gate --json".to_string());
     if status == "ready" {
+        next_actions.push("deepcli recipes sota --json".to_string());
         next_actions.push(SCORECARD_OPPORTUNITIES_ACTION.to_string());
         next_actions.extend(opportunity_baseline_next_actions(
             sota_baseline_next_actions(workspace),
@@ -36296,6 +36298,7 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(checklist, next_actions);
+        assert!(!checklist.contains(&"deepcli recipes sota --json"));
         assert!(checklist.contains(
             &"deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
         ));
@@ -37270,6 +37273,7 @@ mod tests {
             vec![
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli recipes sota --json",
                 "deepcli opportunities --json",
                 "deepcli benchmark baselines --json",
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
@@ -37278,8 +37282,12 @@ mod tests {
         );
         let top_next_actions = json_string_array(&value["nextActions"]);
         assert_checklist_matches_executable_actions(&value, &top_next_actions);
-        assert_eq!(value["checklist"][2]["label"], "Open product opportunities");
-        assert_eq!(value["checklist"][3]["label"], "List benchmark baselines");
+        assert_eq!(
+            value["checklist"][2]["label"],
+            "Open SOTA product loop recipe"
+        );
+        assert_eq!(value["checklist"][3]["label"], "Open product opportunities");
+        assert_eq!(value["checklist"][4]["label"], "List benchmark baselines");
         let benchmark_gate = value["gates"]
             .as_array()
             .unwrap()
@@ -37339,6 +37347,7 @@ mod tests {
             vec![
                 "deepcli preflight --json",
                 "deepcli gate --json",
+                "deepcli recipes sota --json",
                 "deepcli opportunities --json",
                 "deepcli benchmark baselines --json",
             ]

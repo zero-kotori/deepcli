@@ -962,6 +962,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：所有 `deepcli opportunities ...` 动作现在通过共享 checklist 标签显示为 `Open product opportunities`。
    - 目的：产品循环入口的 checklist 按钮更接近用户意图，用户能直接看出这是打开机会页，而不是执行不明泛化命令。
 
+164. Ready Round SOTA Recipe Link
+   - 产品缺口：`round --json` 是主产品循环状态页，但 ready 状态的顶层动作只有 preflight、gate、opportunities 和 baseline workflow；用户或外部 UI 想从 ready round 打开完整 SOTA playbook 时，需要记住 `deepcli recipes sota --json` 或先绕到机会页。
+   - 结果：ready round 顶层 `nextActions` 现在在 preflight/gate 后加入 `deepcli recipes sota --json`，再进入 `deepcli opportunities --json` 和 baseline inventory/template/compare 队列；`checklist[]` 同步显示 `Open SOTA product loop recipe`。`recipes sota --json` 复用 round 队列时会过滤这个自引用，避免 recipe 自己推荐打开自己。
+   - 目的：round 主状态页能直接连接完整产品循环 playbook 和当前机会页，减少 ready 状态下的入口断裂。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

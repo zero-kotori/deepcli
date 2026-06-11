@@ -201,6 +201,8 @@ deepcli benchmark clean --dry-run --json
 
 当 `round --json` 已 ready 且需要推进 baseline 工作流时，顶层 `nextActions` 会先给出只读 `deepcli benchmark baselines --json`，再给出 `baseline-template` 或 `compare` 动作，让外部 UI 和终端用户先看到 baseline inventory 状态，再决定是否写入本地 baseline artifact。
 
+当 `round --json` 已 ready 时，顶层 `nextActions` 会在 `deepcli preflight --json` 和 `deepcli gate --json` 后继续给出 `deepcli recipes sota --json` 与 `deepcli opportunities --json`，让 round 主状态页既能进入完整 SOTA playbook，也能进入当前机会页。
+
 当 `scorecard --json` 没有 gaps 且需要推进 baseline 工作流时，顶层 `nextActions` 同样先给出只读 `deepcli benchmark baselines --json`，再给出 `baseline-template` 或 `compare` 动作，让评分页、外部 UI 和终端用户不必跳到 round 才能先查看 baseline inventory。
 
 `benchmark baseline-template --from-current` 会从最新 required benchmark artifact 预填每个 case 的 `status` 和 `durationMs`；证据完整时输出 `status=ready` 的 baseline，适合把当前版本、旧版本或手工跑完的对照版本捕获成后续 compare 可直接读取的本地基线。未传 `--output` 时只输出 JSON 预览，`nextActions` 会先提示带 `--output` 的持久化命令，不会让用户 compare 一个尚未写入的默认文件。
