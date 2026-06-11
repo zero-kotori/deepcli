@@ -839,7 +839,7 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
 
 139. Ready Round Product Opportunities
    - 产品缺口：当 `scorecard` 和 `round` 都 ready 且没有 gaps 时，JSON 只剩 preflight、gate 和 baseline 维护动作；外部 UI 难以区分“必须修复的缺口”和“下一轮可继续推进的产品机会”，持续产品循环容易停在 100 分报告上。
-   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、effort、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
+   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、priority、effort、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
    - 目的：ready 状态继续给产品设计师和外部 UI 提供下一轮可选方向，同时不把机会误标成 gaps，不改变 gates、status 或现有 nextActions。
 
 140. SOTA Recipe Product Opportunities
@@ -896,6 +896,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：benchmark evidence 已 ready 但 freshness 为 aging 时，`round` 和 `scorecard` 会把刷新命令放进顶层 nextActions，但 `opportunities[]` 没有解释这个非阻塞刷新机会，用户或外部 UI 只能看到命令而看不到收益、成本和原因。
    - 结果：`scorecard_product_opportunities` 现在在 freshness refreshRecommended 时优先输出 `benchmark_freshness` 机会，包含 summary、impact、`effort=low`、刷新命令和 benchmark status 复查动作；scorecard、round、recipes sota 和 opportunities 入口复用同一机会对象。
    - 目的：ready 状态的 aging benchmark evidence 不再只是隐藏在 nextActions 中的刷新命令，而是可展示、可排序、可解释的产品机会，同时保持 ready/gate 语义不变。
+
+151. Product Opportunity Priority Signals
+   - 产品缺口：`opportunities[]` 已经包含 impact 和 effort，但外部 UI 若要判断“先做哪个机会”仍只能依赖数组顺序，无法在卡片、筛选或自动化脚本中展示稳定优先级。
+   - 结果：`ScorecardOpportunity` 增加稳定 `priority` 字段，并在 scorecard、round、recipes sota 和 opportunities JSON/text 中复用；benchmark freshness 与 competitor baseline 机会标记为 `high`，产品循环体验复查标记为 `medium`。
+   - 目的：机会页从“有序按钮列表”进一步变成可解释的产品决策队列，让 UI 能同时展示收益、优先级和成本，而不需要反推数组排序。
 
 ## 下一步建议
 

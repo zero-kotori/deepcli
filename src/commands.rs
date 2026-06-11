@@ -2578,6 +2578,7 @@ fn format_recipes_text(
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    priority: {}", opportunity.priority));
             lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
@@ -2784,6 +2785,7 @@ struct ScorecardOpportunity {
     title: &'static str,
     summary: String,
     impact: &'static str,
+    priority: &'static str,
     effort: &'static str,
     status: &'static str,
     next_actions: Vec<String>,
@@ -2981,6 +2983,7 @@ fn format_opportunities_text(
             ));
             lines.push(format!("  summary: {}", opportunity.summary));
             lines.push(format!("  impact: {}", opportunity.impact));
+            lines.push(format!("  priority: {}", opportunity.priority));
             lines.push(format!("  effort: {}", opportunity.effort));
             lines.push("  next actions:".to_string());
             lines.extend(
@@ -3605,6 +3608,7 @@ fn scorecard_product_opportunities(
                 "Benchmark evidence is ready but {freshness} at age {age}; refresh it before relying on SOTA claims."
             ),
             impact: "keeps ready benchmark evidence fresh enough for SOTA decisions",
+            priority: "high",
             effort: "low",
             status: "available",
             next_actions: vec![
@@ -3626,6 +3630,7 @@ fn scorecard_product_opportunities(
                 "A ready competitor baseline is available; compare current evidence against it."
                     .to_string(),
             impact: "keeps SOTA claims grounded in a local competitor benchmark",
+            priority: "high",
             effort: "low",
             status: "available",
             next_actions: baseline_actions,
@@ -3638,6 +3643,7 @@ fn scorecard_product_opportunities(
                 "Capture a current baseline and prepare a competitor baseline before the next SOTA comparison."
                     .to_string(),
             impact: "turns ready product evidence into comparable benchmark evidence",
+            priority: "high",
             effort: "medium",
             status: "available",
             next_actions: baseline_actions,
@@ -3651,6 +3657,7 @@ fn scorecard_product_opportunities(
         summary: "Review the ready round and SOTA recipe as the next product-design entrypoint."
             .to_string(),
         impact: "keeps the designer-engineer loop discoverable after all gates pass",
+        priority: "medium",
         effort: "low",
         status: "available",
         next_actions: vec![
@@ -3680,6 +3687,7 @@ fn scorecard_opportunities_json(opportunities: &[ScorecardOpportunity]) -> Vec<V
                 "title": opportunity.title,
                 "summary": opportunity.summary,
                 "impact": opportunity.impact,
+                "priority": opportunity.priority,
                 "effort": opportunity.effort,
                 "status": opportunity.status,
                 "nextActions": opportunity.next_actions,
@@ -4040,6 +4048,7 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    priority: {}", opportunity.priority));
             lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
@@ -4754,6 +4763,7 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    priority: {}", opportunity.priority));
             lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
@@ -35949,6 +35959,7 @@ mod tests {
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
             .expect("SOTA recipe should explain the baseline opportunity");
         assert_eq!(baseline_opportunity["status"], "available");
+        assert_eq!(baseline_opportunity["priority"], "high");
         assert!(baseline_opportunity["impact"]
             .as_str()
             .unwrap()
@@ -35981,6 +35992,7 @@ mod tests {
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
             .expect("opportunities should include the competitor baseline workflow");
+        assert_eq!(baseline_opportunity["priority"], "high");
         assert_eq!(baseline_opportunity["effort"], "medium");
         assert_eq!(
             baseline_opportunity["nextActions"][0],
@@ -36894,6 +36906,7 @@ mod tests {
             .find(|opportunity| opportunity["id"] == "product_loop_experience")
             .expect("ready round should recommend exercising the product loop");
         assert_eq!(loop_opportunity["effort"], "low");
+        assert_eq!(loop_opportunity["priority"], "medium");
         assert!(value["report"].as_str().unwrap().contains("opportunities:"));
     }
 
@@ -37911,6 +37924,7 @@ mod tests {
             "Refresh Benchmark Evidence"
         );
         assert_eq!(round_freshness_opportunity["effort"], "low");
+        assert_eq!(round_freshness_opportunity["priority"], "high");
         assert_eq!(
             round_freshness_opportunity["nextActions"][0],
             SCORECARD_BENCHMARK_REMEDIATION_ACTION
