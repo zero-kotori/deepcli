@@ -2480,7 +2480,11 @@ fn recipes_state(
 
 fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
     if workspace.join(DEFAULT_BENCHMARK_BASELINE_PATH).is_file() {
-        vec![DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()]
+        if benchmark_default_baseline_file_ready(workspace) {
+            vec![DEFAULT_BENCHMARK_BASELINE_COMPARE_ACTION.to_string()]
+        } else {
+            vec!["deepcli benchmark baselines --json".to_string()]
+        }
     } else if benchmark_current_baseline_file_ready(workspace) {
         vec![DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()]
     } else if benchmark_current_baseline_ready(workspace) {
@@ -2491,6 +2495,12 @@ fn sota_baseline_next_actions(workspace: &Path) -> Vec<String> {
     } else {
         vec![DEFAULT_BENCHMARK_BASELINE_TEMPLATE_ACTION.to_string()]
     }
+}
+
+fn benchmark_default_baseline_file_ready(workspace: &Path) -> bool {
+    load_benchmark_baseline(workspace, Some(DEFAULT_BENCHMARK_BASELINE_PATH))
+        .map(|baseline| benchmark_baseline_ready_for_required_presets(&baseline))
+        .unwrap_or(false)
 }
 
 fn benchmark_current_baseline_file_ready(workspace: &Path) -> bool {
@@ -32290,6 +32300,46 @@ mod tests {
         }
     }
 
+    fn write_ready_competitor_baseline(workspace: &Path) {
+        let baseline = workspace.join(".deepcli/baselines/competitor.json");
+        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
+        fs::write(
+            baseline,
+            serde_json::to_string_pretty(&json!({
+                "schema": "deepcli.benchmark.baseline.v1",
+                "name": "competitor",
+                "cases": [
+                    {
+                        "suite": "product",
+                        "case": "cargo-test",
+                        "status": "passed",
+                        "durationMs": 140
+                    },
+                    {
+                        "suite": "product",
+                        "case": "preflight-quick",
+                        "status": "passed",
+                        "durationMs": 280
+                    },
+                    {
+                        "suite": "product",
+                        "case": "selftest",
+                        "status": "passed",
+                        "durationMs": 35
+                    },
+                    {
+                        "suite": "product",
+                        "case": "scorecard",
+                        "status": "passed",
+                        "durationMs": 12
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn parses_core_slash_commands() {
         assert_eq!(CommandRouter::parse("hello").unwrap(), None);
@@ -35781,9 +35831,7 @@ mod tests {
     fn recipes_sota_next_actions_compare_when_default_baseline_exists() {
         let dir = tempdir().unwrap();
         write_round_scorecard_ready_fixture(dir.path());
-        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
-        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
-        fs::write(&baseline, "{}\n").unwrap();
+        write_ready_competitor_baseline(dir.path());
         let config = AppConfig::default();
         let registry = ToolRegistry::mvp();
 
@@ -36015,6 +36063,13 @@ mod tests {
         let baseline = dir.path().join(".deepcli/baselines/competitor.json");
         fs::create_dir_all(baseline.parent().unwrap()).unwrap();
         fs::write(&baseline, "{}\n").unwrap();
+
+        assert_eq!(
+            sota_baseline_next_actions(dir.path()),
+            vec!["deepcli benchmark baselines --json"]
+        );
+
+        write_ready_competitor_baseline(dir.path());
 
         assert_eq!(
             sota_baseline_next_actions(dir.path()),
@@ -36318,9 +36373,7 @@ mod tests {
     fn scorecard_ready_next_actions_compare_when_default_baseline_exists() {
         let dir = tempdir().unwrap();
         write_round_scorecard_ready_fixture(dir.path());
-        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
-        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
-        fs::write(&baseline, "{}\n").unwrap();
+        write_ready_competitor_baseline(dir.path());
         let now = Utc::now();
         for preset in MEANINGFUL_BENCHMARK_PRESETS {
             write_benchmark_status_test_artifact(
@@ -36698,6 +36751,67 @@ mod tests {
     }
 
     #[test]
+    fn round_ready_routes_unfilled_default_baseline_to_inventory() {
+        let dir = tempdir().unwrap();
+        write_round_scorecard_ready_fixture(dir.path());
+        write_round_ready_benchmark_history(dir.path());
+        let baselines_dir = dir.path().join(".deepcli/baselines");
+        fs::create_dir_all(&baselines_dir).unwrap();
+        fs::write(
+            baselines_dir.join("competitor.json"),
+            serde_json::to_string_pretty(&json!({
+                "schema": "deepcli.benchmark.baseline.v1",
+                "name": "competitor",
+                "cases": [
+                    {
+                        "suite": "product",
+                        "case": "cargo-test",
+                        "status": null,
+                        "durationMs": null
+                    }
+                ]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let config = AppConfig::default();
+        let registry = ToolRegistry::mvp();
+
+        let output = handle_round(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+        let next_actions = json_string_array(&value["nextActions"]);
+
+        assert_eq!(value["status"], "ready");
+        assert_eq!(
+            next_actions,
+            vec![
+                "deepcli preflight --json",
+                "deepcli gate --json",
+                "deepcli opportunities --json",
+                "deepcli benchmark baselines --json",
+            ]
+        );
+        assert!(!next_actions.iter().any(|action| {
+            action == "deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json"
+        }));
+        let baseline_opportunity = value["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|opportunity| opportunity["id"] == "competitor_baseline")
+            .unwrap();
+        assert_eq!(baseline_opportunity["title"], "Prepare Competitor Baseline");
+        assert_eq!(
+            baseline_opportunity["nextActions"][0],
+            "deepcli benchmark baselines --json"
+        );
+        assert_eq!(
+            baseline_opportunity["checklist"][0]["label"],
+            "List benchmark baselines"
+        );
+    }
+
+    #[test]
     fn round_ready_surfaces_non_blocking_product_opportunities() {
         let dir = tempdir().unwrap();
         write_round_scorecard_ready_fixture(dir.path());
@@ -36752,9 +36866,7 @@ mod tests {
         let dir = tempdir().unwrap();
         write_round_scorecard_ready_fixture(dir.path());
         write_round_ready_benchmark_history(dir.path());
-        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
-        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
-        fs::write(&baseline, "{}\n").unwrap();
+        write_ready_competitor_baseline(dir.path());
         let config = AppConfig::default();
         let registry = ToolRegistry::mvp();
 
@@ -36784,9 +36896,7 @@ mod tests {
         let dir = tempdir().unwrap();
         write_round_scorecard_ready_fixture(dir.path());
         write_round_ready_benchmark_history(dir.path());
-        let baseline = dir.path().join(".deepcli/baselines/competitor.json");
-        fs::create_dir_all(baseline.parent().unwrap()).unwrap();
-        fs::write(&baseline, "{}\n").unwrap();
+        write_ready_competitor_baseline(dir.path());
         let config = AppConfig::default();
         let registry = ToolRegistry::mvp();
 

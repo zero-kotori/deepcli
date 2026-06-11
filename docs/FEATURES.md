@@ -214,6 +214,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 当 `.deepcli/baselines/current-main.json` 已经 ready 但默认 competitor baseline 仍缺失时，scorecard、round、recipes、opportunities 和 benchmark 探索入口会跳过重复的 current capture 动作，直接提示生成 competitor baseline template。`benchmark baselines --json` 同样把该 inventory 状态标为 `needs_default`，首个 action 是生成 `.deepcli/baselines/competitor.json`，非默认 current-main compare 只作为后续辅助动作。
 
+当默认 `.deepcli/baselines/competitor.json` 已存在但仍缺 `status` 或 `durationMs` 时，scorecard、round、recipes、opportunities 和 benchmark 探索入口会先提示 `deepcli benchmark baselines --json`，只有默认 baseline ready 后才直接推荐 compare。
+
 当 scorecard 自身已经 ok 但 benchmark trends 仍需要补历史或处理回归时，scorecard 顶层 `nextActions` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，避免评分入口先把用户带到已知不能推进闭环的只读报告。
 
 ## 诊断、日志与支持包

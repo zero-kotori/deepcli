@@ -545,7 +545,7 @@
 
 107. SOTA Recipe checklist baseline-aware
    - 结果：`deepcli recipes sota --json` 的顶层 `checklist[]` 会按当前 baseline 状态选择步骤。
-   - 行为：默认 `.deepcli/baselines/competitor.json` 缺失且当前 benchmark artifact 可完整捕获时，checklist 展示 “Capture current benchmark baseline” -> `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`，再展示手工 competitor template；默认 baseline 已存在时才展示 baseline compare。静态 `recipes[].commands` 仍保留完整参考命令链。
+   - 行为：默认 `.deepcli/baselines/competitor.json` 缺失且当前 benchmark artifact 可完整捕获时，checklist 展示 “Capture current benchmark baseline” -> `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`，再展示手工 competitor template；默认 baseline ready 时才展示 baseline compare；默认 baseline 存在但缺值或无效时先展示 `deepcli benchmark baselines --json`。静态 `recipes[].commands` 仍保留完整参考命令链。
    - 目的：外部 UI 渲染 SOTA recipe checklist 时不再把用户带到当前必然失败的 compare 步骤，和状态感知 `nextActions` 保持一致。
 
 108. Scorecard 顶层工作流清单
@@ -881,6 +881,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：`deepcli benchmark status --json` 在 benchmark evidence ready 时只给 SOTA recipe、presets、run、gate、summary 和 trends，用户已证明证据 ready 后还要从其它入口绕到 baseline inventory。
    - 结果：ready benchmark status 的顶层 `nextActions` 现在会在 `deepcli recipes sota --json` 后直接给出 `deepcli benchmark baselines --json`，并从同一动作派生 `List benchmark baselines` checklist；missing、weak、incomplete、failing 和 stale 状态仍优先展示证据修复路径。
    - 目的：benchmark status 页从“证据体检”自然推进到“查看对照基线”，让 TUI、外部 benchmark 面板和脚本用户先看只读 inventory，再决定生成 baseline、compare 或重新跑 preset。
+
+148. SOTA Baseline Ready-Gated Compare
+   - 产品缺口：用户按推荐生成 `.deepcli/baselines/competitor.json` 手工模板后，该文件已经存在但仍是 `needs_values`；共享 SOTA baseline 导航会把“文件存在”误判成“可 compare”，让 scorecard、round、recipes、opportunities 和 benchmark 探索入口提前显示 compare。
+   - 结果：`sota_baseline_next_actions` 现在只有在默认 competitor baseline 覆盖 required presets 且每个 case 都有 `status`/`durationMs` 时才返回 compare；默认 baseline 存在但缺值或无效时返回只读 `deepcli benchmark baselines --json`，让 inventory 展示 `needs_values`、人工编辑提示和后续 compare。
+   - 目的：SOTA 横向对比从“模板文件已写入”推进到“baseline 已可比”之前，不再误导用户直接 compare，外部 UI 可以先渲染 inventory 状态和缺值说明。
 
 ## 下一步建议
 
