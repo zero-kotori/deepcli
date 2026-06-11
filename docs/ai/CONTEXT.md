@@ -987,6 +987,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.status.v1` 顶层和 `round --json` 内嵌 `benchmarkStatus` 增加 `summary`，包含 status/ready、artifact/meaningful 计数、freshness 状态与年龄、refresh action、required preset 覆盖计数、gapCount，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：benchmark evidence 页和 round gate 详情可以直接渲染证据页头和主 CTA，不再复制 status 聚合与 checklist 标签逻辑。
 
+169. Benchmark Summary Header
+   - 产品缺口：`deepcli benchmark summary --json` 是 benchmark 历史汇总页，但页头若要展示 artifact/case 数、通过率、失败/记录计数和主推荐按钮，仍需要重新汇总 `cases[]` 或解析 `report`。
+   - 结果：`deepcli.benchmark.summary.v1` 增加顶层 `summary`，包含 status、artifact/case 数、total/executable/passed/failed/timeout/recorded/other 计数、passRatePercent，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：历史汇总页和外部 UI 可以直接渲染核心历史指标和主 CTA，不再复制 summary 聚合逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

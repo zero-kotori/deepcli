@@ -9633,6 +9633,7 @@ fn format_benchmark_summary_json(
         "schema": "deepcli.benchmark.summary.v1",
         "status": "ok",
         "workspace": workspace.display().to_string(),
+        "summary": benchmark_summary_summary_json(artifacts.len(), summaries, &checklist),
         "artifactCount": artifacts.len(),
         "caseCount": summaries.len(),
         "totals": benchmark_summary_totals_json(summaries),
@@ -9659,6 +9660,48 @@ fn benchmark_summary_next_actions(workspace: &Path) -> Vec<String> {
         "deepcli scorecard --json".to_string(),
     ]);
     actions
+}
+
+fn benchmark_summary_summary_json(
+    artifact_count: usize,
+    summaries: &[BenchmarkCaseSummary],
+    checklist: &[Value],
+) -> Value {
+    let total = summaries.iter().map(|case| case.total).sum::<usize>();
+    let executable = summaries.iter().map(|case| case.executable).sum::<usize>();
+    let passed = summaries.iter().map(|case| case.passed).sum::<usize>();
+    let failed = summaries.iter().map(|case| case.failed).sum::<usize>();
+    let timed_out = summaries.iter().map(|case| case.timed_out).sum::<usize>();
+    let recorded = summaries.iter().map(|case| case.recorded).sum::<usize>();
+    let other = summaries.iter().map(|case| case.other).sum::<usize>();
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": "ok",
+        "artifactCount": artifact_count,
+        "caseCount": summaries.len(),
+        "total": total,
+        "executableCount": executable,
+        "passedCount": passed,
+        "failedCount": failed,
+        "timeoutCount": timed_out,
+        "recordedCount": recorded,
+        "otherCount": other,
+        "passRatePercent": benchmark_pass_rate_percent(passed, executable),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn format_benchmark_trends_json(
@@ -39116,6 +39159,22 @@ mod tests {
         assert_eq!(value["schema"], "deepcli.benchmark.summary.v1");
         assert_eq!(value["artifactCount"], 3);
         assert_eq!(value["caseCount"], 2);
+        assert_eq!(value["summary"]["status"], "ok");
+        assert_eq!(value["summary"]["artifactCount"], 3);
+        assert_eq!(value["summary"]["caseCount"], 2);
+        assert_eq!(value["summary"]["executableCount"], 2);
+        assert_eq!(value["summary"]["passedCount"], 1);
+        assert_eq!(value["summary"]["failedCount"], 1);
+        assert_eq!(value["summary"]["recordedCount"], 1);
+        assert_eq!(value["summary"]["passRatePercent"], 50);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
