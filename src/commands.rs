@@ -4160,6 +4160,8 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         "deepcli version --json" => "Inspect version",
         "deepcli scorecard --json" => "Inspect product scorecard",
         "deepcli recipes sota --json" => "Open SOTA product loop recipe",
+        "deepcli opportunities" | "deepcli opportunities --json" => "Open product opportunities",
+        command if command.starts_with("deepcli opportunities ") => "Open product opportunities",
         "deepcli benchmark presets --json" => "List benchmark presets",
         "deepcli benchmark status --json" => "Check benchmark evidence",
         "deepcli benchmark run-suite --json --fail-on-command" => "Run benchmark suite",
@@ -37276,6 +37278,7 @@ mod tests {
         );
         let top_next_actions = json_string_array(&value["nextActions"]);
         assert_checklist_matches_executable_actions(&value, &top_next_actions);
+        assert_eq!(value["checklist"][2]["label"], "Open product opportunities");
         assert_eq!(value["checklist"][3]["label"], "List benchmark baselines");
         let benchmark_gate = value["gates"]
             .as_array()

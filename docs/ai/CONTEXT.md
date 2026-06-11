@@ -957,6 +957,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 顶层都增加 `opportunityEffortCounts`，复用同一套 high、medium、low、other 计数。
    - 目的：scorecard、round、recipes 和 opportunities 四个产品循环入口都能直接展示主推荐、优先级分布和成本分布，减少外部 UI 的重复统计逻辑。
 
+163. Product Opportunities Checklist Label
+   - 产品缺口：ready round 和 SOTA recipe 已经会把 `deepcli opportunities --json` 放进顶层动作队列，但 `local_action_checklist` 没有专用标签，外部 UI 和 TUI 渲染按钮时只能显示泛化的 `Run command`。
+   - 结果：所有 `deepcli opportunities ...` 动作现在通过共享 checklist 标签显示为 `Open product opportunities`。
+   - 目的：产品循环入口的 checklist 按钮更接近用户意图，用户能直接看出这是打开机会页，而不是执行不明泛化命令。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
