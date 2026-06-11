@@ -770,7 +770,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/opportunities --json --output .deepcli/exports/opportunities.json",
                 "deepcli opportunity --json",
             ],
-            notes: &["`/opportunities` is a local read-only product-loop report. It reuses the current `/round` opportunity objects instead of defining a separate source of truth, so UI surfaces can render opportunity cards without opening the full round report. JSON uses the stable `deepcli.opportunities.v1` schema with top-level `opportunities[]`, executable `nextActions`, and matching `checklist[]`; when the round is not ready and no non-blocking opportunities are available, next actions fall back to the round remediation queue."],
+            notes: &["`/opportunities` is a local read-only product-loop report. It reuses the current `/round` opportunity objects instead of defining a separate source of truth, so UI surfaces can render opportunity cards without opening the full round report. JSON uses the stable `deepcli.opportunities.v1` schema with top-level `recommendedOpportunity`, `opportunityPriorityCounts`, `opportunities[]`, executable `nextActions`, and matching `checklist[]`; when the round is not ready and no non-blocking opportunities are available, next actions fall back to the round remediation queue."],
         },
         CommandHelp {
             name: "/benchmark",
@@ -2620,6 +2620,8 @@ fn format_recipes_json(
             "notes": recipe.notes,
         })).collect::<Vec<_>>(),
         "nextActions": next_actions,
+        "recommendedOpportunity": scorecard_recommended_opportunity_json(opportunities),
+        "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(opportunities),
         "opportunities": scorecard_opportunities_json(opportunities),
         "report": report,
     }))?)
@@ -3015,6 +3017,8 @@ fn format_opportunities_json(
             "command": "deepcli round --json",
         },
         "opportunityCount": round.opportunities.len(),
+        "recommendedOpportunity": scorecard_recommended_opportunity_json(&round.opportunities),
+        "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&round.opportunities),
         "opportunities": scorecard_opportunities_json(&round.opportunities),
         "nextActions": next_actions,
         "checklist": scorecard_action_checklist(next_actions),
@@ -3681,20 +3685,50 @@ fn scorecard_category_checklist(category: &ScorecardCategory) -> Vec<Value> {
 fn scorecard_opportunities_json(opportunities: &[ScorecardOpportunity]) -> Vec<Value> {
     opportunities
         .iter()
-        .map(|opportunity| {
-            json!({
-                "id": opportunity.id,
-                "title": opportunity.title,
-                "summary": opportunity.summary,
-                "impact": opportunity.impact,
-                "priority": opportunity.priority,
-                "effort": opportunity.effort,
-                "status": opportunity.status,
-                "nextActions": opportunity.next_actions,
-                "checklist": scorecard_action_checklist(&opportunity.next_actions),
-            })
-        })
+        .map(scorecard_opportunity_json)
         .collect()
+}
+
+fn scorecard_opportunity_json(opportunity: &ScorecardOpportunity) -> Value {
+    json!({
+        "id": opportunity.id,
+        "title": opportunity.title,
+        "summary": opportunity.summary,
+        "impact": opportunity.impact,
+        "priority": opportunity.priority,
+        "effort": opportunity.effort,
+        "status": opportunity.status,
+        "nextActions": opportunity.next_actions,
+        "checklist": scorecard_action_checklist(&opportunity.next_actions),
+    })
+}
+
+fn scorecard_recommended_opportunity_json(opportunities: &[ScorecardOpportunity]) -> Value {
+    opportunities
+        .first()
+        .map(scorecard_opportunity_json)
+        .unwrap_or(Value::Null)
+}
+
+fn scorecard_opportunity_priority_counts_json(opportunities: &[ScorecardOpportunity]) -> Value {
+    let mut high = 0usize;
+    let mut medium = 0usize;
+    let mut low = 0usize;
+    let mut other = 0usize;
+    for opportunity in opportunities {
+        match opportunity.priority {
+            "high" => high += 1,
+            "medium" => medium += 1,
+            "low" => low += 1,
+            _ => other += 1,
+        }
+    }
+    json!({
+        "high": high,
+        "medium": medium,
+        "low": low,
+        "other": other,
+    })
 }
 
 fn scorecard_action_checklist(actions: &[String]) -> Vec<Value> {
@@ -4101,6 +4135,8 @@ fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<S
         "gaps": report.gaps,
         "nextActions": report.next_actions,
         "checklist": scorecard_action_checklist(&report.next_actions),
+        "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
+        "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": report.report,
     }))?)
@@ -4810,6 +4846,8 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "gaps": &report.gaps,
         "nextActions": &report.next_actions,
         "checklist": scorecard_action_checklist(&report.next_actions),
+        "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
+        "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": &report.report,
     }))?)
@@ -6370,6 +6408,8 @@ fn scorecard_summary_json(report: &ScorecardReport) -> Value {
         "normalizedScore": report.percent,
         "scoreScale": scorecard_score_scale_json(),
         "gaps": report.gaps,
+        "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
+        "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "categories": report.categories.iter().map(|category| json!({
             "id": category.id,
@@ -35988,6 +36028,16 @@ mod tests {
         assert_eq!(value["source"]["command"], "deepcli round --json");
         assert!(value["opportunityCount"].as_u64().unwrap() >= 2);
         let opportunities = value["opportunities"].as_array().unwrap();
+        assert_eq!(
+            value["recommendedOpportunity"]["id"],
+            opportunities[0]["id"]
+        );
+        assert_eq!(
+            value["recommendedOpportunity"]["checklist"][0]["command"],
+            opportunities[0]["nextActions"][0]
+        );
+        assert_eq!(value["opportunityPriorityCounts"]["high"], 1);
+        assert_eq!(value["opportunityPriorityCounts"]["medium"], 1);
         let baseline_opportunity = opportunities
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
@@ -36871,6 +36921,17 @@ mod tests {
             !opportunities.is_empty(),
             "ready round should still expose next product opportunities"
         );
+        assert_eq!(
+            value["recommendedOpportunity"]["id"],
+            opportunities[0]["id"]
+        );
+        assert_eq!(value["opportunityPriorityCounts"]["high"], 1);
+        assert_eq!(value["opportunityPriorityCounts"]["medium"], 1);
+        assert_eq!(
+            value["scorecard"]["recommendedOpportunity"]["id"],
+            opportunities[0]["id"]
+        );
+        assert_eq!(value["scorecard"]["opportunityPriorityCounts"]["high"], 1);
         let baseline_opportunity = opportunities
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")

@@ -902,6 +902,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`ScorecardOpportunity` 增加稳定 `priority` 字段，并在 scorecard、round、recipes sota 和 opportunities JSON/text 中复用；benchmark freshness 与 competitor baseline 机会标记为 `high`，产品循环体验复查标记为 `medium`。
    - 目的：机会页从“有序按钮列表”进一步变成可解释的产品决策队列，让 UI 能同时展示收益、优先级和成本，而不需要反推数组排序。
 
+152. Product Opportunity Summary Fields
+   - 产品缺口：机会对象已经有 `priority`，但外部 UI 仍要扫描 `opportunities[]` 才能选出主推荐机会和统计优先级分布，产品循环页头和主 CTA 还缺稳定字段。
+   - 结果：scorecard、round、recipes sota 和 opportunities JSON 增加共享的 `recommendedOpportunity` 和 `opportunityPriorityCounts`；推荐机会复用当前有序机会列表第一项，计数固定输出 high、medium、low 和 other。
+   - 目的：外部 UI、TUI 面板和脚本可以直接渲染主推荐、优先级摘要和机会列表，不需要复制排序或计数逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
