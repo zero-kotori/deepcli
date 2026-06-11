@@ -932,6 +932,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.session.prune_empty.v1` 现在输出从 `nextActions` 派生的 `checklist[]`；dry-run 有候选时首项为 `deepcli session prune-empty --force --json`，列表动作改为 `deepcli session list --all --json`；force 标签显示为 `Delete empty sessions`。
    - 目的：恢复页、fork 失败页和历史清理页可以在同一 JSON 工作流内完成预览、确认删除和复查，不需要手工解析 report 或自行命名动作按钮。
 
+158. Round Baseline Inventory First
+   - 产品缺口：`round --json` ready 后的顶层 baseline 动作会直接推荐 `baseline-template --from-current` 或手工 competitor template，用户或外部 UI 还没看 baseline inventory 就可能写 `.deepcli/baselines/*` 本地 artifact；而 opportunities 和 benchmark status 已经先给只读 `deepcli benchmark baselines --json`。
+   - 结果：ready round 顶层 baseline 队列现在复用 `opportunity_baseline_next_actions`，在 `deepcli opportunities --json` 后先输出 `deepcli benchmark baselines --json`，再输出 current capture、competitor template 或 compare；`round.checklist[]` 与同一队列对齐。
+   - 目的：产品循环页从 ready round 进入 SOTA baseline 工作流时先展示 baseline inventory 状态，减少误写本地 evidence artifact，并和 opportunities/benchmark status 的导航一致。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

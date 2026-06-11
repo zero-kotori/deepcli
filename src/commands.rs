@@ -4674,7 +4674,9 @@ fn build_round_report(
     next_actions.push("deepcli gate --json".to_string());
     if status == "ready" {
         next_actions.push(SCORECARD_OPPORTUNITIES_ACTION.to_string());
-        next_actions.extend(sota_baseline_next_actions(workspace));
+        next_actions.extend(opportunity_baseline_next_actions(
+            sota_baseline_next_actions(workspace),
+        ));
     }
     let next_actions = dedup_preserve_order(next_actions);
     let opportunities = if status == "ready" {
@@ -37111,10 +37113,14 @@ mod tests {
                 "deepcli preflight --json",
                 "deepcli gate --json",
                 "deepcli opportunities --json",
+                "deepcli benchmark baselines --json",
                 "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json",
                 "deepcli benchmark baseline-template --output .deepcli/baselines/competitor.json --json",
             ]
         );
+        let top_next_actions = json_string_array(&value["nextActions"]);
+        assert_checklist_matches_executable_actions(&value, &top_next_actions);
+        assert_eq!(value["checklist"][3]["label"], "List benchmark baselines");
         let benchmark_gate = value["gates"]
             .as_array()
             .unwrap()
