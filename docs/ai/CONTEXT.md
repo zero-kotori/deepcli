@@ -992,6 +992,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.summary.v1` 增加顶层 `summary`，包含 status、artifact/case 数、total/executable/passed/failed/timeout/recorded/other 计数、passRatePercent，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：历史汇总页和外部 UI 可以直接渲染核心历史指标和主 CTA，不再复制 summary 聚合逻辑。
 
+170. Benchmark Presets Summary
+   - 产品缺口：`deepcli benchmark presets --json` 是刷新 benchmark 证据前的 preset picker，但页头和外部 UI 若要展示默认 suite、required evidence preset、optional preset 和主推荐按钮，仍需要扫描 `presets[]` 或硬编码 preset 名称。
+   - 结果：`deepcli.benchmark.presets.v1` 增加顶层 `summary`，包含 status、presetCount、defaultSuitePresetCount、requiredEvidencePresetCount、optionalPresetCount、defaultSuiteAction、defaultSuitePresets、requiredEvidencePresets，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`；每个 preset 条目也标出 `defaultSuite` 与 `requiredEvidence`。
+   - 目的：证据采集页、TUI benchmark 面板和脚本可以直接渲染默认必跑项、可选项和主 CTA，不再复制 preset 分类逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

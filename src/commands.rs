@@ -8382,6 +8382,7 @@ fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "presetCount": BENCHMARK_PRESETS.len(),
+        "summary": benchmark_presets_summary_json(&checklist),
         "presets": BENCHMARK_PRESETS
             .iter()
             .map(benchmark_preset_json)
@@ -8408,6 +8409,38 @@ fn benchmark_presets_next_actions(workspace: &Path) -> Vec<String> {
     actions
 }
 
+fn benchmark_presets_summary_json(checklist: &[Value]) -> Value {
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let optional_preset_count = BENCHMARK_PRESETS
+        .iter()
+        .filter(|preset| !MEANINGFUL_BENCHMARK_PRESETS.contains(&preset.name))
+        .count();
+
+    json!({
+        "status": "ok",
+        "presetCount": BENCHMARK_PRESETS.len(),
+        "defaultSuitePresetCount": DEFAULT_BENCHMARK_RUN_SUITE_PRESETS.len(),
+        "requiredEvidencePresetCount": MEANINGFUL_BENCHMARK_PRESETS.len(),
+        "optionalPresetCount": optional_preset_count,
+        "defaultSuiteAction": "deepcli benchmark run-suite --json --fail-on-command",
+        "defaultSuitePresets": DEFAULT_BENCHMARK_RUN_SUITE_PRESETS,
+        "requiredEvidencePresets": MEANINGFUL_BENCHMARK_PRESETS,
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
+}
+
 fn benchmark_preset_json(preset: &BenchmarkPreset) -> Value {
     json!({
         "name": preset.name,
@@ -8418,6 +8451,8 @@ fn benchmark_preset_json(preset: &BenchmarkPreset) -> Value {
         "case": preset.case_name,
         "command": preset.command,
         "timeoutSeconds": preset.timeout_seconds,
+        "defaultSuite": DEFAULT_BENCHMARK_RUN_SUITE_PRESETS.contains(&preset.name),
+        "requiredEvidence": MEANINGFUL_BENCHMARK_PRESETS.contains(&preset.name),
     })
 }
 
@@ -38014,11 +38049,52 @@ mod tests {
         .unwrap();
         let presets_value: Value = serde_json::from_str(&presets).unwrap();
         assert_eq!(presets_value["schema"], "deepcli.benchmark.presets.v1");
+        assert_eq!(presets_value["summary"]["status"], "ok");
+        assert_eq!(presets_value["summary"]["presetCount"], 5);
+        assert_eq!(presets_value["summary"]["defaultSuitePresetCount"], 4);
+        assert_eq!(presets_value["summary"]["requiredEvidencePresetCount"], 4);
+        assert_eq!(presets_value["summary"]["optionalPresetCount"], 1);
+        assert_eq!(
+            presets_value["summary"]["defaultSuiteAction"],
+            "deepcli benchmark run-suite --json --fail-on-command"
+        );
+        assert_eq!(
+            presets_value["summary"]["recommendedAction"],
+            presets_value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            presets_value["summary"]["recommendedActionLabel"],
+            presets_value["checklist"][0]["label"]
+        );
+        assert_eq!(
+            presets_value["summary"]["defaultSuitePresets"],
+            json!(["cargo-test", "preflight-quick", "selftest", "scorecard"])
+        );
+        assert_eq!(
+            presets_value["summary"]["requiredEvidencePresets"],
+            json!(["cargo-test", "preflight-quick", "selftest", "scorecard"])
+        );
         assert!(presets_value["presets"]
             .as_array()
             .unwrap()
             .iter()
             .any(|preset| preset["name"] == "cargo-test"));
+        let cargo_preset = presets_value["presets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|preset| preset["name"] == "cargo-test")
+            .unwrap();
+        assert_eq!(cargo_preset["defaultSuite"], true);
+        assert_eq!(cargo_preset["requiredEvidence"], true);
+        let smoke_preset = presets_value["presets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|preset| preset["name"] == "smoke")
+            .unwrap();
+        assert_eq!(smoke_preset["defaultSuite"], false);
+        assert_eq!(smoke_preset["requiredEvidence"], false);
         assert!(presets_value["nextActions"]
             .as_array()
             .unwrap()
