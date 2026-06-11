@@ -132,6 +132,8 @@ deepcli env test compiler --json
 
 `fork --dry-run --json` 在没有可分支源会话时会复用同一套候选恢复动作：空会话清理预览和诊断动作会出现在通用 `deepcli resume candidates --json` 之前，帮助用户直接处理“无法 fork 同样上下文”的原因。
 
+`session prune-empty --dry-run --json` 会保持 JSON 工作流，顶层确认动作是 `deepcli session prune-empty --force --json`，并输出匹配的 `checklist[]`，让外部历史页或恢复面板不必自行给删除、列表和历史动作命名。
+
 真实 fork 的顶层 `nextActions[0]` 也会使用同一条 `terminal.workspaceResumeCommand`，后续保留短形式 `deepcli resume <new_id>`，方便当前目录已正确时继续使用。
 
 `session list --json`、`session show|history|summary|tools|tests|diffs|backups --json`、`session search --json`、`next --json` 和 `session next --json` 面向恢复 UI 和脚本输出可执行的 `deepcli ...` 动作队列，并从 `nextActions` 派生顶层 `checklist[]`；`session diagnose --json` 的 `recommendedNextActions` 和 `quickLinks` 使用同一格式，顶层 `checklist[]` 来自推荐动作；`next/session next/session diagnose` 都会从 `quickLinks` 派生 `quickLinkChecklist[]`，让恢复面板能把主操作和辅助链接分区渲染，说明性上下文保留在 `signals` 与 `report`。

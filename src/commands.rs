@@ -1766,7 +1766,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/session export [session_id|--current] [path]",
             ],
             examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run --json", "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json", "/session export"],
-            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. Search JSON also includes next actions and a matching `checklist[]`: resume preview, history, next, and diagnose for the top hit, or list/resume actions when nothing matches. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands, with `checklist[]` for main actions and `quickLinkChecklist[]` for auxiliary links. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema, where `recommendedNextActions` and `quickLinks` also use executable `deepcli ...` commands and expose matching checklists, and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, `/session` is limited to read-only inspection and restore-backup dry-run preview without `--output`; rename, export, forced cleanup, real restore, and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
+            notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. Search JSON also includes next actions and a matching `checklist[]`: resume preview, history, next, and diagnose for the top hit, or list/resume actions when nothing matches. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands, with `checklist[]` for main actions and `quickLinkChecklist[]` for auxiliary links. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema, where `recommendedNextActions` and `quickLinks` also use executable `deepcli ...` commands and expose matching checklists, and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`; JSON next actions stay in the JSON workflow with `deepcli session prune-empty --force --json`, list/history follow-ups, and matching `checklist[]`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, `/session` is limited to read-only inspection and restore-backup dry-run preview without `--output`; rename, export, forced cleanup, real restore, and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
         },
         CommandHelp {
             name: "/history",
@@ -1802,7 +1802,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/cleanup sessions --force",
                 "deepcli cleanup sessions --json",
             ],
-            notes: &["`/cleanup` maps to `/session prune-empty`, so it defaults to dry-run, skips the current session, skips titled empty sessions, redacts titles, and only deletes candidates when `--force` is passed. Use `--json` for the stable `deepcli.session.prune_empty.v1` schema."],
+            notes: &["`/cleanup` maps to `/session prune-empty`, so it defaults to dry-run, skips the current session, skips titled empty sessions, redacts titles, and only deletes candidates when `--force` is passed. Use `--json` for the stable `deepcli.session.prune_empty.v1` schema, whose dry-run next action is `deepcli session prune-empty --force --json` with a matching checklist item."],
         },
         CommandHelp {
             name: "/resume",
@@ -4052,6 +4052,12 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         }
         command if command.starts_with("deepcli session next ") => "Inspect recovery actions",
         command if command.starts_with("deepcli session list") => "List saved sessions",
+        command
+            if command.starts_with("deepcli session prune-empty ")
+                && command.contains("--force") =>
+        {
+            "Delete empty sessions"
+        }
         command if command.starts_with("deepcli session prune-empty ") => {
             "Preview empty session cleanup"
         }
@@ -23143,6 +23149,7 @@ fn format_session_prune_empty_json(
     workspace: &Path,
     report: &SessionPruneEmptyReport,
 ) -> Result<String> {
+    let next_actions = session_prune_empty_next_actions(report);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.session.prune_empty.v1",
         "status": "ok",
@@ -23156,20 +23163,24 @@ fn format_session_prune_empty_json(
         "skippedTitledCount": report.skipped_titled.len(),
         "candidates": report.candidates.iter().map(session_metadata_json).collect::<Vec<_>>(),
         "skippedTitled": report.skipped_titled.iter().map(session_metadata_json).collect::<Vec<_>>(),
-        "nextActions": session_prune_empty_next_actions(report),
+        "nextActions": next_actions,
+        "checklist": local_action_checklist(&next_actions),
         "report": report.report,
     }))?)
 }
 
-fn session_prune_empty_next_actions(report: &SessionPruneEmptyReport) -> Vec<&'static str> {
+fn session_prune_empty_next_actions(report: &SessionPruneEmptyReport) -> Vec<String> {
     if !report.force && !report.candidates.is_empty() {
         vec![
-            "deepcli cleanup sessions --force",
-            "deepcli session list --all",
-            "deepcli history --limit 20",
+            "deepcli session prune-empty --force --json".to_string(),
+            "deepcli session list --all --json".to_string(),
+            "deepcli history --limit 20".to_string(),
         ]
     } else {
-        vec!["deepcli session list", "deepcli history --limit 20"]
+        vec![
+            "deepcli session list --json".to_string(),
+            "deepcli history --limit 20".to_string(),
+        ]
     }
 }
 
@@ -43710,7 +43721,7 @@ diff --git a/docs/b.md b/docs/b.md
             )
             .unwrap();
         titled_empty
-            .rename("keep empty api_key = sk-empty-secret")
+            .rename("keep empty token = fake-redacted-marker")
             .unwrap();
         let current_empty = store
             .create(
@@ -43731,7 +43742,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(dry_run.contains("skipped titled empty sessions: 1"));
         assert!(dry_run.contains(&format!("full={}", titled_empty.id())));
         assert!(dry_run.contains("<redacted>"));
-        assert!(!dry_run.contains("sk-empty-secret"));
+        assert!(!dry_run.contains("fake-redacted-marker"));
         assert!(dry_run.contains(&format!("full={}", current_empty.id())));
         assert!(empty.path().exists());
 
@@ -43758,37 +43769,34 @@ diff --git a/docs/b.md b/docs/b.md
             current_empty.id().to_string()
         );
         assert_eq!(value["skippedTitledCount"], 1);
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+        assert_eq!(
+            value["nextActions"][0],
+            "deepcli session prune-empty --force --json"
+        );
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert!(next_actions
             .iter()
-            .any(|item| item.as_str().unwrap() == "deepcli cleanup sessions --force"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
+            .any(|item| item == "deepcli session list --all --json"));
+        assert!(next_actions
             .iter()
-            .any(|item| item.as_str().unwrap() == "deepcli session list --all"));
-        assert!(value["nextActions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item.as_str().unwrap() == "deepcli history --limit 20"));
-        let next_actions = value["nextActions"].as_array().unwrap();
+            .any(|item| item == "deepcli history --limit 20"));
         assert!(
-            next_actions.iter().all(|item| {
-                let action = item.as_str().unwrap();
-                action.starts_with("deepcli ") && !action.starts_with("deepcli /")
-            }),
+            next_actions
+                .iter()
+                .all(|action| action.starts_with("deepcli ") && !action.starts_with("deepcli /")),
             "session prune-empty JSON nextActions should be directly executable commands: {next_actions:?}"
         );
         assert!(
-            next_actions.iter().all(|item| {
-                let action = item.as_str().unwrap();
-                !action.starts_with("/session") && !action.contains("`/")
-            }),
+            next_actions
+                .iter()
+                .all(|action| !action.starts_with("/session") && !action.contains("`/")),
             "session prune-empty JSON nextActions should not require parsing slash-command prose: {next_actions:?}"
         );
-        assert!(!json_dry_run.contains("sk-empty-secret"));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Delete empty sessions".to_string()));
+        assert!(checklist_labels.contains(&"List saved sessions".to_string()));
+        assert!(!json_dry_run.contains("fake-redacted-marker"));
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/prune-empty.json")).unwrap();
         assert_eq!(written, json_dry_run);

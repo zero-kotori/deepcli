@@ -74,7 +74,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作，并从 `nextActions` 派生顶层 `checklist[]` 供恢复 UI 直接渲染。
 - `/next --json` 和 `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令，并从 `nextActions` 派生顶层 `checklist[]`、从 `quickLinks` 派生 `quickLinkChecklist[]`；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，并从推荐动作派生顶层 `checklist[]`、从辅助链接派生 `quickLinkChecklist[]`，解释性原因保留在 `signals` 和 `report`。
 - `/session restore-backup latest --dry-run --json` 会输出稳定 `deepcli.session.restore_backup.v1` 预览，包含选中的 backup、目标文件、脱敏 diff 和下一步恢复命令；真实恢复也支持 `--json`/`--output`，但仍通过受控工具执行器写文件并记录新的 backup/diff。Agent 运行中可直接执行不带 `--output` 的 dry-run 预览；`/session rename`、`/session export`、`/session prune-empty --force`、`/session ... --output`、真实恢复和预览 artifact 写入都需要等待任务结束或先 `/stop`。
-- `/cleanup sessions` 可预览或删除空的一次性会话；JSON 顶层 `nextActions` 使用可直接执行的 `deepcli cleanup sessions --force`、`deepcli session list ...` 和 `deepcli history ...` 命令。
+- `/cleanup sessions` 可预览或删除空的一次性会话；JSON 顶层 `nextActions` 使用可直接执行的 `deepcli session prune-empty --force --json`、`deepcli session list ... --json` 和 `deepcli history ...` 命令，并从这些动作派生 `checklist[]`。
 
 ## Provider、模型与凭据
 
@@ -200,6 +200,8 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 当 `resume candidates --json` 没有 eligible 候选但发现空会话时，顶层 `nextActions[0]` 会指向 `deepcli session prune-empty --dry-run --json`；存在工具/诊断型隐藏会话时，还会补充 `deepcli session diagnose --limit 5 --json`，让恢复页和 fork 失败页能直接给出可执行的清理与诊断按钮。
 
 `fork --dry-run --json` 在没有可分支源会话时会复用同一套候选恢复动作，先暴露空会话清理预览或诊断动作，再保留 `deepcli resume candidates --json` 和结构化 session list，减少用户从 fork 失败页跳转多次才能找到原因。
+
+`session prune-empty --dry-run --json` 会保持 JSON 工作流，顶层确认动作是 `deepcli session prune-empty --force --json`，并输出匹配的 `checklist[]`，外部历史页和恢复面板可以直接渲染删除、列表和历史按钮。
 
 `preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 跳过较慢的 clippy/gate，并把 privacy 检查切换为 `privacy --no-history`，用于快速本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；JSON 顶层 `checklist[]` 会把检查队列结构化为 `step`、`label`、`command`、`status` 和 `required`，方便 TUI、外部 UI 或脚本直接渲染发布检查清单；文本和 JSON 报告包含 `diagnostics` 摘要，展示总耗时、最慢检查、最大输出检查和失败 required check，避免用户在长报告中手动查找瓶颈。
 

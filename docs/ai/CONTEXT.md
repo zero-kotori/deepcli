@@ -374,9 +374,9 @@
    - 目的：让首次启动、自检、外部 onboarding UI 和 CI 脚本不需要解析 `run \`/...\`` 文本即可继续下一步。
 
 73. Cleanup JSON 动作可执行化
-   - 结果：`deepcli cleanup sessions --json` 和 `deepcli session prune-empty --json` 顶层 `nextActions` 改为 `deepcli cleanup sessions --force`、`deepcli session list ...`、`deepcli history ...` 这类 shell 可执行命令。
+   - 结果：`deepcli cleanup sessions --json` 和 `deepcli session prune-empty --json` 顶层 `nextActions` 改为 `deepcli session prune-empty --force --json`、`deepcli session list ... --json`、`deepcli history ...` 这类 shell 可执行命令。
    - 行为：dry-run 仍只预览候选并跳过当前会话和有标题空会话；说明性清理摘要留在 `report`，不把 TUI slash 命令放入 JSON 顶层动作。
-   - 目的：用户从 resume/fork 无源路径进入历史清理时，可以直接复制 JSON 动作执行维护命令，不需要把 `/session prune-empty --force` 手动改写成顶层 CLI。
+   - 目的：用户从 resume/fork 无源路径进入历史清理时，可以直接复制 JSON 动作执行维护命令，不需要把 `/session prune-empty --force` 手动改写成顶层 CLI 或离开 JSON 工作流。
 
 74. Health/Version JSON 动作可执行化
    - 结果：`deepcli version/about/health/doctor --json` 顶层 `nextActions` 不再输出 `/quickstart` 或 `run \`/config validate\`` 这类说明性文本，而是输出 `deepcli quickstart`、`deepcli doctor --quick`、`deepcli config validate`、`deepcli setup docker --smoke` 等可执行命令。
@@ -926,6 +926,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：上一轮让 `resume candidates --json` 能直接给出空会话清理和诊断动作，但 `fork --dry-run --json` 在没有可分支源会话时仍只推荐候选页和 session list，用户从“无法打开同样上下文的新终端”到“清理/诊断原因”还要多跳一次。
    - 结果：`no_resumable_context` 的 fork 错误路径现在读取同一套 resume candidates 隐藏原因，先输出 `deepcli session prune-empty --dry-run --json` 和/或 `deepcli session diagnose --limit 5 --json`，再保留 `deepcli resume candidates --json`、结构化 session list 和 `deepcli sessions --all --limit 20`；`--current` 无 active session 的误用路径仍保持 `deepcli fork --dry-run --json` 为首项。
    - 目的：fork 失败页可以直接解释和修复“没有可分支上下文”的本地原因，外部 UI 不必先跳到候选页再生成同样的清理/诊断按钮。
+
+157. Session Prune-Empty JSON Checklist
+   - 产品缺口：fork/resume 无可恢复上下文时会推荐 `deepcli session prune-empty --dry-run --json`，但该 JSON 没有 `checklist[]`，且确认动作回到非 JSON 的 `deepcli cleanup sessions --force`，外部 UI 还要自行命名按钮并切换输出形态。
+   - 结果：`deepcli.session.prune_empty.v1` 现在输出从 `nextActions` 派生的 `checklist[]`；dry-run 有候选时首项为 `deepcli session prune-empty --force --json`，列表动作改为 `deepcli session list --all --json`；force 标签显示为 `Delete empty sessions`。
+   - 目的：恢复页、fork 失败页和历史清理页可以在同一 JSON 工作流内完成预览、确认删除和复查，不需要手工解析 report 或自行命名动作按钮。
 
 ## 下一步建议
 
