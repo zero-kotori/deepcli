@@ -1012,6 +1012,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.record.v1` 增加顶层 `summary`，包含 status、artifactPath、createdAt、suite、case、preset、mode、ranByDeepcli、commandCount、durationMs，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`；record/run 写入新 artifact 时生成 summary，show 读取旧 artifact 时动态补齐 summary 和 checklist。
    - 目的：artifact 详情页、TUI benchmark 面板和脚本可以直接渲染详情页头和主 CTA，不再复制 artifact 执行摘要聚合逻辑。
 
+174. Round Product Loop Summary
+   - 产品缺口：`deepcli round --json` 是主产品循环状态页，但页头若要展示 ready/status、scorecard 分数、benchmark freshness、gate/gap/opportunity 计数和主推荐按钮，仍需要解析 `report`、扫描 `gates[]`/`opportunities[]` 或复制 checklist 推导逻辑。
+   - 结果：`deepcli.round.v1` 增加顶层 `summary`，包含 status、ready、scoreThreshold、scorecardPercent、benchmarkStatus、benchmarkFreshnessStatus、benchmarkFreshnessAgeSeconds、benchmarkFreshnessAge、benchmarkRefreshRecommended、gateCount、passedGateCount、failedGateCount、gapCount、opportunityCount、recommendedOpportunityId，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：产品循环页、TUI round 面板和脚本可以直接渲染本轮状态页头和主 CTA，不再复制 round 聚合与动作命名逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

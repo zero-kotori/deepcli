@@ -5080,10 +5080,26 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
 }
 
 fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
+    let gates = report
+        .gates
+        .iter()
+        .map(|gate| {
+            json!({
+                "id": gate.id,
+                "title": gate.title,
+                "status": gate.status,
+                "summary": &gate.summary,
+                "nextAction": gate.next_action.as_deref(),
+                "checklist": round_gate_checklist(gate),
+            })
+        })
+        .collect::<Vec<_>>();
+    let checklist = scorecard_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.round.v1",
         "status": report.status,
         "ready": report.status == "ready",
+        "summary": round_summary_json(report, &gates, &checklist),
         "workspace": workspace.display().to_string(),
         "version": {
             "package": "deepcli",
@@ -5094,23 +5110,60 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         "benchmarkStatus": round_benchmark_status_json(&report.benchmark),
         "benchmarkRun": report.benchmark_run.as_ref().map(round_benchmark_run_json),
         "goalStatus": report.goal.as_ref().map(round_goal_status_json),
-        "gates": report.gates.iter().map(|gate| json!({
-            "id": gate.id,
-            "title": gate.title,
-            "status": gate.status,
-            "summary": &gate.summary,
-            "nextAction": gate.next_action.as_deref(),
-            "checklist": round_gate_checklist(gate),
-        })).collect::<Vec<_>>(),
+        "gates": gates,
         "gaps": &report.gaps,
         "nextActions": &report.next_actions,
-        "checklist": scorecard_action_checklist(&report.next_actions),
+        "checklist": checklist,
         "recommendedOpportunity": scorecard_recommended_opportunity_json(&report.opportunities),
         "opportunityPriorityCounts": scorecard_opportunity_priority_counts_json(&report.opportunities),
         "opportunityEffortCounts": scorecard_opportunity_effort_counts_json(&report.opportunities),
         "opportunities": scorecard_opportunities_json(&report.opportunities),
         "report": &report.report,
     }))?)
+}
+
+fn round_summary_json(report: &RoundReport, gates: &[Value], checklist: &[Value]) -> Value {
+    let failed_gate_count = gates
+        .iter()
+        .filter(|gate| gate.get("status").and_then(Value::as_str) == Some("failed"))
+        .count();
+    let passed_gate_count = gates
+        .iter()
+        .filter(|gate| gate.get("status").and_then(Value::as_str) == Some("passed"))
+        .count();
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({
+        "status": report.status,
+        "ready": report.status == "ready",
+        "scoreThreshold": report.score_threshold,
+        "scorecardPercent": report.scorecard.percent,
+        "benchmarkStatus": report.benchmark.status,
+        "benchmarkFreshnessStatus": benchmark_freshness_status(&report.benchmark),
+        "benchmarkFreshnessAgeSeconds": benchmark_freshness_age_seconds(&report.benchmark),
+        "benchmarkFreshnessAge": format_benchmark_age(benchmark_freshness_age_seconds(&report.benchmark)),
+        "benchmarkRefreshRecommended": benchmark_freshness_refresh_recommended(&report.benchmark),
+        "gateCount": gates.len(),
+        "passedGateCount": passed_gate_count,
+        "failedGateCount": failed_gate_count,
+        "gapCount": report.gaps.len(),
+        "opportunityCount": report.opportunities.len(),
+        "recommendedOpportunityId": report
+            .opportunities
+            .first()
+            .map(|opportunity| Value::from(opportunity.id))
+            .unwrap_or(Value::Null),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn round_gate_checklist(gate: &RoundGate) -> Vec<Value> {
@@ -37472,6 +37525,34 @@ mod tests {
         assert_eq!(value["status"], "needs_attention");
         assert_eq!(value["ready"], false);
         assert_eq!(value["scoreThreshold"], 90);
+        assert_eq!(value["summary"]["status"], value["status"]);
+        assert_eq!(value["summary"]["ready"], value["ready"]);
+        assert_eq!(value["summary"]["scoreThreshold"], value["scoreThreshold"]);
+        assert_eq!(
+            value["summary"]["scorecardPercent"],
+            value["scorecard"]["percent"]
+        );
+        assert_eq!(
+            value["summary"]["benchmarkStatus"],
+            value["benchmarkStatus"]["status"]
+        );
+        assert_eq!(
+            value["summary"]["gateCount"],
+            value["gates"].as_array().unwrap().len()
+        );
+        assert_eq!(
+            value["summary"]["gapCount"],
+            value["gaps"].as_array().unwrap().len()
+        );
+        assert_eq!(value["summary"]["opportunityCount"], 0);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         assert_eq!(value["scorecard"]["schema"], "deepcli.scorecard.summary.v1");
         assert_eq!(
             value["benchmarkStatus"]["schema"],
@@ -37806,6 +37887,26 @@ mod tests {
         assert_eq!(value["status"], "ready");
         assert!(value["gaps"].as_array().unwrap().is_empty());
         let opportunities = value["opportunities"].as_array().unwrap();
+        assert_eq!(value["summary"]["status"], "ready");
+        assert_eq!(value["summary"]["ready"], true);
+        assert_eq!(value["summary"]["gapCount"], 0);
+        assert_eq!(value["summary"]["opportunityCount"], opportunities.len());
+        assert_eq!(
+            value["summary"]["recommendedOpportunityId"],
+            value["recommendedOpportunity"]["id"]
+        );
+        assert_eq!(
+            value["summary"]["benchmarkFreshnessStatus"],
+            value["benchmarkStatus"]["summary"]["freshnessStatus"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         assert!(
             !opportunities.is_empty(),
             "ready round should still expose next product opportunities"

@@ -211,6 +211,8 @@ deepcli benchmark clean --dry-run --json
 
 `deepcli benchmark status --json` 和 `round --json` 内嵌的 `benchmarkStatus.summary` 会结构化展示证据状态、artifact/meaningful 计数、freshness 状态与年龄、required preset 覆盖、gap 数量，以及从 checklist 派生的主推荐动作和标签；benchmark evidence 页头和 round gate 详情不需要解析 `report` 或拼接多个字段才能展示刷新 CTA。
 
+`deepcli round --json` 的顶层 `summary` 会结构化展示 round status/ready、score threshold、scorecard percent、benchmark status/freshness、gate/gap/opportunity 计数，以及从 checklist 派生的主推荐动作和标签；产品循环页不需要解析 `report`、扫描 `gates[]` 或复制 next action 推导逻辑才能展示页头和主 CTA。
+
 `deepcli benchmark summary --json` 的顶层 `summary` 会结构化展示历史 artifact 数、case 数、总执行数、通过/失败/超时/记录/其它计数、pass rate，以及从 checklist 派生的主推荐动作和标签；历史汇总页和外部 UI 不需要解析 `report` 或重新汇总 `cases[]` 才能展示页头指标和主 CTA。
 
 `deepcli benchmark trends --json` 的顶层 `summary` 会结构化展示趋势状态、artifact/case 数、regression/recovered/stable pass 计数、slower/faster/flat/unknown duration 计数，以及从 checklist 派生的主推荐动作和标签；趋势页头、round gate 详情和外部 UI 不需要扫描 `trends[]` 或解析 `report` 才能展示核心趋势结论。
