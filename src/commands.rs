@@ -5116,10 +5116,12 @@ fn round_benchmark_run_json(run: &RoundBenchmarkRun) -> Value {
 }
 
 fn round_benchmark_status_json(report: &BenchmarkStatusReport) -> Value {
+    let checklist = benchmark_action_checklist(&report.next_actions);
     json!({
         "schema": BENCHMARK_STATUS_SCHEMA,
         "status": report.status,
         "ready": report.status == "ready",
+        "summary": benchmark_status_summary_json(report, &checklist),
         "artifactCount": report.artifact_count,
         "meaningfulArtifactCount": report.meaningful_count,
         "meaningfulExecutableCount": report.meaningful_executable_count,
@@ -7212,6 +7214,7 @@ fn format_benchmark_status_json(
         "ready": report.status == "ready",
         "hasGaps": !report.gaps.is_empty(),
         "workspace": workspace.display().to_string(),
+        "summary": benchmark_status_summary_json(report, &checklist),
         "staleAfterDays": BENCHMARK_EVIDENCE_STALE_AFTER_DAYS,
         "artifactCount": report.artifact_count,
         "totals": {
@@ -7248,6 +7251,56 @@ fn format_benchmark_status_json(
         "checklist": checklist,
         "report": format_benchmark_status_text(workspace, report),
     }))?)
+}
+
+fn benchmark_status_summary_json(report: &BenchmarkStatusReport, checklist: &[Value]) -> Value {
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": report.status,
+        "ready": report.status == "ready",
+        "artifactCount": report.artifact_count,
+        "meaningfulArtifactCount": report.meaningful_count,
+        "meaningfulExecutableCount": report.meaningful_executable_count,
+        "meaningfulPassedCount": report.meaningful_passed_count,
+        "meaningfulFailedCount": report.meaningful_failed_count,
+        "meaningfulTimeoutCount": report.meaningful_timeout_count,
+        "freshnessStatus": benchmark_freshness_status(report),
+        "freshnessAgeSeconds": benchmark_freshness_age_seconds(report),
+        "freshnessAge": format_benchmark_age(benchmark_freshness_age_seconds(report)),
+        "refreshRecommended": benchmark_freshness_refresh_recommended(report),
+        "refreshAction": benchmark_freshness_refresh_action(report),
+        "requiredPresetCount": MEANINGFUL_BENCHMARK_PRESETS.len(),
+        "requiredReadyCount": report
+            .required_preset_statuses
+            .iter()
+            .filter(|preset| preset.status == "passed")
+            .count(),
+        "requiredMissingCount": report
+            .required_preset_statuses
+            .iter()
+            .filter(|preset| preset.status == "missing")
+            .count(),
+        "requiredProblemCount": report
+            .required_preset_statuses
+            .iter()
+            .filter(|preset| matches!(preset.status.as_str(), "failed" | "timeout"))
+            .count(),
+        "gapCount": report.gaps.len(),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn benchmark_required_preset_status_json(status: &BenchmarkRequiredPresetStatus) -> Value {
@@ -38562,6 +38615,22 @@ mod tests {
         assert_eq!(
             value["freshness"]["refreshAction"],
             SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert_eq!(value["summary"]["status"], "ready");
+        assert_eq!(value["summary"]["ready"], true);
+        assert_eq!(value["summary"]["artifactCount"], 8);
+        assert_eq!(value["summary"]["meaningfulArtifactCount"], 8);
+        assert_eq!(value["summary"]["freshnessStatus"], "aging");
+        assert_eq!(value["summary"]["refreshRecommended"], true);
+        assert_eq!(value["summary"]["requiredPresetCount"], 4);
+        assert_eq!(value["summary"]["requiredReadyCount"], 4);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
         );
         assert_eq!(
             value["nextActions"][0],
