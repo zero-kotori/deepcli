@@ -1821,7 +1821,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli resume 6155c14e --dry-run --json",
                 "deepcli resume candidates --json",
             ],
-            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. `candidates --json` emits `deepcli.resume.candidates.v1`, explaining which current-workspace sessions are eligible, which are hidden, and why, so history UIs can distinguish missing history from filtered diagnostic sessions. Preview, candidates, and error JSON expose executable next actions plus matching `checklist[]` items so recovery UIs can render actions without parsing report text. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
+            notes: &["Session ids accept a unique prefix. In the TUI, `/resume` opens a current-workspace session picker with selected-session activity, summary, and recent-message preview. Without an id, resume candidates skip sessions from other workspace paths, diagnostic-only sessions that only contain tool, test, or audit records, local clarification-only sessions created from low-information input, and brief completed one-turn tasklets; explicit ids can still inspect a specific session. Use `--dry-run` or `--preview` with `--json` for the stable `deepcli.resume.preview.v1` report; it only reads persisted session files, writes optional workspace-contained output, and does not start the TUI, create a session, or call a provider. `candidates --json` emits `deepcli.resume.candidates.v1`, explaining which current-workspace sessions are eligible, which are hidden, and why, so history UIs can distinguish missing history from filtered diagnostic sessions; when no eligible candidate exists, hidden empty sessions add `deepcli session prune-empty --dry-run --json` as the first recovery action, and tool-only or non-resumable sessions add a session diagnose action. Preview, candidates, and error JSON expose executable next actions plus matching `checklist[]` items so recovery UIs can render actions without parsing report text. If no current-workspace resumable session exists, JSON mode keeps the same schema with `status=error`, `selected=null`, an error object, and next actions before returning non-zero."],
         },
         CommandHelp {
             name: "/rename",
@@ -12998,6 +12998,20 @@ fn resume_candidates_next_actions(candidates: &[ResumeCandidateEntry]) -> Vec<St
         );
         push_unique_action(&mut actions, format!("deepcli resume {short}"));
         push_unique_action(&mut actions, format!("deepcli session next {short} --json"));
+    } else {
+        let counts = resume_candidate_reason_counts(candidates);
+        if counts.hidden_empty > 0 {
+            push_unique_action(
+                &mut actions,
+                "deepcli session prune-empty --dry-run --json".to_string(),
+            );
+        }
+        if counts.hidden_tool_only > 0 || counts.hidden_non_resumable > 0 {
+            push_unique_action(
+                &mut actions,
+                "deepcli session diagnose --limit 5 --json".to_string(),
+            );
+        }
     }
     push_unique_action(
         &mut actions,
@@ -34617,6 +34631,67 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("hidden low-information sessions: 1"));
+    }
+
+    #[tokio::test]
+    async fn resume_candidates_without_eligible_sessions_recommends_empty_cleanup() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let empty = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+
+        let tool_only = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("deepseek-v4-pro".to_string()),
+            )
+            .unwrap();
+        tool_only
+            .append_tool_call(&ToolCallRecord {
+                tool: "list_files".to_string(),
+                input: json!({"path": "."}),
+                output: json!({"files": ["src/main.rs"]}),
+                decision: None,
+                status: ToolCallStatus::Succeeded,
+                created_at: chrono::Utc::now(),
+            })
+            .unwrap();
+
+        let output =
+            handle_resume(dir.path(), None, vec!["candidates".into(), "--json".into()]).unwrap();
+        let value: Value = serde_json::from_str(&output).unwrap();
+
+        assert_eq!(value["schema"], "deepcli.resume.candidates.v1");
+        assert_eq!(value["defaultCandidate"], Value::Null);
+        assert_eq!(value["counts"]["eligible"], 0);
+        assert_eq!(value["counts"]["hiddenEmpty"], 1);
+        assert_eq!(value["counts"]["hiddenToolOnly"], 1);
+        let next_actions = json_string_array(&value["nextActions"]);
+        assert_eq!(
+            next_actions[0],
+            "deepcli session prune-empty --dry-run --json"
+        );
+        assert!(next_actions.contains(&"deepcli session list --all --limit 20 --json".to_string()));
+        assert_checklist_matches_executable_actions(&value, &next_actions);
+        let checklist_labels = json_checklist_labels(&value);
+        assert!(checklist_labels.contains(&"Preview empty session cleanup".to_string()));
+        let candidates = value["candidates"].as_array().unwrap();
+        assert!(candidates.iter().any(|candidate| {
+            candidate["id"] == empty.id().to_string()
+                && candidate["eligible"] == false
+                && candidate["hiddenReason"] == "empty"
+        }));
+        assert!(value["report"]
+            .as_str()
+            .unwrap()
+            .contains("deepcli session prune-empty --dry-run --json"));
     }
 
     #[tokio::test]

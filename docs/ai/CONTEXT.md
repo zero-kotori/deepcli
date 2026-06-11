@@ -917,6 +917,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`/opportunities` 和 `deepcli opportunities` 增加 `--priority high|medium|low|other`；过滤会同步影响 `opportunities[]`、`recommendedOpportunity`、当前 `opportunityPriorityCounts`、`nextActions` 和 `checklist[]`，同时 JSON 保留 `totalOpportunityCount`、`filteredOutOpportunityCount` 和全量 `availablePriorityCounts`。
    - 目的：机会页可以直接聚焦某个优先级的可执行动作，TUI/外部 UI 能用同一入口实现优先级 tab 或筛选按钮，而不需要复制 deepcli 的机会排序与动作展开逻辑。
 
+155. Resume Candidate Recovery Actions
+   - 产品缺口：`resume candidates --json` 已经能解释 eligible/hidden 和隐藏原因，但当当前 workspace 只有空会话或工具/诊断型会话时，顶层动作仍先打开完整列表，用户需要自己推断应该先清理空会话或查看诊断。
+   - 结果：没有 eligible 候选时，若存在 empty 候选，`nextActions[0]` 现在是 `deepcli session prune-empty --dry-run --json`；若存在 tool-only 或 non-resumable 候选，会追加 `deepcli session diagnose --limit 5 --json`；后续仍保留结构化 session list、history 和 resume help，`checklist[]` 与动作同步。
+   - 目的：恢复页和 fork 失败页能直接把“没有可恢复历史”转化为安全清理和诊断按钮，减少用户误以为历史丢失的阻力。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
