@@ -201,6 +201,8 @@ deepcli benchmark clean --dry-run --json
 
 当 benchmark evidence 仍为 ready 但 `freshness.refreshRecommended=true` 时，`scorecard --json`、`round --json` 和 `recipes sota --json` 的顶层 `nextActions[0]` 会优先给出 `deepcli round --json --run-benchmark --fail-on-command`，让用户先刷新 aging/stale 证据，再继续 preflight、gate 或 baseline 对比。
 
+`deepcli benchmark trends --json` 的顶层 `summary` 会结构化展示趋势状态、artifact/case 数、regression/recovered/stable pass 计数、slower/faster/flat/unknown duration 计数，以及从 checklist 派生的主推荐动作和标签；趋势页头、round gate 详情和外部 UI 不需要扫描 `trends[]` 或解析 `report` 才能展示核心趋势结论。
+
 当 `round --json` 已 ready 且需要推进 baseline 工作流时，顶层 `nextActions` 会先给出只读 `deepcli benchmark baselines --json`，再给出 `baseline-template` 或 `compare` 动作，让外部 UI 和终端用户先看到 baseline inventory 状态，再决定是否写入本地 baseline artifact。
 
 当 `round --json` 已 ready 时，顶层 `nextActions` 会在 `deepcli preflight --json` 和 `deepcli gate --json` 后继续给出 `deepcli recipes sota --json` 与 `deepcli opportunities --json`，让 round 主状态页既能进入完整 SOTA playbook，也能进入当前机会页。

@@ -9624,6 +9624,12 @@ fn format_benchmark_trends_json(
         "artifactCount": artifacts.len(),
         "caseCount": trends.len(),
         "recentLimit": recent_limit,
+        "summary": benchmark_trends_summary_json(
+            status,
+            artifacts.len(),
+            trends,
+            &checklist,
+        ),
         "trends": trends.iter().map(benchmark_case_trend_json).collect::<Vec<_>>(),
         "nextActions": next_actions,
         "checklist": checklist,
@@ -9631,17 +9637,67 @@ fn format_benchmark_trends_json(
     }))?)
 }
 
+fn benchmark_trends_summary_json(
+    status: &str,
+    artifact_count: usize,
+    trends: &[BenchmarkCaseTrend],
+    checklist: &[Value],
+) -> Value {
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .and_then(Value::as_str)
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+
+    json!({
+        "status": status,
+        "artifactCount": artifact_count,
+        "caseCount": trends.len(),
+        "regressionCount": trends
+            .iter()
+            .filter(|trend| benchmark_trend_has_regression(trend))
+            .count(),
+        "recoveredCount": trends
+            .iter()
+            .filter(|trend| trend.status_trend == "recovered")
+            .count(),
+        "stablePassCount": trends
+            .iter()
+            .filter(|trend| trend.status_trend == "stable_pass")
+            .count(),
+        "slowerCount": trends
+            .iter()
+            .filter(|trend| trend.duration_trend == "slower")
+            .count(),
+        "fasterCount": trends
+            .iter()
+            .filter(|trend| trend.duration_trend == "faster")
+            .count(),
+        "flatCount": trends
+            .iter()
+            .filter(|trend| trend.duration_trend == "flat")
+            .count(),
+        "unknownDurationCount": trends
+            .iter()
+            .filter(|trend| trend.duration_trend == "unknown")
+            .count(),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
+}
+
 fn benchmark_trends_status(artifact_count: usize, trends: &[BenchmarkCaseTrend]) -> &'static str {
     if artifact_count == 0 {
         return "empty";
     }
-    if trends.iter().any(|trend| {
-        trend.status_trend == "regressed"
-            || trend
-                .latest
-                .as_ref()
-                .is_some_and(|latest| benchmark_problem_status(&latest.status))
-    }) {
+    if trends.iter().any(benchmark_trend_has_regression) {
         return "regression";
     }
     if !trends.iter().any(|trend| trend.previous.is_some()) {
@@ -9649,6 +9705,14 @@ fn benchmark_trends_status(artifact_count: usize, trends: &[BenchmarkCaseTrend])
     } else {
         "ok"
     }
+}
+
+fn benchmark_trend_has_regression(trend: &BenchmarkCaseTrend) -> bool {
+    trend.status_trend == "regressed"
+        || trend
+            .latest
+            .as_ref()
+            .is_some_and(|latest| benchmark_problem_status(&latest.status))
 }
 
 fn benchmark_case_trend_json(trend: &BenchmarkCaseTrend) -> Value {
@@ -39891,6 +39955,19 @@ mod tests {
         assert_eq!(value["artifactCount"], 3);
         assert_eq!(value["caseCount"], 1);
         assert_eq!(value["recentLimit"], 2);
+        assert_eq!(value["summary"]["status"], "regression");
+        assert_eq!(value["summary"]["artifactCount"], 3);
+        assert_eq!(value["summary"]["caseCount"], 1);
+        assert_eq!(value["summary"]["regressionCount"], 1);
+        assert_eq!(value["summary"]["slowerCount"], 1);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["nextActions"][0]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         let trend = &value["trends"][0];
         assert_eq!(trend["suite"], "product");
         assert_eq!(trend["case"], "cargo-test");

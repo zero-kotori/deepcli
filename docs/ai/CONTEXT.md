@@ -977,6 +977,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.benchmark.baselines.v1` 增加顶层 `summary`，包含 status、baseline/ready/needs_values/invalid 计数、默认 baseline path/status、默认 compare readiness、可 compare baseline 数量，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：baseline inventory 可以直接渲染页头、状态徽标和主 CTA，不再复制 deepcli 的 action/checklist 推导逻辑。
 
+167. Benchmark Trends Summary
+   - 产品缺口：`deepcli benchmark trends --json` 是 round 趋势 gate 的数据源，但趋势页头若要展示 regression、stable pass、slower/faster 等概览和主推荐按钮，仍需要扫描 `trends[]` 或解析 `report`。
+   - 结果：`deepcli.benchmark.trends.v1` 增加顶层 `summary`，包含 status、artifact/case 数、regression/recovered/stable pass 计数、slower/faster/flat/unknown duration 计数，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：趋势页、round gate 详情和外部 UI 可以直接渲染核心趋势结论和主 CTA，不再复制趋势聚合逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
