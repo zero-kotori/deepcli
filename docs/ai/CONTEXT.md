@@ -892,6 +892,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`ScorecardOpportunity` 增加稳定 `effort` 字段，并在 scorecard、round、recipes sota 和 opportunities JSON/text 中复用；准备 competitor baseline 标记为 `medium`，已有 ready baseline 的 compare 和产品循环体验复查标记为 `low`。
    - 目的：产品循环入口从“下一步按钮列表”进一步变成可决策的机会队列，帮助用户在 gates 全绿后继续选择最高价值的迭代方向。
 
+150. Benchmark Freshness Opportunity
+   - 产品缺口：benchmark evidence 已 ready 但 freshness 为 aging 时，`round` 和 `scorecard` 会把刷新命令放进顶层 nextActions，但 `opportunities[]` 没有解释这个非阻塞刷新机会，用户或外部 UI 只能看到命令而看不到收益、成本和原因。
+   - 结果：`scorecard_product_opportunities` 现在在 freshness refreshRecommended 时优先输出 `benchmark_freshness` 机会，包含 summary、impact、`effort=low`、刷新命令和 benchmark status 复查动作；scorecard、round、recipes sota 和 opportunities 入口复用同一机会对象。
+   - 目的：ready 状态的 aging benchmark evidence 不再只是隐藏在 nextActions 中的刷新命令，而是可展示、可排序、可解释的产品机会，同时保持 ready/gate 语义不变。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

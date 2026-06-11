@@ -3426,7 +3426,8 @@ fn build_scorecard_report(
         &benchmark_status,
         benchmark_trends_status,
     );
-    let opportunities = scorecard_product_opportunities(workspace, status, &gaps);
+    let opportunities =
+        scorecard_product_opportunities(workspace, status, &gaps, &benchmark_status);
     let report = format_scorecard_text(
         workspace,
         ScorecardTextInput {
@@ -3587,9 +3588,30 @@ fn scorecard_product_opportunities(
     workspace: &Path,
     status: &str,
     gaps: &[String],
+    benchmark_status: &BenchmarkStatusReport,
 ) -> Vec<ScorecardOpportunity> {
     if status != "ok" || !gaps.is_empty() {
         return Vec::new();
+    }
+
+    let mut opportunities = Vec::new();
+    if let Some(refresh_action) = benchmark_freshness_refresh_action(benchmark_status) {
+        let freshness = benchmark_freshness_status(benchmark_status);
+        let age = format_benchmark_age(benchmark_freshness_age_seconds(benchmark_status));
+        opportunities.push(ScorecardOpportunity {
+            id: "benchmark_freshness",
+            title: "Refresh Benchmark Evidence",
+            summary: format!(
+                "Benchmark evidence is ready but {freshness} at age {age}; refresh it before relying on SOTA claims."
+            ),
+            impact: "keeps ready benchmark evidence fresh enough for SOTA decisions",
+            effort: "low",
+            status: "available",
+            next_actions: vec![
+                refresh_action.to_string(),
+                "deepcli benchmark status --json".to_string(),
+            ],
+        });
     }
 
     let baseline_actions = opportunity_baseline_next_actions(sota_baseline_next_actions(workspace));
@@ -3622,23 +3644,21 @@ fn scorecard_product_opportunities(
         }
     };
 
-    vec![
-        baseline,
-        ScorecardOpportunity {
-            id: "product_loop_experience",
-            title: "Exercise Product Loop Experience",
-            summary:
-                "Review the ready round and SOTA recipe as the next product-design entrypoint."
-                    .to_string(),
-            impact: "keeps the designer-engineer loop discoverable after all gates pass",
-            effort: "low",
-            status: "available",
-            next_actions: vec![
-                SCORECARD_ROUND_REPORT_ACTION.to_string(),
-                "deepcli recipes sota --json".to_string(),
-            ],
-        },
-    ]
+    opportunities.push(baseline);
+    opportunities.push(ScorecardOpportunity {
+        id: "product_loop_experience",
+        title: "Exercise Product Loop Experience",
+        summary: "Review the ready round and SOTA recipe as the next product-design entrypoint."
+            .to_string(),
+        impact: "keeps the designer-engineer loop discoverable after all gates pass",
+        effort: "low",
+        status: "available",
+        next_actions: vec![
+            SCORECARD_ROUND_REPORT_ACTION.to_string(),
+            "deepcli recipes sota --json".to_string(),
+        ],
+    });
+    opportunities
 }
 
 fn opportunity_baseline_next_actions(actions: Vec<String>) -> Vec<String> {
@@ -37759,6 +37779,41 @@ mod tests {
         let config = AppConfig::default();
         let registry = ToolRegistry::mvp();
         let latest_created_at = Utc::now() - chrono::Duration::days(2);
+        let previous_created_at = latest_created_at - chrono::Duration::hours(1);
+        write_round_scorecard_ready_fixture(dir.path());
+
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20981201T000000Z-product-cargo-test.json",
+            previous_created_at - chrono::Duration::seconds(3),
+            "cargo-test",
+            "cargo-test",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20981202T000000Z-product-preflight-quick.json",
+            previous_created_at - chrono::Duration::seconds(2),
+            "preflight-quick",
+            "preflight-quick",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20981203T000000Z-product-selftest.json",
+            previous_created_at - chrono::Duration::seconds(1),
+            "selftest",
+            "selftest",
+            "passed",
+        );
+        write_benchmark_status_test_artifact(
+            dir.path(),
+            "20981204T000000Z-product-scorecard.json",
+            previous_created_at,
+            "scorecard",
+            "scorecard",
+            "passed",
+        );
 
         write_benchmark_status_test_artifact(
             dir.path(),
@@ -37840,7 +37895,30 @@ mod tests {
         assert!(round_value["report"]
             .as_str()
             .unwrap()
-            .contains("benchmark: status=ready ready=true artifacts=4 freshness=aging age=2d"));
+            .contains("benchmark: status=ready ready=true"));
+        assert!(round_value["report"]
+            .as_str()
+            .unwrap()
+            .contains("freshness=aging age=2d"));
+        let round_freshness_opportunity = round_value["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|opportunity| opportunity["id"] == "benchmark_freshness")
+            .expect("aging ready benchmark evidence should be explained as an opportunity");
+        assert_eq!(
+            round_freshness_opportunity["title"],
+            "Refresh Benchmark Evidence"
+        );
+        assert_eq!(round_freshness_opportunity["effort"], "low");
+        assert_eq!(
+            round_freshness_opportunity["nextActions"][0],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert_eq!(
+            round_freshness_opportunity["checklist"][0]["label"],
+            "Refresh benchmark evidence"
+        );
 
         let scorecard =
             handle_scorecard(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
@@ -37849,6 +37927,11 @@ mod tests {
             scorecard_value["nextActions"][0],
             SCORECARD_BENCHMARK_REMEDIATION_ACTION
         );
+        assert!(scorecard_value["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|opportunity| opportunity["id"] == "benchmark_freshness"));
 
         let recipes = handle_recipes(
             dir.path(),
@@ -37861,6 +37944,19 @@ mod tests {
         assert_eq!(
             recipes_value["nextActions"][0],
             SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert!(recipes_value["opportunities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|opportunity| opportunity["id"] == "benchmark_freshness"));
+
+        let opportunities =
+            handle_opportunities(dir.path(), &config, &registry, vec!["--json".into()]).unwrap();
+        let opportunities_value: Value = serde_json::from_str(&opportunities).unwrap();
+        assert_eq!(
+            opportunities_value["opportunities"][0]["id"],
+            "benchmark_freshness"
         );
     }
 
