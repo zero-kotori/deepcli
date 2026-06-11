@@ -2578,6 +2578,7 @@ fn format_recipes_text(
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
                 opportunity
@@ -2783,6 +2784,7 @@ struct ScorecardOpportunity {
     title: &'static str,
     summary: String,
     impact: &'static str,
+    effort: &'static str,
     status: &'static str,
     next_actions: Vec<String>,
 }
@@ -2979,6 +2981,7 @@ fn format_opportunities_text(
             ));
             lines.push(format!("  summary: {}", opportunity.summary));
             lines.push(format!("  impact: {}", opportunity.impact));
+            lines.push(format!("  effort: {}", opportunity.effort));
             lines.push("  next actions:".to_string());
             lines.extend(
                 opportunity
@@ -3601,6 +3604,7 @@ fn scorecard_product_opportunities(
                 "A ready competitor baseline is available; compare current evidence against it."
                     .to_string(),
             impact: "keeps SOTA claims grounded in a local competitor benchmark",
+            effort: "low",
             status: "available",
             next_actions: baseline_actions,
         }
@@ -3612,6 +3616,7 @@ fn scorecard_product_opportunities(
                 "Capture a current baseline and prepare a competitor baseline before the next SOTA comparison."
                     .to_string(),
             impact: "turns ready product evidence into comparable benchmark evidence",
+            effort: "medium",
             status: "available",
             next_actions: baseline_actions,
         }
@@ -3626,6 +3631,7 @@ fn scorecard_product_opportunities(
                 "Review the ready round and SOTA recipe as the next product-design entrypoint."
                     .to_string(),
             impact: "keeps the designer-engineer loop discoverable after all gates pass",
+            effort: "low",
             status: "available",
             next_actions: vec![
                 SCORECARD_ROUND_REPORT_ACTION.to_string(),
@@ -3654,6 +3660,7 @@ fn scorecard_opportunities_json(opportunities: &[ScorecardOpportunity]) -> Vec<V
                 "title": opportunity.title,
                 "summary": opportunity.summary,
                 "impact": opportunity.impact,
+                "effort": opportunity.effort,
                 "status": opportunity.status,
                 "nextActions": opportunity.next_actions,
                 "checklist": scorecard_action_checklist(&opportunity.next_actions),
@@ -4013,6 +4020,7 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
                 opportunity
@@ -4726,6 +4734,7 @@ fn format_round_text(workspace: &Path, input: RoundTextInput<'_>) -> String {
             ));
             lines.push(format!("    summary: {}", opportunity.summary));
             lines.push(format!("    impact: {}", opportunity.impact));
+            lines.push(format!("    effort: {}", opportunity.effort));
             lines.push("    next actions:".to_string());
             lines.extend(
                 opportunity
@@ -35952,6 +35961,7 @@ mod tests {
             .iter()
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
             .expect("opportunities should include the competitor baseline workflow");
+        assert_eq!(baseline_opportunity["effort"], "medium");
         assert_eq!(
             baseline_opportunity["nextActions"][0],
             "deepcli benchmark baselines --json"
@@ -36834,6 +36844,7 @@ mod tests {
             .find(|opportunity| opportunity["id"] == "competitor_baseline")
             .expect("ready round should recommend competitor baseline setup");
         assert_eq!(baseline_opportunity["status"], "available");
+        assert_eq!(baseline_opportunity["effort"], "medium");
         assert!(baseline_opportunity["summary"]
             .as_str()
             .unwrap()
@@ -36858,6 +36869,11 @@ mod tests {
             value["scorecard"]["opportunities"][0]["id"],
             baseline_opportunity["id"]
         );
+        let loop_opportunity = opportunities
+            .iter()
+            .find(|opportunity| opportunity["id"] == "product_loop_experience")
+            .expect("ready round should recommend exercising the product loop");
+        assert_eq!(loop_opportunity["effort"], "low");
         assert!(value["report"].as_str().unwrap().contains("opportunities:"));
     }
 

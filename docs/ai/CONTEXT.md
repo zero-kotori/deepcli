@@ -295,7 +295,7 @@
 
 57. ready 产品循环优先推荐当前 baseline 捕获
    - 结果：`scorecard`、`round` 和 `recipes sota` 在默认 competitor baseline 缺失且本地 required benchmark artifact 可完整捕获时，会先推荐 `deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json`。
-   - 行为：该动作排在手工 `.deepcli/baselines/competitor.json` 模板之前；如果默认 competitor baseline 已存在，仍只推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`；如果当前 artifact 缺失或缺少 duration，则仍只推荐手工 baseline template。
+   - 行为：该动作排在手工 `.deepcli/baselines/competitor.json` 模板之前；如果默认 competitor baseline 已 ready，才推荐 `deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json`；如果当前 artifact 缺失或缺少 duration，则仍只推荐手工 baseline template。
    - 目的：让 ready 产品循环直接暴露零手填的本地基线捕获路径，同时保留竞品或旧版本手工 baseline 工作流。
 
 58. fork workspace-aware 恢复命令
@@ -824,7 +824,7 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
 
 136. Benchmark Trends Baseline Navigation
    - 产品缺口：`deepcli benchmark trends --json` 在 trends 状态已 ok 或 regression 时固定推荐默认 competitor baseline compare；当 `.deepcli/baselines/competitor.json` 缺失时，这会让用户从趋势页跳到一个不可完成的 compare 路径，而 scorecard、round 和 recipes sota 已经有状态感知 baseline 导航。
-   - 结果：`benchmark trends` 的 JSON 和文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`；empty 状态仍先提示采集证据，insufficient_history 状态先提示 `deepcli round --json --run-benchmark --fail-on-command` 补样本，再追加 baseline 导航；其它状态根据默认 baseline 是否存在选择 `baseline-template --from-current`、手工 template 或 compare。
+   - 结果：`benchmark trends` 的 JSON 和文本 next actions 改为复用 `sota_baseline_next_actions(workspace)`；empty 状态仍先提示采集证据，insufficient_history 状态先提示 `deepcli round --json --run-benchmark --fail-on-command` 补样本，再追加 baseline 导航；其它状态根据默认 baseline 是否 ready 选择 `baseline-template --from-current`、手工 template、baseline inventory 或 compare。
    - 目的：benchmark 趋势页、SOTA 循环页和 baseline inventory 的后续动作保持一致，外部 UI 不会在默认 baseline 缺失时提前展示必然失败的 compare 按钮。
 
 137. Benchmark Exploration Baseline Navigation
@@ -839,11 +839,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
 
 139. Ready Round Product Opportunities
    - 产品缺口：当 `scorecard` 和 `round` 都 ready 且没有 gaps 时，JSON 只剩 preflight、gate 和 baseline 维护动作；外部 UI 难以区分“必须修复的缺口”和“下一轮可继续推进的产品机会”，持续产品循环容易停在 100 分报告上。
-   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
+   - 结果：`deepcli.scorecard.v1`、`deepcli.scorecard.summary.v1` 和 `deepcli.round.v1` 增加非阻塞 `opportunities[]`，每项包含 id、title、summary、impact、effort、status、nextActions 和 checklist；ready round 文本也展示 opportunities。首批机会聚焦 competitor baseline 准备/对比和 SOTA product loop 体验复查。
    - 目的：ready 状态继续给产品设计师和外部 UI 提供下一轮可选方向，同时不把机会误标成 gaps，不改变 gates、status 或现有 nextActions。
 
 140. SOTA Recipe Product Opportunities
-   - 产品缺口：`scorecard` 和 `round` 已经能输出非阻塞 `opportunities[]`，但用户从 `deepcli recipes sota --json` 这个产品循环入口进入时仍只能看到 checklist/nextActions，缺少机会的 summary、impact 和 status。
+   - 产品缺口：`scorecard` 和 `round` 已经能输出非阻塞 `opportunities[]`，但用户从 `deepcli recipes sota --json` 这个产品循环入口进入时仍只能看到 checklist/nextActions，缺少机会的 summary、impact、effort 和 status。
    - 结果：`deepcli.recipes.v1` 在 `sota` topic 下复用当前 `round` 的 `opportunities[]`，普通 topic 返回空数组；文本模式在有机会时也展示 opportunities。
    - 目的：外部产品循环页、TUI recipe 面板和脚本入口可以在同一份 SOTA recipe 报告里同时渲染动作按钮和机会说明，不必额外调用 round 或自行解释动作原因。
 
@@ -886,6 +886,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 产品缺口：用户按推荐生成 `.deepcli/baselines/competitor.json` 手工模板后，该文件已经存在但仍是 `needs_values`；共享 SOTA baseline 导航会把“文件存在”误判成“可 compare”，让 scorecard、round、recipes、opportunities 和 benchmark 探索入口提前显示 compare。
    - 结果：`sota_baseline_next_actions` 现在只有在默认 competitor baseline 覆盖 required presets 且每个 case 都有 `status`/`durationMs` 时才返回 compare；默认 baseline 存在但缺值或无效时返回只读 `deepcli benchmark baselines --json`，让 inventory 展示 `needs_values`、人工编辑提示和后续 compare。
    - 目的：SOTA 横向对比从“模板文件已写入”推进到“baseline 已可比”之前，不再误导用户直接 compare，外部 UI 可以先渲染 inventory 状态和缺值说明。
+
+149. Product Opportunity Effort Signals
+   - 产品缺口：ready 后的 `opportunities[]` 已经包含 summary、impact 和动作清单，但 `effort` 为空，用户和外部 UI 无法同时判断收益与执行成本，也无法把机会卡片按轻重缓急排序。
+   - 结果：`ScorecardOpportunity` 增加稳定 `effort` 字段，并在 scorecard、round、recipes sota 和 opportunities JSON/text 中复用；准备 competitor baseline 标记为 `medium`，已有 ready baseline 的 compare 和产品循环体验复查标记为 `low`。
+   - 目的：产品循环入口从“下一步按钮列表”进一步变成可决策的机会队列，帮助用户在 gates 全绿后继续选择最高价值的迭代方向。
 
 ## 下一步建议
 
