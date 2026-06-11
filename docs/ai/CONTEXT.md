@@ -1017,6 +1017,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.round.v1` 增加顶层 `summary`，包含 status、ready、scoreThreshold、scorecardPercent、benchmarkStatus、benchmarkFreshnessStatus、benchmarkFreshnessAgeSeconds、benchmarkFreshnessAge、benchmarkRefreshRecommended、gateCount、passedGateCount、failedGateCount、gapCount、opportunityCount、recommendedOpportunityId，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：产品循环页、TUI round 面板和脚本可以直接渲染本轮状态页头和主 CTA，不再复制 round 聚合与动作命名逻辑。
 
+175. Opportunities Page Summary
+   - 产品缺口：`deepcli opportunities --json` 是产品机会页入口，但页头若要展示筛选条件、当前/总/过滤掉的机会数、推荐机会和主推荐按钮，仍需要扫描 `opportunities[]`、解析 `filter` 或复制 checklist 推导逻辑。
+   - 结果：`deepcli.opportunities.v1` 增加顶层 `summary`，包含 status、ready、priorityFilter、effortFilter、opportunityCount、totalOpportunityCount、filteredOutOpportunityCount、recommendedOpportunityId，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
+   - 目的：机会页、TUI product opportunities 面板和脚本可以直接渲染筛选后的机会页头和主 CTA，不再复制机会筛选摘要与动作命名逻辑。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。

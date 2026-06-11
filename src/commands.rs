@@ -3124,6 +3124,7 @@ fn format_opportunities_json(
     next_actions: &[String],
     report: &str,
 ) -> Result<String> {
+    let checklist = scorecard_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
         "schema": "deepcli.opportunities.v1",
         "status": round.status,
@@ -3134,6 +3135,7 @@ fn format_opportunities_json(
             "command": "deepcli round --json",
         },
         "filter": opportunity_filter_json(options),
+        "summary": opportunities_summary_json(round, opportunities, options, &checklist),
         "opportunityCount": opportunities.len(),
         "totalOpportunityCount": round.opportunities.len(),
         "filteredOutOpportunityCount": round.opportunities.len().saturating_sub(opportunities.len()),
@@ -3144,9 +3146,42 @@ fn format_opportunities_json(
         "availableEffortCounts": scorecard_opportunity_effort_counts_json(&round.opportunities),
         "opportunities": scorecard_opportunities_json(opportunities),
         "nextActions": next_actions,
-        "checklist": scorecard_action_checklist(next_actions),
+        "checklist": checklist,
         "report": report,
     }))?)
+}
+
+fn opportunities_summary_json(
+    round: &RoundReport,
+    opportunities: &[ScorecardOpportunity],
+    options: &OpportunitiesOptions,
+    checklist: &[Value],
+) -> Value {
+    let recommended_action = checklist
+        .first()
+        .and_then(|item| item.get("command"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let recommended_action_label = checklist
+        .first()
+        .and_then(|item| item.get("label"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    json!({
+        "status": round.status,
+        "ready": round.status == "ready",
+        "priorityFilter": options.priority_filter,
+        "effortFilter": options.effort_filter,
+        "opportunityCount": opportunities.len(),
+        "totalOpportunityCount": round.opportunities.len(),
+        "filteredOutOpportunityCount": round.opportunities.len().saturating_sub(opportunities.len()),
+        "recommendedOpportunityId": opportunities
+            .first()
+            .map(|opportunity| Value::from(opportunity.id))
+            .unwrap_or(Value::Null),
+        "recommendedAction": recommended_action,
+        "recommendedActionLabel": recommended_action_label,
+    })
 }
 
 fn opportunity_filter_json(options: &OpportunitiesOptions) -> Value {
@@ -36838,9 +36873,23 @@ mod tests {
         assert_eq!(value["source"]["command"], "deepcli round --json");
         assert!(value["opportunityCount"].as_u64().unwrap() >= 2);
         let opportunities = value["opportunities"].as_array().unwrap();
+        assert_eq!(value["summary"]["status"], value["status"]);
+        assert_eq!(value["summary"]["ready"], value["ready"]);
+        assert_eq!(value["summary"]["priorityFilter"], Value::Null);
+        assert_eq!(value["summary"]["effortFilter"], Value::Null);
+        assert_eq!(value["summary"]["opportunityCount"], opportunities.len());
+        assert_eq!(
+            value["summary"]["totalOpportunityCount"],
+            value["totalOpportunityCount"]
+        );
+        assert_eq!(value["summary"]["filteredOutOpportunityCount"], 0);
         assert_eq!(
             value["recommendedOpportunity"]["id"],
             opportunities[0]["id"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedOpportunityId"],
+            value["recommendedOpportunity"]["id"]
         );
         assert_eq!(
             value["recommendedOpportunity"]["checklist"][0]["command"],
@@ -36868,6 +36917,14 @@ mod tests {
             action == "deepcli benchmark baseline-template --from-current --name current-main --output .deepcli/baselines/current-main.json --json"
         }));
         assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
 
         let text = handle_opportunities(dir.path(), &config, &registry, Vec::new()).unwrap();
         assert!(text.contains("recommended opportunity: competitor_baseline (high, medium)"));
@@ -36896,11 +36953,20 @@ mod tests {
         assert_eq!(value["opportunityCount"], 1);
         assert_eq!(value["totalOpportunityCount"], 2);
         assert_eq!(value["filteredOutOpportunityCount"], 1);
+        assert_eq!(value["summary"]["priorityFilter"], "medium");
+        assert_eq!(value["summary"]["effortFilter"], Value::Null);
+        assert_eq!(value["summary"]["opportunityCount"], 1);
+        assert_eq!(value["summary"]["totalOpportunityCount"], 2);
+        assert_eq!(value["summary"]["filteredOutOpportunityCount"], 1);
         assert_eq!(value["availablePriorityCounts"]["high"], 1);
         assert_eq!(value["availablePriorityCounts"]["medium"], 1);
         assert_eq!(value["opportunityPriorityCounts"]["medium"], 1);
         assert_eq!(
             value["recommendedOpportunity"]["id"],
+            "product_loop_experience"
+        );
+        assert_eq!(
+            value["summary"]["recommendedOpportunityId"],
             "product_loop_experience"
         );
         let opportunities = value["opportunities"].as_array().unwrap();
@@ -36915,6 +36981,14 @@ mod tests {
             ]
         );
         assert_checklist_matches_executable_actions(&value, &next_actions);
+        assert_eq!(
+            value["summary"]["recommendedAction"],
+            value["checklist"][0]["command"]
+        );
+        assert_eq!(
+            value["summary"]["recommendedActionLabel"],
+            value["checklist"][0]["label"]
+        );
         assert!(value["report"]
             .as_str()
             .unwrap()
