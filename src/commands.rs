@@ -4662,7 +4662,9 @@ fn build_round_report(
             title: "Benchmark Evidence",
             status: if benchmark_ready { "passed" } else { "failed" },
             summary: round_benchmark_gate_summary(&benchmark),
-            next_action: if benchmark_ready {
+            next_action: if let Some(action) = benchmark_freshness_refresh_action(&benchmark) {
+                Some(action.to_string())
+            } else if benchmark_ready {
                 Some("deepcli benchmark summary --json".to_string())
             } else {
                 Some("deepcli round --json --run-benchmark --fail-on-command".to_string())
@@ -38443,6 +38445,20 @@ mod tests {
                     .unwrap()
                     .contains("freshness=aging age=2d")
         }));
+        let benchmark_gate = round_value["gates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|gate| gate["id"] == "benchmark_evidence")
+            .unwrap();
+        assert_eq!(
+            benchmark_gate["nextAction"],
+            SCORECARD_BENCHMARK_REMEDIATION_ACTION
+        );
+        assert_eq!(
+            benchmark_gate["checklist"][0]["label"],
+            "Refresh benchmark evidence"
+        );
         assert!(round_value["report"]
             .as_str()
             .unwrap()

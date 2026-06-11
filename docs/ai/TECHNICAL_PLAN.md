@@ -43,6 +43,8 @@ CLI 入口在构造 `AgentRuntime` 前应识别本地 one-shot slash 命令。`/
 
 `deepcli.round.v1` 顶层同时输出从全局 `nextActions` 派生的 `checklist[]`，每项包含 step、label 和 command；gate-level `checklist[]` 继续从 `gates[].nextAction` 派生，内嵌 scorecard categories 继续保留分类级 `checklist[]`。这样外部 UI 读取单份 round 报告即可渲染全局动作队列、gate 修复按钮、非阻塞机会和分类修复面板，不需要解析 report 文本或额外调用 scorecard。
 
+当 benchmark evidence gate 已 passed 但 `benchmark_freshness_refresh_action` 返回刷新命令时，gate-level `nextAction` 应优先使用该刷新命令，并由 `round_gate_checklist` 生成 `Refresh benchmark evidence` 按钮；只有 freshness 不需要刷新时才回退到 `deepcli benchmark summary --json`。
+
 Ready round 与 ok scorecard 的顶层 baseline 后续动作应复用 `opportunity_baseline_next_actions(sota_baseline_next_actions(workspace))`，先给 `deepcli benchmark baselines --json`，再给 `baseline-template` 或 `compare`；`round.checklist[]` 和 `scorecard.checklist[]` 必须从这个 inventory-first 队列派生，避免产品循环页或评分页直接跳到写本地 baseline artifact。
 
 ## 3. 推荐目录结构

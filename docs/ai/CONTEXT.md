@@ -967,6 +967,11 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：ready round 顶层 `nextActions` 现在在 preflight/gate 后加入 `deepcli recipes sota --json`，再进入 `deepcli opportunities --json` 和 baseline inventory/template/compare 队列；`checklist[]` 同步显示 `Open SOTA product loop recipe`。`recipes sota --json` 复用 round 队列时会过滤这个自引用，避免 recipe 自己推荐打开自己。
    - 目的：round 主状态页能直接连接完整产品循环 playbook 和当前机会页，减少 ready 状态下的入口断裂。
 
+165. Benchmark Gate Freshness Action
+   - 产品缺口：benchmark evidence 已 ready 但 freshness 为 aging/stale 时，round 顶层动作和机会对象会提示刷新，但 `benchmark_evidence` gate 自己仍给 `deepcli benchmark summary --json`，按 gate 卡片渲染的 UI 看不到刷新按钮。
+   - 结果：当 `benchmark_freshness_refresh_action` 存在时，`benchmark_evidence` gate 的 `nextAction` 改为 `deepcli round --json --run-benchmark --fail-on-command`，`checklist[]` 同步显示 `Refresh benchmark evidence`；freshness 不需要刷新时仍保留 summary 动作。
+   - 目的：round 全局动作、机会对象和 gate-level 按钮在 aging/stale benchmark evidence 上保持一致，用户从任一视图都能直接刷新证据。
+
 ## 下一步建议
 
 - 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
