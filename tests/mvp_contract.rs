@@ -156,6 +156,28 @@ fn mvp_tool_registry_exposes_required_tools() {
 }
 
 #[test]
+fn tool_declarations_own_provider_schema() {
+    let registry = ToolRegistry::mvp();
+    let specs = registry.tool_specs();
+    for declaration in registry.declarations() {
+        assert_eq!(
+            declaration.parameters["type"], "object",
+            "{} should expose an object parameter schema",
+            declaration.name
+        );
+        let spec = specs
+            .iter()
+            .find(|spec| spec.function.name == declaration.name)
+            .unwrap_or_else(|| panic!("{} missing provider spec", declaration.name));
+        assert_eq!(
+            spec.function.parameters, declaration.parameters,
+            "{} provider schema should come from its declaration",
+            declaration.name
+        );
+    }
+}
+
+#[test]
 fn default_config_matches_documented_mvp_defaults() {
     let config = AppConfig::default();
     assert_eq!(config.default_provider, "deepseek");

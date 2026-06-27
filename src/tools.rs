@@ -27,6 +27,7 @@ pub struct ToolDeclaration {
     pub name: String,
     pub description: String,
     pub surface: ToolSurface,
+    pub parameters: Value,
     pub writes_files: bool,
     pub requires_network: bool,
     pub can_run_parallel: bool,
@@ -312,7 +313,7 @@ impl ToolRegistry {
                 function: ToolFunctionSpec {
                     name: declaration.name.clone(),
                     description: declaration.description.clone(),
-                    parameters: schema_for(&declaration.name),
+                    parameters: declaration.parameters.clone(),
                 },
             })
             .collect()
@@ -1907,6 +1908,7 @@ fn declaration(
         name: name.to_string(),
         description: description.to_string(),
         surface,
+        parameters: schema_for(name),
         writes_files,
         requires_network,
         can_run_parallel,
