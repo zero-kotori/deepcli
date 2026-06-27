@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-`src/tools.rs` owns tool execution for file reads/writes, patching, shell, Git, tests, web search, terminal launch, prompt/skill helpers, and subagent spawning. `src/tools/declarations.rs` owns `ToolDeclaration`, `ToolRegistry`, and permission request construction. `src/tools/schema.rs` owns provider argument schemas used to build `ToolSpec`. `src/tools/environment.rs` owns environment check/setup models, Docker/compiler readiness, setup actions, and environment report formatting. `src/tools/test_discovery.rs` owns project test command discovery and discovered-test formatting.
+`src/tools.rs` owns tool execution for file reads/writes, patching, shell, Git, tests, web search, terminal launch, prompt/skill helpers, and subagent spawning. `src/tools/declarations.rs` owns `ToolDeclaration`, `ToolRegistry`, and permission request construction. `src/tools/schema.rs` owns provider argument schemas used to build `ToolSpec`. `src/tools/process.rs` owns shell command output models and process execution helpers. `src/tools/environment.rs` owns environment check/setup models, Docker/compiler readiness, setup actions, and environment report formatting. `src/tools/test_discovery.rs` owns project test command discovery and discovered-test formatting.
 
 ## Boundaries
 

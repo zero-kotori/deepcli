@@ -1,4 +1,5 @@
-use super::{first_line, output_text, run_command_with_timeout, CommandOutput};
+use super::first_line;
+use super::process::{output_text, run_command_with_timeout, CommandOutput};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
