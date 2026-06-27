@@ -394,6 +394,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/usage.rs",
         "src/commands/status.rs",
         "src/commands/test.rs",
+        "src/commands/skill.rs",
         "src/commands/config.rs",
         "src/commands/privacy.rs",
     ] {
