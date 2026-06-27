@@ -373,6 +373,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/registry.rs",
         "src/commands/parser.rs",
         "src/commands/help.rs",
+        "src/commands/completion.rs",
     ] {
         assert!(
             root.join(source).exists(),

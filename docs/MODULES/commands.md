@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-`src/commands.rs` currently owns command dispatch, most one-shot command handlers, stable JSON report builders, scorecard, benchmark, session-facing reports, support diagnostics, and local workflow formatting. `src/commands/help.rs` owns command help topics, help text formatting, topic alias normalization, and help summaries. `src/commands/parser.rs` owns slash command parsing, public slash command variants, aliases, and argument normalization. `src/commands/registry.rs` owns command group metadata, help summary types, and running-safe classification. `src/commands/response.rs` owns shared command output helpers, workspace-contained `--output` writes, and structured command exits.
+`src/commands.rs` currently owns command dispatch, most one-shot command handlers, stable JSON report builders, scorecard, benchmark, session-facing reports, support diagnostics, and local workflow formatting. `src/commands/completion.rs` owns shell completion command catalogs, script formatting, install/status reports, and completion output writes. `src/commands/help.rs` owns command help topics, help text formatting, topic alias normalization, and help summaries. `src/commands/parser.rs` owns slash command parsing, public slash command variants, aliases, and argument normalization. `src/commands/registry.rs` owns command group metadata, help summary types, and running-safe classification. `src/commands/response.rs` owns shared command output helpers, workspace-contained `--output` writes, and structured command exits.
 
 ## Boundaries
 
