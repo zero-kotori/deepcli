@@ -380,6 +380,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/preflight.rs",
         "src/commands/credentials.rs",
         "src/commands/approval.rs",
+        "src/commands/btw.rs",
         "src/commands/permissions.rs",
         "src/commands/timeout.rs",
         "src/commands/model.rs",
