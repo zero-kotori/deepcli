@@ -385,6 +385,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/trace.rs",
         "src/commands/context.rs",
         "src/commands/usage.rs",
+        "src/commands/status.rs",
     ] {
         assert!(
             root.join(source).exists(),
