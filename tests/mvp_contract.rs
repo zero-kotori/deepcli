@@ -403,6 +403,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/privacy.rs",
         "src/commands/goal.rs",
         "src/commands/diagnose.rs",
+        "src/commands/doctor.rs",
     ] {
         assert!(
             root.join(source).exists(),
