@@ -379,6 +379,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/selftest.rs",
         "src/commands/preflight.rs",
         "src/commands/credentials.rs",
+        "src/commands/approval.rs",
         "src/commands/permissions.rs",
         "src/commands/timeout.rs",
         "src/commands/model.rs",

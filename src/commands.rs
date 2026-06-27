@@ -8,11 +8,13 @@ use crate::privacy::{
 };
 use crate::prompts::PromptStore;
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
+#[cfg(test)]
+use crate::session::ApprovalRequest;
 use crate::session::{
-    ApprovalRequest, ApprovalStatus, AuditEvent, GoalContract, GoalStatus, Plan, PlanStep,
-    PlanStepStatus, Session, SessionActivitySummary, SessionBackupRecord, SessionDiffRecord,
-    SessionMessage, SessionMetadata, SessionState, SessionStore, SideQuestion, SideQuestionStatus,
-    TestRunRecord, ToolCallRecord, ToolCallStatus,
+    ApprovalStatus, AuditEvent, GoalContract, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
+    SessionActivitySummary, SessionBackupRecord, SessionDiffRecord, SessionMessage,
+    SessionMetadata, SessionState, SessionStore, SideQuestion, SideQuestionStatus, TestRunRecord,
+    ToolCallRecord, ToolCallStatus,
 };
 use crate::skills::{LoadedSkill, SkillMetadata, SkillStore};
 use crate::tools::{
@@ -31,6 +33,7 @@ use std::process::{Command as ProcessCommand, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
+mod approval;
 mod completion;
 mod config;
 mod context;
@@ -54,6 +57,9 @@ mod trace;
 mod usage;
 mod version;
 
+#[cfg(test)]
+use approval::format_approval_requests;
+pub(crate) use approval::handle_approval;
 pub(crate) use completion::handle_completion_local;
 use completion::{
     completion_commands, completion_shell_name, completion_status_json_value,
@@ -17325,298 +17331,6 @@ fn format_session_backups(records: &[SessionBackupRecord], limit: usize) -> Stri
         })
         .collect::<Vec<_>>()
         .join("\n\n")
-}
-
-pub(crate) fn handle_approval(
-    workspace: &Path,
-    current: Option<String>,
-    args: Vec<String>,
-) -> Result<String> {
-    let store = SessionStore::new(workspace);
-    match args.first().map(String::as_str) {
-        None | Some("list") => {
-            let options = parse_scoped_list_args(&args[1..], current, "/approval list")?;
-            let fallback = if options.include_all {
-                SessionFallbackKind::ApprovalRequests
-            } else {
-                SessionFallbackKind::PendingApprovalRequests
-            };
-            let (session, note) = resolve_session_for_optional_inspection(
-                &store,
-                options.session_id.as_deref(),
-                options.explicit_session,
-                fallback,
-            )?;
-            let requests = session.load_approval_requests()?;
-            let report = prefix_session_note(
-                format_approval_requests(&requests, options.include_all),
-                &session,
-                note.clone(),
-            );
-            let output = if options.json_output {
-                format_approval_list_json(
-                    workspace,
-                    &session,
-                    note.as_deref(),
-                    options.include_all,
-                    &requests,
-                    &report,
-                )?
-            } else {
-                report
-            };
-            if let Some(output_path) = &options.output_path {
-                write_command_output(workspace, output_path, &output)?;
-            }
-            Ok(output)
-        }
-        Some("approve") => {
-            let approval_id = required_arg(&args, 1, "approval request id")?;
-            let options = parse_queue_action_options(
-                &args[2..],
-                "/approval approve <id> [--current] [--json] [--output path]",
-            )?;
-            let session = resolve_session_for_approval_action(
-                &store,
-                current.as_deref(),
-                approval_id,
-                options.current_only,
-            )?;
-            let item = session.update_approval_request(approval_id, ApprovalStatus::Approved)?;
-            let report = format!(
-                "approved request {} in session {}",
-                short_id(&item.id),
-                session.id()
-            );
-            let output = if options.json_output {
-                format_approval_action_json(workspace, &session, "approve", &item, &report)?
-            } else {
-                report
-            };
-            if let Some(output_path) = &options.output_path {
-                write_command_output(workspace, output_path, &output)?;
-            }
-            Ok(output)
-        }
-        Some("deny") => {
-            let approval_id = required_arg(&args, 1, "approval request id")?;
-            let options = parse_queue_action_options(
-                &args[2..],
-                "/approval deny <id> [--current] [--json] [--output path]",
-            )?;
-            let session = resolve_session_for_approval_action(
-                &store,
-                current.as_deref(),
-                approval_id,
-                options.current_only,
-            )?;
-            let item = session.update_approval_request(approval_id, ApprovalStatus::Denied)?;
-            let report = format!(
-                "denied request {} in session {}",
-                short_id(&item.id),
-                session.id()
-            );
-            let output = if options.json_output {
-                format_approval_action_json(workspace, &session, "deny", &item, &report)?
-            } else {
-                report
-            };
-            if let Some(output_path) = &options.output_path {
-                write_command_output(workspace, output_path, &output)?;
-            }
-            Ok(output)
-        }
-        Some("clear") => {
-            let options = parse_scoped_action_args(
-                &args[1..],
-                current,
-                "/approval clear [--json] [--output path] [session_id|--current]",
-            )?;
-            let (session, _note) = resolve_session_for_inspection(
-                &store,
-                &options.session_id,
-                options.explicit_session,
-                SessionFallbackKind::PendingApprovalRequests,
-            )?;
-            let cleared = session.clear_pending_approval_requests()?;
-            let report = format!(
-                "cleared {cleared} pending approval request(s) in session {}",
-                session.id()
-            );
-            let output = if options.json_output {
-                format_approval_clear_json(workspace, &session, cleared, &report)?
-            } else {
-                report
-            };
-            if let Some(output_path) = &options.output_path {
-                write_command_output(workspace, output_path, &output)?;
-            }
-            Ok(output)
-        }
-        Some(other) => bail!("unsupported /approval action `{other}`"),
-    }
-}
-
-fn format_approval_requests(items: &[ApprovalRequest], include_all: bool) -> String {
-    let rows = items
-        .iter()
-        .filter(|item| include_all || item.status == ApprovalStatus::Pending)
-        .map(|item| {
-            format!(
-                "{} [{}] tool={} risk={:?} outcome={:?} reason={}",
-                short_id(&item.id),
-                approval_status_label(&item.status),
-                item.tool,
-                item.decision.risk,
-                item.decision.outcome,
-                redact_sensitive_text(&item.decision.reason)
-            )
-        })
-        .collect::<Vec<_>>();
-    if rows.is_empty() {
-        "no approval requests".to_string()
-    } else {
-        rows.join("\n")
-    }
-}
-
-fn format_approval_list_json(
-    workspace: &Path,
-    session: &Session,
-    note: Option<&str>,
-    include_all: bool,
-    requests: &[ApprovalRequest],
-    report: &str,
-) -> Result<String> {
-    let items = requests
-        .iter()
-        .filter(|item| include_all || item.status == ApprovalStatus::Pending)
-        .map(approval_request_json)
-        .collect::<Vec<_>>();
-    let activity = session.activity_summary()?;
-    let next_actions = approval_list_next_actions(session, include_all, requests);
-    let checklist = local_action_checklist(&next_actions);
-    Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.list.v1",
-        "status": "ok",
-        "workspace": workspace.display().to_string(),
-        "note": note,
-        "includeAll": include_all,
-        "session": session_inspect_metadata_json(session),
-        "activity": session_activity_json(&activity),
-        "itemCount": items.len(),
-        "totalCount": requests.len(),
-        "pendingCount": requests
-            .iter()
-            .filter(|item| item.status == ApprovalStatus::Pending)
-            .count(),
-        "approvals": items,
-        "checklist": checklist,
-        "nextActions": next_actions,
-        "report": report,
-    }))?)
-}
-
-fn approval_list_next_actions(
-    session: &Session,
-    include_all: bool,
-    requests: &[ApprovalRequest],
-) -> Vec<String> {
-    let session_id = session.id().to_string();
-    let mut actions = Vec::new();
-    if let Some(item) = requests
-        .iter()
-        .find(|item| item.status == ApprovalStatus::Pending)
-    {
-        let short = short_id(&item.id);
-        actions.push(format!("deepcli approval approve {short}"));
-        actions.push(format!("deepcli approval deny {short}"));
-    }
-    actions.push(format!("deepcli approval list {session_id} --json"));
-    if !include_all {
-        actions.push(format!("deepcli approval list {session_id} --all --json"));
-    }
-    actions.push("deepcli help approval".to_string());
-    dedup_preserve_order(actions)
-}
-
-fn approval_action_next_actions(session: &Session) -> Vec<String> {
-    let session_id = session.id().to_string();
-    vec![
-        format!("deepcli approval list {session_id} --json"),
-        format!("deepcli approval list {session_id} --all --json"),
-        "deepcli help approval".to_string(),
-    ]
-}
-
-fn format_approval_action_json(
-    workspace: &Path,
-    session: &Session,
-    action: &str,
-    item: &ApprovalRequest,
-    report: &str,
-) -> Result<String> {
-    let next_actions = approval_action_next_actions(session);
-    let checklist = local_action_checklist(&next_actions);
-    Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.action.v1",
-        "status": "ok",
-        "workspace": workspace.display().to_string(),
-        "action": action,
-        "session": session_inspect_metadata_json(session),
-        "approval": approval_request_json(item),
-        "clearedCount": Value::Null,
-        "checklist": checklist,
-        "nextActions": next_actions,
-        "report": report,
-    }))?)
-}
-
-fn format_approval_clear_json(
-    workspace: &Path,
-    session: &Session,
-    cleared: usize,
-    report: &str,
-) -> Result<String> {
-    let next_actions = approval_action_next_actions(session);
-    let checklist = local_action_checklist(&next_actions);
-    Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.action.v1",
-        "status": "ok",
-        "workspace": workspace.display().to_string(),
-        "action": "clear",
-        "session": session_inspect_metadata_json(session),
-        "approval": Value::Null,
-        "clearedCount": cleared,
-        "checklist": checklist,
-        "nextActions": next_actions,
-        "report": report,
-    }))?)
-}
-
-fn approval_request_json(item: &ApprovalRequest) -> Value {
-    json!({
-        "id": item.id.to_string(),
-        "shortId": short_id(&item.id),
-        "status": &item.status,
-        "tool": item.tool.as_str(),
-        "decision": {
-            "risk": &item.decision.risk,
-            "outcome": &item.decision.outcome,
-            "reason": redact_sensitive_text(&item.decision.reason),
-        },
-        "createdAt": &item.created_at,
-        "updatedAt": &item.updated_at,
-    })
-}
-
-fn approval_status_label(status: &ApprovalStatus) -> &'static str {
-    match status {
-        ApprovalStatus::Pending => "pending",
-        ApprovalStatus::Approved => "approved",
-        ApprovalStatus::Denied => "denied",
-        ApprovalStatus::Cleared => "cleared",
-    }
 }
 
 fn handle_btw(workspace: &Path, current: Option<String>, args: Vec<String>) -> Result<String> {
