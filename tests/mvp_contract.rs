@@ -368,15 +368,16 @@ fn tools_module_docs_cover_split_source_files() {
 fn commands_module_docs_cover_response_source_file() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let commands_doc = fs::read_to_string(root.join("docs/MODULES/commands.md")).unwrap();
-    let source = "src/commands/response.rs";
-    assert!(
-        root.join(source).exists(),
-        "{source} should exist for command response ownership"
-    );
-    assert!(
-        commands_doc.contains(source),
-        "docs/MODULES/commands.md should mention {source}"
-    );
+    for source in ["src/commands/response.rs", "src/commands/registry.rs"] {
+        assert!(
+            root.join(source).exists(),
+            "{source} should exist for command module ownership"
+        );
+        assert!(
+            commands_doc.contains(source),
+            "docs/MODULES/commands.md should mention {source}"
+        );
+    }
 }
 
 fn documented_command_groups(contents: &str) -> BTreeMap<String, String> {
