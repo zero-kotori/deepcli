@@ -478,83 +478,32 @@ impl CommandRouter {
                 examples: topic.examples,
                 notes: topic.notes,
                 running_safe: is_running_safe_command_name(topic.name),
+                group: command_group_name(topic.name),
             })
             .collect()
     }
 
     pub fn command_names() -> Vec<&'static str> {
-        vec![
-            "/help",
-            "/version",
-            "/about",
-            "/quickstart",
-            "/recipes",
-            "/scorecard",
-            "/opportunities",
-            "/benchmark",
-            "/round",
-            "/selftest",
-            "/preflight",
-            "/completion",
-            "/init",
-            "/status",
-            "/usage",
-            "/health",
-            "/diagnose",
-            "/support",
-            "/doctor",
-            "/trace",
-            "/logs",
-            "/privacy",
-            "/context",
-            "/permissions",
-            "/login",
-            "/auth",
-            "/apikey",
-            "/key",
-            "/logout",
-            "/credentials",
-            "/config",
-            "/timeout",
-            "/model",
-            "/provider",
-            "/use",
-            "/switch",
-            "/models",
-            "/providers",
-            "/goal",
-            "/plan",
-            "/fork",
-            "/diff",
-            "/review",
-            "/accept",
-            "/gate",
-            "/verify",
-            "/handoff",
-            "/test",
-            "/env",
-            "/check",
-            "/docker",
-            "/compiler",
-            "/setup",
-            "/install",
-            "/git",
-            "/web",
-            "/prompt",
-            "/skill",
-            "/agent",
-            "/btw",
-            "/approval",
-            "/session",
-            "/history",
-            "/cleanup",
-            "/next",
-            "/resume",
-            "/rename",
-            "/stop",
-            "/quit",
-            "/terminal",
-        ]
+        help_topics().iter().map(|topic| topic.name).collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandGroup {
+    Core,
+    Support,
+    Legacy,
+    Experimental,
+}
+
+impl CommandGroup {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CommandGroup::Core => "core",
+            CommandGroup::Support => "support",
+            CommandGroup::Legacy => "legacy",
+            CommandGroup::Experimental => "experimental",
+        }
     }
 }
 
@@ -567,6 +516,7 @@ pub struct CommandHelpSummary {
     pub examples: &'static [&'static str],
     pub notes: &'static [&'static str],
     pub running_safe: bool,
+    pub group: CommandGroup,
 }
 
 struct CommandHelp {
@@ -12596,17 +12546,14 @@ fn completion_commands() -> Vec<CompletionCommand> {
     let mut commands = Vec::new();
     for raw_name in CommandRouter::command_names() {
         let name = raw_name.trim_start_matches('/').to_string();
-        let summary = summaries
-            .iter()
-            .find(|summary| summary.name == raw_name)
+        let metadata = summaries.iter().find(|summary| summary.name == raw_name);
+        let summary = metadata
             .map(|summary| summary.summary.to_string())
             .unwrap_or_else(|| format!("Run {raw_name}."));
-        add_completion_command(
-            &mut commands,
-            name,
-            summary,
-            is_running_safe_command_name(raw_name),
-        );
+        let running_safe = metadata
+            .map(|summary| summary.running_safe)
+            .unwrap_or_else(|| is_running_safe_command_name(raw_name));
+        add_completion_command(&mut commands, name, summary, running_safe);
     }
 
     for (name, summary) in [
@@ -13098,6 +13045,21 @@ fn is_running_safe_command_name(name: &str) -> bool {
             | "/quit"
             | "/terminal"
     )
+}
+
+fn command_group_name(name: &str) -> CommandGroup {
+    match name {
+        "/scorecard" | "/round" | "/preflight" | "/status" | "/usage" | "/trace" | "/privacy"
+        | "/permissions" | "/credentials" | "/config" | "/model" | "/goal" | "/plan" | "/fork"
+        | "/diff" | "/review" | "/accept" | "/gate" | "/verify" | "/handoff" | "/test" | "/env"
+        | "/git" | "/btw" | "/approval" | "/session" | "/resume" | "/stop" | "/quit"
+        | "/terminal" => CommandGroup::Core,
+        "/about" | "/auth" | "/apikey" | "/key" | "/provider" | "/use" | "/switch" | "/models"
+        | "/providers" | "/check" | "/docker" | "/compiler" | "/setup" | "/install"
+        | "/history" | "/cleanup" | "/rename" => CommandGroup::Legacy,
+        "/opportunities" => CommandGroup::Experimental,
+        _ => CommandGroup::Support,
+    }
 }
 
 pub fn format_session_list(sessions: &[SessionMetadata]) -> String {

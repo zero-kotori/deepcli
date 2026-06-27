@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-`src/commands.rs` currently owns slash command parsing, command help, most one-shot command handlers, stable JSON report builders, scorecard, benchmark, session-facing reports, support diagnostics, and local workflow formatting.
+`src/commands.rs` currently owns slash command parsing, command help, command group metadata, most one-shot command handlers, stable JSON report builders, scorecard, benchmark, session-facing reports, support diagnostics, and local workflow formatting.
 
 ## Boundaries
 
@@ -10,6 +10,7 @@
 - Command handlers should not directly mutate session files except through `SessionStore`.
 - Command handlers should not execute shell, Git, filesystem write, or network actions outside the tool and permission layers.
 - New public commands must update `docs/COMMANDS.md` and focused command contract tests.
+- Command group metadata exposed through `CommandHelpSummary` must stay synchronized with `docs/COMMANDS.md`.
 - Legacy aliases should remain thin wrappers over canonical commands.
 
 ## Tests

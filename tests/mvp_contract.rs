@@ -1,4 +1,4 @@
-use deepcli::commands::CommandRouter;
+use deepcli::commands::{CommandGroup, CommandRouter};
 use deepcli::config::AppConfig;
 use deepcli::tools::ToolRegistry;
 use std::collections::{BTreeMap, BTreeSet};
@@ -76,6 +76,47 @@ fn mvp_slash_commands_are_registered() {
         "/terminal",
     ] {
         assert!(help.contains(command), "{command} missing from help text");
+    }
+}
+
+#[test]
+fn command_registry_exposes_groups_and_drives_help_metadata() {
+    let summaries = CommandRouter::help_summaries();
+    let summary_names = summaries
+        .iter()
+        .map(|summary| summary.name)
+        .collect::<Vec<_>>();
+    assert_eq!(CommandRouter::command_names(), summary_names);
+
+    for summary in &summaries {
+        let topic = summary.name.trim_start_matches('/').to_string();
+        let help = CommandRouter::help_for(&[topic]).unwrap();
+        let expected_running_safe = if summary.running_safe {
+            "running-safe: yes"
+        } else {
+            "running-safe: no"
+        };
+        assert!(
+            help.contains(expected_running_safe),
+            "{} help should reflect registry running-safe metadata",
+            summary.name
+        );
+    }
+
+    for (command, expected_group) in [
+        ("/goal", CommandGroup::Core),
+        ("/plan", CommandGroup::Core),
+        ("/fork", CommandGroup::Core),
+        ("/round", CommandGroup::Core),
+        ("/benchmark", CommandGroup::Support),
+        ("/about", CommandGroup::Legacy),
+        ("/opportunities", CommandGroup::Experimental),
+    ] {
+        let summary = summaries
+            .iter()
+            .find(|summary| summary.name == command)
+            .unwrap_or_else(|| panic!("{command} missing from command summaries"));
+        assert_eq!(summary.group, expected_group, "{command} group drifted");
     }
 }
 
@@ -163,6 +204,14 @@ fn architecture_harness_docs_cover_commands_and_modules() {
         assert!(
             registered_commands.contains(command.as_str()),
             "docs/COMMANDS.md documents unknown command {command}"
+        );
+    }
+    for summary in CommandRouter::help_summaries() {
+        assert_eq!(
+            documented_commands.get(summary.name).map(String::as_str),
+            Some(summary.group.as_str()),
+            "{} command group differs between code and docs",
+            summary.name
         );
     }
 
