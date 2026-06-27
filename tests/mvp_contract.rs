@@ -381,6 +381,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/permissions.rs",
         "src/commands/timeout.rs",
         "src/commands/model.rs",
+        "src/commands/logs.rs",
     ] {
         assert!(
             root.join(source).exists(),
