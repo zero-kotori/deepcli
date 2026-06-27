@@ -1,29 +1,31 @@
 # deepcli HARNESS Refactor Handoff
 
-Updated: 2026-06-28 (after `/goal`, `/diagnose`, and `/doctor` command-handler splits)
+Updated: 2026-06-28 (after `/goal`, `/diagnose`, `/doctor`, `/recipes`, `/opportunities` splits)
 
 ## Current Stop Point
 
-The current stop point is after the `/goal`, `/diagnose`, and `/doctor`+`/init` command-handler extractions from `src/commands.rs`. The worktree is clean after the latest commits. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
+The current stop point is after the `/goal`, `/diagnose`, `/doctor`+`/init`, `/recipes`, and `/opportunities` command-handler extractions from `src/commands.rs`. The worktree is clean after the latest commits. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
 
-`src/commands.rs` is now ~33.5k lines (down from ~36.1k) and remains the largest complexity hotspot.
+`src/commands.rs` is now ~32.6k lines (down from ~36.1k) and remains the largest complexity hotspot.
 
 ## Recent Commits
 
+- `9be6096 refactor: split command opportunities handler`
+- `07a14c8 refactor: split command recipes handler`
 - `1fce47d refactor: split command doctor handler`
 - `8de0aee refactor: split command diagnose handler`
 - `29ddd35 refactor: split command goal handler`
 - `60e0772 refactor: split command resume handler`
-- `2c32aca refactor: split command git handler`
-- `09c18d6 refactor: split command web handler`
 
 ## What Was Completed
 
 - Added `src/commands/goal.rs` for `/goal` show/start/clear/status/gate handling, default goal contract creation and guard-plan generation, goal readiness collection, goal session selection, and goal text/JSON formatting. `build_round_goal_status` in `src/commands.rs` keeps consuming the goal logic through crate-internal re-exports (`select_goal_session`, `collect_goal_readiness`, `GoalSessionSource`, `GoalPlanReadiness`, `GoalAcceptanceEvidence`), so `/round` goal-status summaries still share the same readiness contract.
 - Added `src/commands/diagnose.rs` for `/diagnose` and `/support` handling: option parsing, diagnostics report JSON, redacted support-bundle generation and artifacts, issue templates, and diagnose next actions. It delegates workspace health to the `/doctor` handler and session diagnosis to the `/session` handler through `super::`. `workspace_relative_display` deliberately stayed in `src/commands.rs` because the benchmark code also uses it; `parse_diagnose_options` is re-exported `#[cfg(test)]`-only.
 - Added `src/commands/doctor.rs` for `/doctor` and `/init` handling: doctor option parsing, workspace/shell/provider/test/Git-identity health checks, shell command path resolution, provider readiness reporting and online provider probing, doctor fix application, and doctor report text/JSON formatting. `handle_doctor` and `handle_init` are re-exported non-test (and `handle_doctor` is also reached from `diagnose.rs` via `super::`). The env helpers it sits between (`environment_next_actions`, `default_environment_next_actions`, `shell_command_from_slash_command`, `dedup_preserve_order`) stayed in `src/commands.rs`; doctor imports `environment_next_actions`/`dedup_preserve_order` plus the shared Git-identity and completion helpers via `super::`. A batch of doctor helpers and the `DoctorOptions`/`ProviderProbeReport` structs are `pub(crate)` + `#[cfg(test)]`-re-exported because `commands.rs` tests call/construct them. Removing doctor also let `crate::providers::*`, `crate::workspace::WorkspaceManager`, and `serde::Serialize` drop out of the `commands.rs` import list.
+- Added `src/commands/recipes.rs` for `/recipes` topic normalization, the recipe catalog, SOTA product-loop recipe state, and recipe text/JSON formatting. It is a product-loop **leaf** (nothing depends on it), so it imports the cluster internals it consumes — `build_round_report`, `sota_baseline_next_actions`, the `scorecard_*` projection helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD`/`DEFAULT_BENCHMARK_*` consts — from `src/commands.rs` via `super::`. `sota_baseline_next_actions` and its `benchmark_*_baseline_*` helpers stayed in `src/commands.rs` because scorecard also calls them; `generic_recipe_command_label` is re-exported because scorecard/usage label helpers still call it.
+- Added `src/commands/opportunities.rs` for `/opportunities` option/filter parsing, scorecard product-opportunity filtering and next actions, and opportunity text/JSON formatting. Same leaf pattern as `/recipes`: imports `build_round_report`, `RoundReport`, the `scorecard_*` helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD` via `super::`.
 - Kept `docs/MODULES/commands.md` synchronized with each new command owner.
-- Extended `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` so `src/commands/goal.rs`, `src/commands/diagnose.rs`, and `src/commands/doctor.rs` must exist and be documented.
+- Extended `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` so `goal.rs`, `diagnose.rs`, `doctor.rs`, `recipes.rs`, and `opportunities.rs` must exist and be documented.
 
 ## Verification Method
 
@@ -36,13 +38,13 @@ Regression proof on Windows: `cargo test commands::tests --lib` reports 23 pre-e
 
 ## Remaining Work
 
-The cleanly-isolated command handlers are now largely extracted. The remaining bulk of `src/commands.rs` is two intertwined masses plus the warned clusters, and each needs a domain-level plan rather than a one-shot handler move:
+The cleanly-isolated command handlers plus both product-loop **leaves** (`/recipes`, `/opportunities`) are now extracted. The remaining bulk of `src/commands.rs` is the product-loop **core trio** plus the session cluster and the warned clusters:
 
-- Product-loop cluster (`handle_recipes`, `handle_scorecard`, `handle_opportunities`, `handle_round`, `handle_benchmark` and their helpers, roughly the first ~8k lines of `src/commands.rs`). These are deeply intertwined: `round` consumes `scorecard` + `benchmark`, `recipes` consumes `round` + benchmark-baseline helpers, `scorecard` consumes `benchmark`. Extract as a domain unit (e.g. a `src/commands/productloop/` submodule or one module per stable schema owner) rather than per-handler, and keep the stable JSON schema owners (`deepcli.scorecard.v1`, `deepcli.round.v1`, `deepcli.benchmark.*`) intact. `build_git_identity_report` is shared with `doctor` and must stay in `src/commands.rs`.
+- Product-loop core trio: `handle_scorecard`, `handle_round`, `handle_benchmark` and their helpers (~8k lines, the largest remaining mass). They are mutually dependent: `round` consumes `scorecard` + `benchmark`, `scorecard` consumes `benchmark`, `benchmark` is the leaf dependency (177+ `benchmark_*` symbols). No single member extracts cleanly first — extracting `benchmark` alone needs a huge re-export surface (scorecard/round/recipes/opportunities all call it); extracting `scorecard`/`round` alone needs the same downward. Extract the trio **as one domain unit** (e.g. `src/commands/productloop.rs` or a `productloop/` dir) so the mutual dependencies stay internal; then update the `super::` imports in `recipes.rs`/`opportunities.rs` (`build_round_report`, `RoundReport`, `sota_baseline_next_actions`, `scorecard_*`, `ScorecardOpportunity`, `DEFAULT_ROUND_SCORE_THRESHOLD`, `DEFAULT_BENCHMARK_*`) to point at the new module. Watch the heavy test coupling (the cluster's tests in `commands.rs` call many internal helpers — they need `#[cfg(test)]` re-exports or move with the cluster). Keep stable schema owners (`deepcli.scorecard.v1`, `deepcli.round.v1`, `deepcli.benchmark.*`) intact. `build_git_identity_report` is shared with `doctor`/`scorecard` and must stay in `src/commands.rs`.
 - Session cluster (`handle_session` and its ~50 helpers). Large and cross-coupled: `src/commands/resume.rs` and `src/commands/fork.rs` already import many session helpers (`session_metadata_json`, `session_state_name`, `resolve_session_for_*`, `sessions_with_resumable_context`, `latest_session_with_recorded_activity`, etc.) from `src/commands.rs` via `super::`. Moving `handle_session` means deciding which shared helpers move with it (and get re-exported back) versus stay; plan the shared-helper boundary first.
 - Warned clusters: `/env`, and `/diff`+`/review`+`/verify`+`/handoff`. The verify/handoff code shares diff/review/test-evidence helpers and is the most cross-coupled; needs its own scoped plan before moving.
 - Update `docs/MODULES/commands.md` and `tests/mvp_contract.rs` for every new split module.
-- Preserve the red-green flow: add the ownership contract first, observe the expected missing-file failure, then move code.
+- Preserve the red-green flow: add the ownership contract first, observe the expected missing-file failure, then move code. The proven mechanics: `sed`-extract the block(s) into the new module (don't retype), prepend the import header, mark `pub(crate)` only what the dispatch/tests/other-modules reference, gate test-only re-exports behind `#[cfg(test)]`, delete the source ranges (descending order; keep interleaved shared helpers in place), then build → fix imports with compiler guidance → run the failure-set diff.
 
 ## Push Checklist
 
