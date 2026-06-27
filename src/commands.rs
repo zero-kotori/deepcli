@@ -67,6 +67,7 @@ mod timeout;
 mod trace;
 mod usage;
 mod version;
+mod web;
 
 pub(crate) use agent::handle_agent;
 #[cfg(test)]
@@ -139,6 +140,9 @@ pub(crate) use usage::handle_usage;
 #[cfg(test)]
 use usage::{format_usage_diagnostics, summarize_audit_usage};
 use version::handle_version;
+pub(crate) use web::handle_web;
+#[cfg(test)]
+use web::web_search_query_from_args;
 
 pub struct CommandRouter;
 
@@ -20866,27 +20870,6 @@ fn git_raw_string(raw: &Value, key: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_string()
-}
-
-async fn handle_web(executor: &ToolExecutor, args: Vec<String>) -> Result<String> {
-    let query = web_search_query_from_args(&args)?;
-    Ok(executor
-        .execute("web_search", json!({ "query": query }))
-        .await?
-        .content)
-}
-
-fn web_search_query_from_args(args: &[String]) -> Result<String> {
-    let query_parts = if args.first().map(String::as_str) == Some("search") {
-        &args[1..]
-    } else {
-        args
-    };
-    let query = query_parts.join(" ").trim().to_string();
-    if query.is_empty() {
-        bail!("/web search requires a query");
-    }
-    Ok(query)
 }
 
 fn required_arg<'a>(args: &'a [String], index: usize, name: &str) -> Result<&'a str> {
