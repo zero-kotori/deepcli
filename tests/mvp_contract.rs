@@ -405,6 +405,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/diagnose.rs",
         "src/commands/doctor.rs",
         "src/commands/recipes.rs",
+        "src/commands/opportunities.rs",
     ] {
         assert!(
             root.join(source).exists(),
