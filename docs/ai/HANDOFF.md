@@ -1,21 +1,21 @@
 # deepcli HARNESS Refactor Handoff
 
-Updated: 2026-06-28 (after `/goal`, `/diagnose`, `/doctor`, `/recipes`, `/opportunities`, and product-loop core splits)
+Updated: 2026-06-28 (after `/goal`, `/diagnose`, `/doctor`, `/recipes`, `/opportunities`, product-loop core, and `/session` splits)
 
 ## Current Stop Point
 
-The current stop point is after the `/goal`, `/diagnose`, `/doctor`+`/init`, `/recipes`, `/opportunities`, and the product-loop core trio (`/scorecard`+`/round`+`/benchmark` → `src/commands/productloop.rs`) extractions from `src/commands.rs`. The worktree is clean after the latest commits. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
+The current stop point is after the `/goal`, `/diagnose`, `/doctor`+`/init`, `/recipes`, `/opportunities`, the product-loop core trio (`/scorecard`+`/round`+`/benchmark` → `src/commands/productloop.rs`), and the `/session` cluster (→ `src/commands/session.rs`) extractions from `src/commands.rs`. The worktree is clean after the latest commits. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
 
-`src/commands.rs` is now ~24.9k lines (down from ~36.1k — about 11k lines / 31% removed this round) and remains the largest complexity hotspot.
+`src/commands.rs` is now ~21.2k lines (down from ~36.1k — about 15k lines / 41% removed this round); the non-test code is now only ~4.8k lines (dispatch + shared helpers + the `/env` and `/diff`/`/review`/`/verify`/`/handoff` handlers), the rest being the large in-file test module.
 
 ## Recent Commits
 
+- `d2c8105 refactor: split command session handler`
 - `a6a1b8e refactor: split product-loop core into productloop module`
 - `9be6096 refactor: split command opportunities handler`
 - `07a14c8 refactor: split command recipes handler`
 - `1fce47d refactor: split command doctor handler`
 - `8de0aee refactor: split command diagnose handler`
-- `29ddd35 refactor: split command goal handler`
 
 ## What Was Completed
 
@@ -25,8 +25,9 @@ The current stop point is after the `/goal`, `/diagnose`, `/doctor`+`/init`, `/r
 - Added `src/commands/recipes.rs` for `/recipes` topic normalization, the recipe catalog, SOTA product-loop recipe state, and recipe text/JSON formatting. It is a product-loop **leaf** (nothing depends on it), so it imports the cluster internals it consumes — `build_round_report`, `sota_baseline_next_actions`, the `scorecard_*` projection helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD`/`DEFAULT_BENCHMARK_*` consts — from `src/commands.rs` via `super::`. `sota_baseline_next_actions` and its `benchmark_*_baseline_*` helpers stayed in `src/commands.rs` because scorecard also calls them; `generic_recipe_command_label` is re-exported because scorecard/usage label helpers still call it.
 - Added `src/commands/opportunities.rs` for `/opportunities` option/filter parsing, scorecard product-opportunity filtering and next actions, and opportunity text/JSON formatting. Same leaf pattern as `/recipes`: imports `build_round_report`, `RoundReport`, the `scorecard_*` helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD` via `super::`.
 - Added `src/commands/productloop.rs` for the product-loop **core trio** — `/scorecard`, `/round`, `/benchmark` (~7.7k lines moved as one domain unit so the round↔scorecard↔benchmark mutual dependencies stay internal). It uses `use super::*;` to pull the shared `src/commands.rs` helpers/type-aliases it needs (pragmatic for a move this large), plus explicit `anyhow`/`serde_json` imports. `src/commands.rs` re-exports the ~18 symbols other modules consume (the 3 handlers, `build_round_report`/`RoundReport`/`ScorecardOpportunity`, the `scorecard_*` projections, `sota_baseline_next_actions`, `local_action_checklist`, and the `DEFAULT_*` consts) plus a `#[cfg(test)]` block for the ~10 internals the `commands.rs` tests touch (`build_scorecard_report`, `format_round_text`, `scorecard_summary_json`, `RoundTextInput`, and the `BENCHMARK_*`/`SCORECARD_*` schema/preset consts). `RoundReport`/`RoundTextInput` fields and the `ScorecardReport`/`BenchmarkStatusReport`/`RoundGoalStatus`/`RoundGate`/`RoundBenchmarkRun`/`ScorecardOpportunity` types became `pub(crate)` because `recipes.rs`/`opportunities.rs` (now siblings, not children) and the round-text test reach them. `build_git_identity_report` + `GitIdentityReport` stayed in `src/commands.rs` (shared with `/doctor`). Follow-up cleanups: the `use super::*;` glob and `local_action_checklist` living in `productloop` are ownership smells to tidy once the dust settles.
+- Added `src/commands/session.rs` for the `/session` cluster (~3.7k lines): subcommand dispatch (list/history/next/diagnose/search/rename/export/prune-empty/tools/trace/restore-backup, plus approval and side-question queues), the running-safe `/session` handler, restore-backup preview/apply, resumable-session selection and de-noising, and session activity/inspection/diagnosis JSON. Same move-as-unit pattern as productloop (`use super::*;` header). `src/commands.rs` re-exports the ~31 session helpers that `resume.rs`/`fork.rs`/`approval.rs`/`btw.rs` and the verify/handoff code consume via `super::` (`session_metadata_json`, `resolve_session_for_*`, `sessions_with_resumable_context`, `short_id`, `SessionFallbackKind`, the scoped/queue option parsers, etc.), plus a `#[cfg(test)]` block for `parse_export_args`/`parse_limit_and_session_selection`. The `ScopedListOptions`/`ScopedActionOptions`/`QueueActionOptions` struct fields became `pub(crate)` because `approval.rs`/`btw.rs` (siblings) read them. The early shared session helpers (`format_session_list`, `session_state_name`, `git_stdout`, `latest_session_with_recorded_activity`, `session_has_no_recorded_activity`) stayed in `src/commands.rs` before the cluster and are imported via `super::`.
 - Kept `docs/MODULES/commands.md` synchronized with each new command owner.
-- Extended `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` so `goal.rs`, `diagnose.rs`, `doctor.rs`, `recipes.rs`, `opportunities.rs`, and `productloop.rs` must exist and be documented.
+- Extended `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` so `goal.rs`, `diagnose.rs`, `doctor.rs`, `recipes.rs`, `opportunities.rs`, `productloop.rs`, and `session.rs` must exist and be documented.
 
 ## Verification Method
 
@@ -39,10 +40,11 @@ Regression proof on Windows: `cargo test commands::tests --lib` reports 23 pre-e
 
 ## Remaining Work
 
-The cleanly-isolated command handlers, both product-loop **leaves** (`/recipes`, `/opportunities`), and the product-loop **core trio** (`/scorecard`+`/round`+`/benchmark` → `productloop.rs`) are now extracted. The remaining bulk of `src/commands.rs` is the session cluster and the warned clusters:
+The cleanly-isolated command handlers, both product-loop **leaves** (`/recipes`, `/opportunities`), the product-loop **core trio** (`productloop.rs`), and the `/session` cluster (`session.rs`) are now extracted. The remaining non-test handler clusters in `src/commands.rs` are the two warned clusters:
 
-- Session cluster (`handle_session` and its ~50 helpers — now the largest remaining mass). Cross-coupled: `src/commands/resume.rs` and `src/commands/fork.rs` already import many session helpers (`session_metadata_json`, `session_state_name`, `resolve_session_for_*`, `sessions_with_resumable_context`, `latest_session_with_recorded_activity`, etc.) from `src/commands.rs` via `super::`. The productloop move shows the tractable path: move the whole session cluster as a unit (`sed`-extract, `use super::*;` header), keep genuinely-shared helpers that other modules import in `src/commands.rs` (or re-export them from the new module), and gate the `#[cfg(test)]` re-exports the session tests need. Measure the test-coupling first (the productloop trio had only ~10 internal symbols touched by tests despite 298 defined — most tests hit the handlers and assert on JSON).
-- Warned clusters: `/env`, and `/diff`+`/review`+`/verify`+`/handoff`. The verify/handoff code shares diff/review/test-evidence helpers and is the most cross-coupled; needs its own scoped plan before moving.
+- `/env` cluster (`handle_env` + `environment_*` / `format_environment_*` / `parse_env_options` helpers). Note several env helpers (`environment_next_actions`, `dedup_preserve_order`, etc.) are already imported by `doctor.rs` via `super::`, so re-export those from the new env module (or keep the genuinely-shared ones in `src/commands.rs`). Move-as-unit with the productloop/session playbook.
+- `/diff`+`/review`+`/verify`+`/handoff` cluster — the most cross-coupled (verify consumes review + diff + test-evidence helpers; handoff consumes verify). Move the four together as one `delivery`/`review` domain module so the mutual dependencies stay internal; re-export `is_failed_or_denied_tool_call`, `format_session_diffs`, `session_has_recorded_activity`, `SessionFallbackKind`, and any diff/review helpers other modules touch. These handlers run real git/shell (several of the 23 baseline test failures live here), so lean on the failure-set diff rather than expecting those tests to pass on Windows.
+- After the handlers are out, `src/commands.rs` non-test code is essentially dispatch + shared helpers; later phases (de-hardcoding registries, doc slimming, moving the giant in-file test module next to its modules) are separate `HARNESS_REFACTOR_PLAN` phases.
 - Update `docs/MODULES/commands.md` and `tests/mvp_contract.rs` for every new split module.
 - Preserve the red-green flow: add the ownership contract first, observe the expected missing-file failure, then move code. The proven mechanics: `sed`-extract the block(s) into the new module (don't retype), prepend the import header, mark `pub(crate)` only what the dispatch/tests/other-modules reference, gate test-only re-exports behind `#[cfg(test)]`, delete the source ranges (descending order; keep interleaved shared helpers in place), then build → fix imports with compiler guidance → run the failure-set diff.
 
