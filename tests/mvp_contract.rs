@@ -407,6 +407,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/recipes.rs",
         "src/commands/opportunities.rs",
         "src/commands/productloop.rs",
+        "src/commands/session.rs",
     ] {
         assert!(
             root.join(source).exists(),
