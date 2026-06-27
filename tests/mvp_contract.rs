@@ -375,6 +375,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/help.rs",
         "src/commands/completion.rs",
         "src/commands/version.rs",
+        "src/commands/quickstart.rs",
     ] {
         assert!(
             root.join(source).exists(),
