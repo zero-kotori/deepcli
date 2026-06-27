@@ -401,6 +401,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/skill.rs",
         "src/commands/config.rs",
         "src/commands/privacy.rs",
+        "src/commands/goal.rs",
     ] {
         assert!(
             root.join(source).exists(),
