@@ -365,13 +365,14 @@ fn tools_module_docs_cover_split_source_files() {
 }
 
 #[test]
-fn commands_module_docs_cover_response_source_file() {
+fn commands_module_docs_cover_split_source_files() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let commands_doc = fs::read_to_string(root.join("docs/MODULES/commands.md")).unwrap();
     for source in [
         "src/commands/response.rs",
         "src/commands/registry.rs",
         "src/commands/parser.rs",
+        "src/commands/help.rs",
     ] {
         assert!(
             root.join(source).exists(),
