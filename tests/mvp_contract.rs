@@ -339,6 +339,31 @@ fn architecture_harness_docs_cover_commands_and_modules() {
     }
 }
 
+#[test]
+fn tools_module_docs_cover_split_source_files() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let tools_doc = fs::read_to_string(root.join("docs/MODULES/tools.md")).unwrap();
+    for source in [
+        "src/tools/declarations.rs",
+        "src/tools/schema.rs",
+        "src/tools/process.rs",
+        "src/tools/git.rs",
+        "src/tools/environment.rs",
+        "src/tools/test_discovery.rs",
+        "src/tools/web.rs",
+        "src/tools/file.rs",
+    ] {
+        assert!(
+            root.join(source).exists(),
+            "{source} should exist for the documented tools split"
+        );
+        assert!(
+            tools_doc.contains(source),
+            "docs/MODULES/tools.md should mention {source}"
+        );
+    }
+}
+
 fn documented_command_groups(contents: &str) -> BTreeMap<String, String> {
     let valid_groups = ["core", "support", "legacy", "experimental"]
         .into_iter()
