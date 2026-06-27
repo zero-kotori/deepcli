@@ -378,6 +378,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/quickstart.rs",
         "src/commands/selftest.rs",
         "src/commands/preflight.rs",
+        "src/commands/permissions.rs",
     ] {
         assert!(
             root.join(source).exists(),
