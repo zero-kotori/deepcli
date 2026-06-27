@@ -37,6 +37,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 mod completion;
+mod context;
 mod help;
 mod logs;
 mod model;
@@ -62,6 +63,7 @@ use completion::{
     completion_install_target, format_completion_install_json, format_completion_status_json,
     install_completion_script_in,
 };
+use context::handle_context;
 pub(crate) use logs::handle_logs;
 use logs::list_log_files;
 use model::handle_model;
@@ -9767,36 +9769,6 @@ fn resume_preview_next_actions(session: &Session) -> Vec<String> {
         format!("deepcli session next {} --json", session.id()),
         format!("deepcli session diagnose {} --json", session.id()),
     ]
-}
-
-fn handle_context(workspace: &Path) -> Result<String> {
-    let manager = WorkspaceManager::new(workspace)?;
-    let context = manager.collect_context()?;
-    let format_files = |files: &[crate::workspace::FileSummary]| {
-        if files.is_empty() {
-            "<none>".to_string()
-        } else {
-            files
-                .iter()
-                .map(|file| {
-                    file.path
-                        .strip_prefix(workspace)
-                        .unwrap_or(&file.path)
-                        .display()
-                        .to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    };
-    Ok(format!(
-        "workspace: {}\nagents: {}\nreadme: {}\ndocs: {}\ngit diff present: {}",
-        context.root.display(),
-        format_files(&context.agents_files),
-        format_files(&context.readme_files),
-        format_files(&context.docs_files),
-        context.git_diff_present
-    ))
 }
 
 fn handle_status(context: CommandContext<'_>, args: Vec<String>) -> Result<String> {
