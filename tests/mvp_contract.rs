@@ -388,6 +388,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/trace.rs",
         "src/commands/context.rs",
         "src/commands/plan.rs",
+        "src/commands/fork.rs",
         "src/commands/terminal.rs",
         "src/commands/usage.rs",
         "src/commands/status.rs",
