@@ -376,6 +376,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/completion.rs",
         "src/commands/version.rs",
         "src/commands/quickstart.rs",
+        "src/commands/resume.rs",
         "src/commands/selftest.rs",
         "src/commands/preflight.rs",
         "src/commands/credentials.rs",

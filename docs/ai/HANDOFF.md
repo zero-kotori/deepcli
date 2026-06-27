@@ -1,14 +1,15 @@
 # deepcli HARNESS Refactor Handoff
 
-Updated: 2026-06-28 01:46 CST
+Updated: 2026-06-28 01:54 CST
 
 ## Current Stop Point
 
-The current stop point is after a sequence of small command-handler extractions from `src/commands.rs`. The worktree should be clean after the latest handoff commit. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
+The current stop point is after the `/resume` command-handler extraction from `src/commands.rs`. The worktree should be clean after the latest handoff commit and push. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
 
 ## Recent Commits
 
-- latest local work: `/git` handler split for the next checkpoint
+- latest local work: `/resume` handler split for the next checkpoint
+- `2c32aca refactor: split command git handler`
 - `09c18d6 refactor: split command web handler`
 - `3d54c40 refactor: split command prompt handler`
 - `5dd3751 refactor: split command skill handler`
@@ -22,6 +23,8 @@ The current stop point is after a sequence of small command-handler extractions 
 
 ## What Was Completed
 
+- Added `src/commands/resume.rs` for `/resume` preview/candidates handling, resumable session filtering, resume JSON schemas, output writes, and resume next actions.
+- Kept `src/commands/fork.rs` using resume candidate helper functions through crate-internal re-exports so fork error recovery suggestions still share the resume candidate logic.
 - Added `src/commands/git.rs` for `/git` read/write action dispatch, Git option parsing, dry-run action reports, inspect JSON, output writes, and next actions.
 - Added `src/commands/web.rs` for `/web` search argument normalization and web search tool dispatch.
 - Added `src/commands/prompt.rs` for `/prompt` list/get/render/save/delete handling and prompt JSON formatting.
@@ -32,18 +35,20 @@ The current stop point is after a sequence of small command-handler extractions 
 
 ## Verification Already Run
 
-For the latest `/git` split:
+For the latest `/resume` split:
 
 - Red test first: `cargo test commands_module_docs_cover_split_source_files --test mvp_contract -- --nocapture`
-  - Expected failure before implementation: `src/commands/git.rs should exist for command module ownership`
+  - Expected failure before implementation: `src/commands/resume.rs should exist for command module ownership`
 - Focused green tests:
   - `cargo test commands_module_docs_cover_split_source_files --test mvp_contract -- --nocapture`
-  - `cargo test git_ --lib -- --nocapture`
+  - `cargo test resume --lib -- --nocapture`
 - Broader command checks:
   - `cargo fmt`
   - `cargo test commands::tests --lib`
   - `cargo test --test mvp_contract`
-- Pre-commit scans for the `/web` commit:
+- Final push checks for this checkpoint:
+  - `cargo fmt --check`
+  - `./scripts/deepcli preflight --quick --json`
   - `git diff --cached --check`
   - sensitive path scan against staged file names
   - sensitive content scan against staged diff
