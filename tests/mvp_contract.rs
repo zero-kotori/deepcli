@@ -1,6 +1,7 @@
 use deepcli::commands::{CommandGroup, CommandRouter};
 use deepcli::config::AppConfig;
-use deepcli::tools::ToolRegistry;
+use deepcli::permissions::ToolSurface;
+use deepcli::tools::{ToolPermissionContext, ToolRegistry};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
@@ -175,6 +176,58 @@ fn tool_declarations_own_provider_schema() {
             declaration.name
         );
     }
+}
+
+#[test]
+fn tool_declarations_build_permission_requests() {
+    let registry = ToolRegistry::mvp();
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf();
+
+    let git_commit = registry
+        .declaration("git_commit")
+        .expect("git_commit declaration");
+    let git_request = git_commit.permission_request(ToolPermissionContext {
+        command: Some("git commit -m checkpoint".to_string()),
+        path: Some(workspace.clone()),
+        creates_process: true,
+        explicit_approval: true,
+        ..ToolPermissionContext::default()
+    });
+    assert_eq!(git_request.tool, "git_commit");
+    assert_eq!(git_request.surface, ToolSurface::Git);
+    assert!(git_request.writes_files);
+    assert!(!git_request.requires_network);
+    assert!(git_request.creates_process);
+    assert!(git_request.explicit_approval);
+
+    let shell = registry
+        .declaration("run_shell")
+        .expect("run_shell declaration");
+    let shell_request = shell.permission_request(ToolPermissionContext {
+        command: Some("cargo test".to_string()),
+        path: Some(workspace),
+        writes_files: Some(true),
+        requires_network: Some(true),
+        creates_process: true,
+        ..ToolPermissionContext::default()
+    });
+    assert_eq!(shell_request.surface, ToolSurface::Shell);
+    assert!(shell_request.writes_files);
+    assert!(shell_request.requires_network);
+
+    let setup_environment = registry
+        .declaration("setup_environment")
+        .expect("setup_environment declaration");
+    let setup_request = setup_environment.permission_request(ToolPermissionContext {
+        command: Some("deepcli environment setup compiler".to_string()),
+        path: Some(Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()),
+        creates_process: true,
+        explicit_approval: true,
+        ..ToolPermissionContext::default()
+    });
+    assert_eq!(setup_request.surface, ToolSurface::Docker);
+    assert!(setup_request.writes_files);
+    assert!(setup_request.requires_network);
 }
 
 #[test]

@@ -22,6 +22,17 @@ use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ToolPermissionContext {
+    pub command: Option<String>,
+    pub path: Option<PathBuf>,
+    pub network_target: Option<String>,
+    pub writes_files: Option<bool>,
+    pub creates_process: bool,
+    pub requires_network: Option<bool>,
+    pub explicit_approval: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ToolDeclaration {
     pub name: String,
@@ -31,6 +42,22 @@ pub struct ToolDeclaration {
     pub writes_files: bool,
     pub requires_network: bool,
     pub can_run_parallel: bool,
+}
+
+impl ToolDeclaration {
+    pub fn permission_request(&self, context: ToolPermissionContext) -> ToolRequest {
+        ToolRequest {
+            tool: self.name.clone(),
+            surface: self.surface.clone(),
+            command: context.command,
+            path: context.path,
+            network_target: context.network_target,
+            writes_files: context.writes_files.unwrap_or(self.writes_files),
+            creates_process: context.creates_process,
+            requires_network: context.requires_network.unwrap_or(self.requires_network),
+            explicit_approval: context.explicit_approval,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -221,7 +248,7 @@ impl ToolRegistry {
                     "setup_environment",
                     "Install, configure, and verify approved local tooling such as Docker/Colima and compiler-dev.",
                     ToolSurface::Docker,
-                    false,
+                    true,
                     true,
                     false,
                 ),
@@ -303,6 +330,10 @@ impl ToolRegistry {
 
     pub fn declarations(&self) -> &[ToolDeclaration] {
         &self.declarations
+    }
+
+    pub fn declaration(&self, name: &str) -> Option<&ToolDeclaration> {
+        self.declarations.iter().find(|tool| tool.name == name)
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
@@ -727,17 +758,18 @@ impl ToolExecutor {
     async fn run_shell(&self, args: Value) -> Result<ToolExecution> {
         let command = required_str(&args, "command")?;
         let approved = bool_arg(&args, "approved", false);
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "run_shell".to_string(),
-            surface: ToolSurface::Shell,
-            command: Some(command.to_string()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: bool_arg(&args, "writes_files", false),
-            creates_process: true,
-            requires_network: bool_arg(&args, "requires_network", false),
-            explicit_approval: approved,
-        });
+        let decision = self.evaluate_declared_tool(
+            "run_shell",
+            ToolPermissionContext {
+                command: Some(command.to_string()),
+                path: Some(self.workspace.clone()),
+                writes_files: Some(bool_arg(&args, "writes_files", false)),
+                creates_process: true,
+                requires_network: Some(bool_arg(&args, "requires_network", false)),
+                explicit_approval: approved,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("run_shell", &decision, approved)?;
         let timeout_seconds = args
             .get("timeout_seconds")
@@ -785,17 +817,16 @@ impl ToolExecutor {
         validate_branch_name(name)?;
         let approved = bool_arg(&args, "approved", false);
         let command = format!("git switch -c {}", shell_words::quote(name));
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "git_create_branch".to_string(),
-            surface: ToolSurface::Git,
-            command: Some(command.clone()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: true,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: approved,
-        });
+        let decision = self.evaluate_declared_tool(
+            "git_create_branch",
+            ToolPermissionContext {
+                command: Some(command.clone()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                explicit_approval: approved,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("git_create_branch", &decision, approved)?;
         let output = run_command(&self.workspace, &command).await?;
         Ok(ToolExecution {
@@ -807,17 +838,15 @@ impl ToolExecutor {
     }
 
     async fn git_commit_message(&self) -> Result<ToolExecution> {
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "git_commit_message".to_string(),
-            surface: ToolSurface::Git,
-            command: Some("git status --short && git diff --stat".to_string()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "git_commit_message",
+            ToolPermissionContext {
+                command: Some("git status --short && git diff --stat".to_string()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("git_commit_message", &decision, false)?;
         let status = run_command(&self.workspace, "git status --short").await?;
         let names = run_command(&self.workspace, "git diff --name-only").await?;
@@ -840,17 +869,16 @@ impl ToolExecutor {
         let message = required_str(&args, "message")?;
         let approved = bool_arg(&args, "approved", false);
         let command = format!("git commit -m {}", shell_words::quote(message));
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "git_commit".to_string(),
-            surface: ToolSurface::Git,
-            command: Some(command.clone()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: true,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: approved,
-        });
+        let decision = self.evaluate_declared_tool(
+            "git_commit",
+            ToolPermissionContext {
+                command: Some(command.clone()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                explicit_approval: approved,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("git_commit", &decision, approved)?;
         let output = run_command(&self.workspace, &command).await?;
         Ok(ToolExecution {
@@ -862,17 +890,15 @@ impl ToolExecutor {
     }
 
     async fn git_read_tool(&self, name: &str, command: &str) -> Result<ToolExecution> {
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: name.to_string(),
-            surface: ToolSurface::Git,
-            command: Some(command.to_string()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            name,
+            ToolPermissionContext {
+                command: Some(command.to_string()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed(name, &decision, false)?;
         let output = run_command(&self.workspace, command).await?;
         Ok(ToolExecution {
@@ -909,17 +935,16 @@ impl ToolExecutor {
                 .map(|command| command.command)
                 .ok_or_else(|| anyhow!("no available test command discovered"))?
         };
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "run_tests".to_string(),
-            surface: ToolSurface::Shell,
-            command: Some(command.clone()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: true,
-        });
+        let decision = self.evaluate_declared_tool(
+            "run_tests",
+            ToolPermissionContext {
+                command: Some(command.clone()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                explicit_approval: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("run_tests", &decision, true)?;
         let output = run_command(&self.workspace, &command).await?;
         let passed = output.exit_code == Some(0);
@@ -943,17 +968,15 @@ impl ToolExecutor {
 
     async fn check_environment(&self, args: Value) -> Result<ToolExecution> {
         let target = environment_target_arg(&args)?;
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "check_environment".to_string(),
-            surface: ToolSurface::Shell,
-            command: Some(format!("deepcli environment check {target}")),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "check_environment",
+            ToolPermissionContext {
+                command: Some(format!("deepcli environment check {target}")),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("check_environment", &decision, false)?;
         let report = check_environment_in(&self.workspace, &target).await?;
         Ok(ToolExecution {
@@ -969,17 +992,17 @@ impl ToolExecutor {
         let approved = bool_arg(&args, "approved", false);
         let install_missing = bool_arg(&args, "install_missing", true);
         let smoke_test = bool_arg(&args, "smoke_test", false);
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "setup_environment".to_string(),
-            surface: ToolSurface::Docker,
-            command: Some(format!("deepcli environment setup {target}")),
-            path: Some(self.workspace.clone()),
-            network_target: Some("ghcr.io, docker.io".to_string()),
-            writes_files: true,
-            creates_process: true,
-            requires_network: true,
-            explicit_approval: approved,
-        });
+        let decision = self.evaluate_declared_tool(
+            "setup_environment",
+            ToolPermissionContext {
+                command: Some(format!("deepcli environment setup {target}")),
+                path: Some(self.workspace.clone()),
+                network_target: Some("ghcr.io, docker.io".to_string()),
+                creates_process: true,
+                explicit_approval: approved,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("setup_environment", &decision, approved)?;
         let setup =
             setup_environment_in(&self.workspace, &target, install_missing, smoke_test).await?;
@@ -996,17 +1019,13 @@ impl ToolExecutor {
         if looks_sensitive(query) {
             bail!("web_search query appears to contain sensitive content");
         }
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "web_search".to_string(),
-            surface: ToolSurface::Network,
-            command: None,
-            path: None,
-            network_target: Some("api.duckduckgo.com".to_string()),
-            writes_files: false,
-            creates_process: false,
-            requires_network: true,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "web_search",
+            ToolPermissionContext {
+                network_target: Some("api.duckduckgo.com".to_string()),
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("web_search", &decision, false)?;
         let url = reqwest::Url::parse_with_params(
             "https://api.duckduckgo.com/",
@@ -1032,17 +1051,15 @@ impl ToolExecutor {
 
     fn open_terminal_app_now(&self, app: &str) -> Result<ToolExecution> {
         let command = terminal_open_command(app);
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "open_terminal".to_string(),
-            surface: ToolSurface::Terminal,
-            command: Some(command.clone()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "open_terminal",
+            ToolPermissionContext {
+                command: Some(command.clone()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("open_terminal", &decision, false)?;
         #[cfg(target_os = "macos")]
         let output = run_command_blocking(&self.workspace, &command)?;
@@ -1099,17 +1116,15 @@ impl ToolExecutor {
     async fn prompt_render(&self, args: Value) -> Result<ToolExecution> {
         let name = required_str(&args, "name")?;
         let command = "git branch --show-current && git diff";
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "prompt_render".to_string(),
-            surface: ToolSurface::Git,
-            command: Some(command.to_string()),
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: false,
-            creates_process: true,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "prompt_render",
+            ToolPermissionContext {
+                command: Some(command.to_string()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("prompt_render", &decision, false)?;
         let store = PromptStore::new(&self.workspace);
         let prompt = store.get(name)?;
@@ -1241,17 +1256,13 @@ impl ToolExecutor {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let decision = self.permissions.evaluate(&ToolRequest {
-            tool: "spawn_subagent".to_string(),
-            surface: ToolSurface::Subagent,
-            command: None,
-            path: Some(self.workspace.clone()),
-            network_target: None,
-            writes_files: true,
-            creates_process: false,
-            requires_network: false,
-            explicit_approval: false,
-        });
+        let decision = self.evaluate_declared_tool(
+            "spawn_subagent",
+            ToolPermissionContext {
+                path: Some(self.workspace.clone()),
+                ..ToolPermissionContext::default()
+            },
+        )?;
         self.ensure_allowed("spawn_subagent", &decision, false)?;
         if depth > self.max_subagent_depth {
             bail!(
@@ -1271,6 +1282,20 @@ impl ToolExecutor {
             raw: json!(subagent),
             decision,
         })
+    }
+
+    fn evaluate_declared_tool(
+        &self,
+        tool: &str,
+        context: ToolPermissionContext,
+    ) -> Result<PermissionDecision> {
+        let registry = ToolRegistry::mvp();
+        let declaration = registry
+            .declaration(tool)
+            .ok_or_else(|| anyhow!("unknown tool declaration `{tool}`"))?;
+        Ok(self
+            .permissions
+            .evaluate(&declaration.permission_request(context)))
     }
 
     fn evaluate_filesystem(
