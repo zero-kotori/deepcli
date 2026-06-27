@@ -12315,6 +12315,7 @@ struct CompletionCommand {
     name: String,
     summary: String,
     running_safe: bool,
+    group: CommandGroup,
 }
 
 #[derive(Debug, Clone)]
@@ -12553,7 +12554,10 @@ fn completion_commands() -> Vec<CompletionCommand> {
         let running_safe = metadata
             .map(|summary| summary.running_safe)
             .unwrap_or_else(|| is_running_safe_command_name(raw_name));
-        add_completion_command(&mut commands, name, summary, running_safe);
+        let group = metadata
+            .map(|summary| summary.group)
+            .unwrap_or_else(|| command_group_name(raw_name));
+        add_completion_command(&mut commands, name, summary, running_safe, group);
     }
 
     for (name, summary) in [
@@ -12569,7 +12573,13 @@ fn completion_commands() -> Vec<CompletionCommand> {
         ("sessions", "Alias for session list."),
         ("completions", "Alias for completion."),
     ] {
-        add_completion_command(&mut commands, name.to_string(), summary.to_string(), true);
+        add_completion_command(
+            &mut commands,
+            name.to_string(),
+            summary.to_string(),
+            true,
+            CommandGroup::Support,
+        );
     }
     commands
 }
@@ -12579,6 +12589,7 @@ fn add_completion_command(
     name: String,
     summary: String,
     running_safe: bool,
+    group: CommandGroup,
 ) {
     if commands.iter().any(|command| command.name == name) {
         return;
@@ -12587,6 +12598,7 @@ fn add_completion_command(
         name,
         summary,
         running_safe,
+        group,
     });
 }
 
@@ -12971,6 +12983,7 @@ fn format_completion_json(commands: &[CompletionCommand]) -> Result<String> {
                 "name": command.name,
                 "summary": command.summary,
                 "runningSafe": command.running_safe,
+                "group": command.group.as_str(),
             }))
             .collect::<Vec<_>>(),
     }))?)
@@ -41130,6 +41143,21 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["name"] == "selftest" && item["runningSafe"] == true));
+        assert!(value["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "round" && item["group"] == "core"));
+        assert!(value["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "benchmark" && item["group"] == "support"));
+        assert!(value["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["name"] == "about" && item["group"] == "legacy"));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/commands.json")).unwrap();
