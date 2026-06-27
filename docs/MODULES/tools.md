@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-`src/tools.rs` owns tool declarations and execution for file reads/writes, patching, shell, Git, tests, environment checks/setup, web search, terminal launch, prompt/skill helpers, and subagent spawning. Each `ToolDeclaration` owns the provider parameter schema used to build `ToolSpec` plus the default permission surface, write, and network metadata used to build `ToolRequest`.
+`src/tools.rs` owns tool execution for file reads/writes, patching, shell, Git, tests, environment checks/setup, web search, terminal launch, prompt/skill helpers, and subagent spawning. `src/tools/declarations.rs` owns `ToolDeclaration`, `ToolRegistry`, and permission request construction. `src/tools/schema.rs` owns provider argument schemas used to build `ToolSpec`.
 
 ## Boundaries
 
