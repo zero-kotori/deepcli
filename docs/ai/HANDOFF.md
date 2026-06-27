@@ -1,6 +1,6 @@
 # deepcli HARNESS Refactor Handoff
 
-Updated: 2026-06-28 01:34 CST
+Updated: 2026-06-28 01:46 CST
 
 ## Current Stop Point
 
@@ -8,6 +8,7 @@ The current stop point is after a sequence of small command-handler extractions 
 
 ## Recent Commits
 
+- latest local work: `/git` handler split for the next checkpoint
 - `09c18d6 refactor: split command web handler`
 - `3d54c40 refactor: split command prompt handler`
 - `5dd3751 refactor: split command skill handler`
@@ -21,6 +22,7 @@ The current stop point is after a sequence of small command-handler extractions 
 
 ## What Was Completed
 
+- Added `src/commands/git.rs` for `/git` read/write action dispatch, Git option parsing, dry-run action reports, inspect JSON, output writes, and next actions.
 - Added `src/commands/web.rs` for `/web` search argument normalization and web search tool dispatch.
 - Added `src/commands/prompt.rs` for `/prompt` list/get/render/save/delete handling and prompt JSON formatting.
 - Added `src/commands/skill.rs` for `/skill` list/generate/run handling and skill JSON formatting.
@@ -30,13 +32,13 @@ The current stop point is after a sequence of small command-handler extractions 
 
 ## Verification Already Run
 
-For the latest `/web` split:
+For the latest `/git` split:
 
 - Red test first: `cargo test commands_module_docs_cover_split_source_files --test mvp_contract -- --nocapture`
-  - Expected failure before implementation: `src/commands/web.rs should exist for command module ownership`
+  - Expected failure before implementation: `src/commands/git.rs should exist for command module ownership`
 - Focused green tests:
   - `cargo test commands_module_docs_cover_split_source_files --test mvp_contract -- --nocapture`
-  - `cargo test web_search_query --lib -- --nocapture`
+  - `cargo test git_ --lib -- --nocapture`
 - Broader command checks:
   - `cargo fmt`
   - `cargo test commands::tests --lib`
