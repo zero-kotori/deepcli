@@ -19,9 +19,42 @@ pub(super) fn terminal_open_command(app: &str) -> String {
     format!("open -a {} .", shell_words::quote(app))
 }
 
+/// Infer the command flag for a shell program (`-lc` for bash-like shells,
+/// `/C` for `cmd`, `-Command` for PowerShell).
+fn shell_flag_for(program: &str) -> &'static str {
+    let lower = program.to_ascii_lowercase();
+    if lower.ends_with("cmd") || lower.ends_with("cmd.exe") {
+        "/C"
+    } else if lower.ends_with("powershell")
+        || lower.ends_with("powershell.exe")
+        || lower.ends_with("pwsh")
+        || lower.ends_with("pwsh.exe")
+    {
+        "-Command"
+    } else {
+        "-lc"
+    }
+}
+
+/// Resolve the shell program and command flag for tool shell execution.
+///
+/// Defaults to `bash -lc` (the historical POSIX behavior). Set `DEEPCLI_SHELL`
+/// to override the program (e.g. an absolute Git Bash path on Windows, or
+/// `cmd` / `pwsh`); the flag is inferred from the program name.
+fn shell_program_and_flag() -> (String, &'static str) {
+    if let Ok(shell) = env::var("DEEPCLI_SHELL") {
+        let shell = shell.trim();
+        if !shell.is_empty() {
+            return (shell.to_string(), shell_flag_for(shell));
+        }
+    }
+    ("bash".to_string(), "-lc")
+}
+
 pub async fn run_command(workspace: &Path, command: &str) -> Result<CommandOutput> {
-    let output = Command::new("bash")
-        .arg("-lc")
+    let (program, flag) = shell_program_and_flag();
+    let output = Command::new(program)
+        .arg(flag)
         .arg(command)
         .current_dir(workspace)
         .output()
@@ -36,8 +69,9 @@ pub async fn run_command(workspace: &Path, command: &str) -> Result<CommandOutpu
 }
 
 pub fn run_command_blocking(workspace: &Path, command: &str) -> Result<CommandOutput> {
-    let output = std::process::Command::new("bash")
-        .arg("-lc")
+    let (program, flag) = shell_program_and_flag();
+    let output = std::process::Command::new(program)
+        .arg(flag)
         .arg(command)
         .current_dir(workspace)
         .output()
@@ -72,16 +106,14 @@ pub async fn run_command_with_timeout(
     command: &str,
     timeout_duration: Duration,
 ) -> Result<CommandOutput> {
-    let output = tokio::time::timeout(
-        timeout_duration,
-        Command::new("bash")
-            .arg("-lc")
-            .arg(command)
-            .current_dir(workspace)
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await;
+    let (program, flag) = shell_program_and_flag();
+    let mut shell = Command::new(program);
+    shell
+        .arg(flag)
+        .arg(command)
+        .current_dir(workspace)
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(timeout_duration, shell.output()).await;
 
     match output {
         Ok(output) => {
@@ -110,8 +142,9 @@ pub async fn run_command_with_stdin(
     command: &str,
     stdin: &str,
 ) -> Result<CommandOutput> {
-    let mut child = Command::new("bash")
-        .arg("-lc")
+    let (program, flag) = shell_program_and_flag();
+    let mut child = Command::new(program)
+        .arg(flag)
         .arg(command)
         .current_dir(workspace)
         .stdin(Stdio::piped())
@@ -144,4 +177,28 @@ pub(super) fn output_text(output: &CommandOutput) -> String {
         text.push_str(&output.stderr);
     }
     text
+}
+
+#[cfg(test)]
+mod tests {
+    use super::shell_flag_for;
+
+    #[test]
+    fn shell_flag_matches_program_family() {
+        for bash_like in [
+            "bash",
+            "/bin/bash",
+            "sh",
+            "/usr/bin/zsh",
+            "C:\\Program Files\\Git\\bin\\bash.exe",
+        ] {
+            assert_eq!(shell_flag_for(bash_like), "-lc", "{bash_like}");
+        }
+        for cmd in ["cmd", "cmd.exe", "C:\\Windows\\System32\\cmd.exe"] {
+            assert_eq!(shell_flag_for(cmd), "/C", "{cmd}");
+        }
+        for powershell in ["powershell", "powershell.exe", "pwsh", "pwsh.exe"] {
+            assert_eq!(shell_flag_for(powershell), "-Command", "{powershell}");
+        }
+    }
 }
