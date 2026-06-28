@@ -1,22 +1,22 @@
-# Permissions Module
+# 权限模块
 
-## Responsibility
+## 职责
 
-`src/permissions.rs` owns permission mode evaluation and risk decisions for filesystem, shell, Git, network, Docker, terminal, and setup operations.
+`src/permissions.rs` 负责文件系统、shell、Git、网络、Docker、终端与设置操作的权限模式评估与风险决策。
 
-## Boundaries
+## 边界
 
-- Tools and runtime must consult permission decisions before high-risk or write operations.
-- Commands may explain permission outcomes, but policy decisions belong here.
-- Approval and audit records should reflect the same surface and risk classification used by the permission engine.
-- New risk surfaces need tests before being exposed through tools or commands.
+- 工具与运行时在执行高风险或写入操作之前，必须查询权限决策。
+- 命令可以解释权限结果，但策略决策归属于此处。
+- 审批与审计记录应反映权限引擎所使用的同一权限面与风险分级。
+- 新增的风险面在通过工具或命令暴露之前，需要先有测试。
 
-## Tests
+## 测试
 
-- Focused `permissions::tests::*` for read-only shell, destructive shell, Docker, package install, and medium-risk decisions.
-- Tool tests that verify pending approval and assume-yes behavior.
-- Command tests for permission reporting when public JSON output changes.
+- 针对性的 `permissions::tests::*`，覆盖只读 shell、破坏性 shell、Docker、软件包安装以及中等风险决策。
+- 验证待审批与 assume-yes 行为的工具测试。
+- 当公开 JSON 输出发生变化时，针对权限报告的命令测试。
 
-## Documentation Sync
+## 文档同步
 
-Update this file when risk classification, approval requirements, or permission surfaces change. Update `docs/COMMANDS.md` when `/permissions` or tool-backed command behavior changes.
+当风险分级、审批要求或权限面发生变化时，更新本文件。当 `/permissions` 或以工具为后端的命令行为发生变化时，更新 `docs/COMMANDS.md`。

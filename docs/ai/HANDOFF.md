@@ -1,64 +1,66 @@
-# deepcli HARNESS Refactor Handoff
+# deepcli HARNESS 重构交接
 
-Updated: 2026-06-28 (after `/goal`, `/diagnose`, `/doctor`, `/recipes`, `/opportunities`, product-loop core, and `/session` splits)
+更新时间：2026-06-28（完成全部命令 handler 拆分：goal / diagnose / doctor / recipes / opportunities / 产品循环核心 / session / env / delivery）
 
-## Current Stop Point
+## 当前停止点
 
-The current stop point is after the `/goal`, `/diagnose`, `/doctor`+`/init`, `/recipes`, `/opportunities`, the product-loop core trio (`/scorecard`+`/round`+`/benchmark` → `src/commands/productloop.rs`), and the `/session` cluster (→ `src/commands/session.rs`) extractions from `src/commands.rs`. The worktree is clean after the latest commits. The active long-term goal is still the HARNESS refactor described in `docs/ai/HARNESS_REFACTOR_PLAN.md`; do not treat this handoff as completion of that goal.
+`src/commands.rs` 的**全部命令 handler 已拆分完毕**。本轮按 `docs/ai/HARNESS_REFACTOR_PLAN.md` 的阶段 3（按领域拆分源码）逐簇提取，每次都遵循红-绿流程并验证零回归。工作树在最近一次提交后保持干净。长期目标仍是该计划描述的 HARNESS 重构，**不要把本交接当作整个目标的完成**——后续阶段（去硬编码、文档瘦身、docsync、UI 收束）尚未开始。
 
-`src/commands.rs` is now ~21.2k lines (down from ~36.1k — about 15k lines / 41% removed this round); the non-test code is now only ~4.8k lines (dispatch + shared helpers + the `/env` and `/diff`/`/review`/`/verify`/`/handoff` handlers), the rest being the large in-file test module.
+`src/commands.rs` 从约 36.1k 行降到约 17.3k 行（本轮移除约 18.8k 行 / 52%）；其中非测试代码已基本只剩命令分发与共享 helper，剩余体量主要是文件内的大型测试模块。
 
-## Recent Commits
+## 最近提交
 
+- `37f9017 refactor: split command delivery handler`
+- `8ec913a refactor: split command env handler`
 - `d2c8105 refactor: split command session handler`
 - `a6a1b8e refactor: split product-loop core into productloop module`
 - `9be6096 refactor: split command opportunities handler`
 - `07a14c8 refactor: split command recipes handler`
 - `1fce47d refactor: split command doctor handler`
 - `8de0aee refactor: split command diagnose handler`
+- `29ddd35 refactor: split command goal handler`
 
-## What Was Completed
+## 已完成内容
 
-- Added `src/commands/goal.rs` for `/goal` show/start/clear/status/gate handling, default goal contract creation and guard-plan generation, goal readiness collection, goal session selection, and goal text/JSON formatting. `build_round_goal_status` in `src/commands.rs` keeps consuming the goal logic through crate-internal re-exports (`select_goal_session`, `collect_goal_readiness`, `GoalSessionSource`, `GoalPlanReadiness`, `GoalAcceptanceEvidence`), so `/round` goal-status summaries still share the same readiness contract.
-- Added `src/commands/diagnose.rs` for `/diagnose` and `/support` handling: option parsing, diagnostics report JSON, redacted support-bundle generation and artifacts, issue templates, and diagnose next actions. It delegates workspace health to the `/doctor` handler and session diagnosis to the `/session` handler through `super::`. `workspace_relative_display` deliberately stayed in `src/commands.rs` because the benchmark code also uses it; `parse_diagnose_options` is re-exported `#[cfg(test)]`-only.
-- Added `src/commands/doctor.rs` for `/doctor` and `/init` handling: doctor option parsing, workspace/shell/provider/test/Git-identity health checks, shell command path resolution, provider readiness reporting and online provider probing, doctor fix application, and doctor report text/JSON formatting. `handle_doctor` and `handle_init` are re-exported non-test (and `handle_doctor` is also reached from `diagnose.rs` via `super::`). The env helpers it sits between (`environment_next_actions`, `default_environment_next_actions`, `shell_command_from_slash_command`, `dedup_preserve_order`) stayed in `src/commands.rs`; doctor imports `environment_next_actions`/`dedup_preserve_order` plus the shared Git-identity and completion helpers via `super::`. A batch of doctor helpers and the `DoctorOptions`/`ProviderProbeReport` structs are `pub(crate)` + `#[cfg(test)]`-re-exported because `commands.rs` tests call/construct them. Removing doctor also let `crate::providers::*`, `crate::workspace::WorkspaceManager`, and `serde::Serialize` drop out of the `commands.rs` import list.
-- Added `src/commands/recipes.rs` for `/recipes` topic normalization, the recipe catalog, SOTA product-loop recipe state, and recipe text/JSON formatting. It is a product-loop **leaf** (nothing depends on it), so it imports the cluster internals it consumes — `build_round_report`, `sota_baseline_next_actions`, the `scorecard_*` projection helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD`/`DEFAULT_BENCHMARK_*` consts — from `src/commands.rs` via `super::`. `sota_baseline_next_actions` and its `benchmark_*_baseline_*` helpers stayed in `src/commands.rs` because scorecard also calls them; `generic_recipe_command_label` is re-exported because scorecard/usage label helpers still call it.
-- Added `src/commands/opportunities.rs` for `/opportunities` option/filter parsing, scorecard product-opportunity filtering and next actions, and opportunity text/JSON formatting. Same leaf pattern as `/recipes`: imports `build_round_report`, `RoundReport`, the `scorecard_*` helpers, `ScorecardOpportunity`, and `DEFAULT_ROUND_SCORE_THRESHOLD` via `super::`.
-- Added `src/commands/productloop.rs` for the product-loop **core trio** — `/scorecard`, `/round`, `/benchmark` (~7.7k lines moved as one domain unit so the round↔scorecard↔benchmark mutual dependencies stay internal). It uses `use super::*;` to pull the shared `src/commands.rs` helpers/type-aliases it needs (pragmatic for a move this large), plus explicit `anyhow`/`serde_json` imports. `src/commands.rs` re-exports the ~18 symbols other modules consume (the 3 handlers, `build_round_report`/`RoundReport`/`ScorecardOpportunity`, the `scorecard_*` projections, `sota_baseline_next_actions`, `local_action_checklist`, and the `DEFAULT_*` consts) plus a `#[cfg(test)]` block for the ~10 internals the `commands.rs` tests touch (`build_scorecard_report`, `format_round_text`, `scorecard_summary_json`, `RoundTextInput`, and the `BENCHMARK_*`/`SCORECARD_*` schema/preset consts). `RoundReport`/`RoundTextInput` fields and the `ScorecardReport`/`BenchmarkStatusReport`/`RoundGoalStatus`/`RoundGate`/`RoundBenchmarkRun`/`ScorecardOpportunity` types became `pub(crate)` because `recipes.rs`/`opportunities.rs` (now siblings, not children) and the round-text test reach them. `build_git_identity_report` + `GitIdentityReport` stayed in `src/commands.rs` (shared with `/doctor`). Follow-up cleanups: the `use super::*;` glob and `local_action_checklist` living in `productloop` are ownership smells to tidy once the dust settles.
-- Added `src/commands/session.rs` for the `/session` cluster (~3.7k lines): subcommand dispatch (list/history/next/diagnose/search/rename/export/prune-empty/tools/trace/restore-backup, plus approval and side-question queues), the running-safe `/session` handler, restore-backup preview/apply, resumable-session selection and de-noising, and session activity/inspection/diagnosis JSON. Same move-as-unit pattern as productloop (`use super::*;` header). `src/commands.rs` re-exports the ~31 session helpers that `resume.rs`/`fork.rs`/`approval.rs`/`btw.rs` and the verify/handoff code consume via `super::` (`session_metadata_json`, `resolve_session_for_*`, `sessions_with_resumable_context`, `short_id`, `SessionFallbackKind`, the scoped/queue option parsers, etc.), plus a `#[cfg(test)]` block for `parse_export_args`/`parse_limit_and_session_selection`. The `ScopedListOptions`/`ScopedActionOptions`/`QueueActionOptions` struct fields became `pub(crate)` because `approval.rs`/`btw.rs` (siblings) read them. The early shared session helpers (`format_session_list`, `session_state_name`, `git_stdout`, `latest_session_with_recorded_activity`, `session_has_no_recorded_activity`) stayed in `src/commands.rs` before the cluster and are imported via `super::`.
-- Kept `docs/MODULES/commands.md` synchronized with each new command owner.
-- Extended `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` so `goal.rs`, `diagnose.rs`, `doctor.rs`, `recipes.rs`, `opportunities.rs`, `productloop.rs`, and `session.rs` must exist and be documented.
+本轮共新增 9 个命令模块（均更新了 `docs/MODULES/commands.md` 所有权说明，并在 `tests/mvp_contract.rs::commands_module_docs_cover_split_source_files` 中加入存在性契约）：
 
-## Verification Method
+- `src/commands/goal.rs`：`/goal` 的 show/start/clear/status/gate、目标契约与守护计划生成、readiness、目标会话选择；`/round` 经 crate 内 re-export 复用其 readiness 逻辑。
+- `src/commands/diagnose.rs`：`/diagnose` 与 `/support`，委派给 `/doctor` 和 `/session` handler。
+- `src/commands/doctor.rs`：`/doctor` 与 `/init`，含 provider readiness/在线探测、修复、健康检查报告。
+- `src/commands/recipes.rs`：`/recipes`，产品循环叶子，经 `super::` 复用 `build_round_report`、`scorecard_*`、`ScorecardOpportunity` 等。
+- `src/commands/opportunities.rs`：`/opportunities`，同为产品循环叶子。
+- `src/commands/productloop.rs`：产品循环核心三元组 `/scorecard`+`/round`+`/benchmark`（约 7.7k 行整体迁移，互依保持在模块内部）；`commands.rs` re-export 其他模块消费的约 18 个符号 + 一个 `#[cfg(test)]` 块。
+- `src/commands/session.rs`：`/session` 全部子命令、running-safe handler、restore-backup、可恢复会话筛选与投影；re-export 约 31 个会话 helper 供 resume/fork/approval/btw/verify 经 `super::` 使用。
+- `src/commands/env.rs`：`/env` check/plan/setup/install/test；shared 的 `environment_next_actions`/`dedup_preserve_order` 仍留在 `commands.rs`。
+- `src/commands/delivery.rs`：变更交付簇 `/diff`+`/review`+`/verify`+`/handoff`（约 3.25k 行整体迁移，verify→review/diff、handoff→verify 的互依保持在模块内部）。
 
-Red-green flow per split:
+迁移机制（已验证稳定）：`use super::*;` 头 + 显式外部 crate 导入；用 `sed` 物理迁移代码块（不手抄）；只把分发/测试/其它模块引用的符号标 `pub(crate)`；仅测试用的 re-export 用 `#[cfg(test)]` 门控；删除源区间时按降序、保留交错的共享 helper。
 
-- Red first: add the new `src/commands/<name>.rs` entry to `commands_module_docs_cover_split_source_files` and observe the expected failure `<file> should exist for command module ownership`.
-- Green: move the code, add `mod <name>;` plus the `pub(crate) use` re-exports (gate test-only helpers behind `#[cfg(test)]` to avoid unused-import warnings in non-test builds), update `docs/MODULES/commands.md`, then the contract test passes.
+## 验证方法
 
-Regression proof on Windows: `cargo test commands::tests --lib` reports 23 pre-existing platform-dependent failures from tests that execute real POSIX shell / git / cargo (`verify_*`, `benchmark_*`, `git_status_*`, `doctor_shell_*`, `test_run_*`, `global_diagnose_bundle_*`, `completion_install_*`, `agent_list_*`, `skill_list_*`, `round_can_run_benchmark_suite_*`, `gate_without_current_session_*`). They fail identically on a pristine `git stash -u` baseline. Each split was validated by capturing the failing-test names before and after and confirming the set is IDENTICAL (zero new failures, zero accidentally-fixed). Always run `cargo fmt --check`, the `mvp_contract` suite, a sensitive-content scan, and the failure-set diff before committing.
+每次拆分的红-绿流程：先在契约测试加入新模块路径观察 RED（“… should exist for command module ownership”），再迁移代码、加 `mod` 与 re-export、同步 `docs/MODULES/commands.md`，转 GREEN。
 
-## Remaining Work
+Windows 回归证明：`cargo test commands::tests --lib` 有 **23 个预先存在的平台相关失败**（执行真实 POSIX shell / git / cargo 的测试，如 `verify_*`、`benchmark_*`、`git_status_*`、`doctor_shell_*`、`test_run_*`、`global_diagnose_bundle_*` 等），它们在 `git stash -u` 的原始基线上同样失败。每次拆分都用“提取前后失败测试名集合完全一致”来证明零回归（无新增失败、无意外修复）。提交前必跑：`cargo fmt --check`、`mvp_contract` 套件、敏感内容扫描、失败集 diff。
 
-The cleanly-isolated command handlers, both product-loop **leaves** (`/recipes`, `/opportunities`), the product-loop **core trio** (`productloop.rs`), and the `/session` cluster (`session.rs`) are now extracted. The remaining non-test handler clusters in `src/commands.rs` are the two warned clusters:
+## 剩余工作
 
-- `/env` cluster (`handle_env` + `environment_*` / `format_environment_*` / `parse_env_options` helpers). Note several env helpers (`environment_next_actions`, `dedup_preserve_order`, etc.) are already imported by `doctor.rs` via `super::`, so re-export those from the new env module (or keep the genuinely-shared ones in `src/commands.rs`). Move-as-unit with the productloop/session playbook.
-- `/diff`+`/review`+`/verify`+`/handoff` cluster — the most cross-coupled (verify consumes review + diff + test-evidence helpers; handoff consumes verify). Move the four together as one `delivery`/`review` domain module so the mutual dependencies stay internal; re-export `is_failed_or_denied_tool_call`, `format_session_diffs`, `session_has_recorded_activity`, `SessionFallbackKind`, and any diff/review helpers other modules touch. These handlers run real git/shell (several of the 23 baseline test failures live here), so lean on the failure-set diff rather than expecting those tests to pass on Windows.
-- After the handlers are out, `src/commands.rs` non-test code is essentially dispatch + shared helpers; later phases (de-hardcoding registries, doc slimming, moving the giant in-file test module next to its modules) are separate `HARNESS_REFACTOR_PLAN` phases.
-- Update `docs/MODULES/commands.md` and `tests/mvp_contract.rs` for every new split module.
-- Preserve the red-green flow: add the ownership contract first, observe the expected missing-file failure, then move code. The proven mechanics: `sed`-extract the block(s) into the new module (don't retype), prepend the import header, mark `pub(crate)` only what the dispatch/tests/other-modules reference, gate test-only re-exports behind `#[cfg(test)]`, delete the source ranges (descending order; keep interleaved shared helpers in place), then build → fix imports with compiler guidance → run the failure-set diff.
+阶段 3 的命令 handler 拆分已全部完成。后续仍属 `HARNESS_REFACTOR_PLAN.md` 的范围：
 
-## Push Checklist
+- 收尾清理：`productloop.rs`/`session.rs`/`env.rs`/`delivery.rs` 用了 `use super::*;` glob 与少量“寄居”共享 helper（如 `local_action_checklist` 落在 `productloop`），属于所有权小瑕疵，可在后续收紧为显式导入并归位。
+- 阶段 2 去硬编码：把散落的命令清单/别名/help/running-safe/schema version/阈值等迁移到有所有权的 registry 或 typed config。
+- 阶段 4-5 文档瘦身与 docsync：把长文档收束为总览 + 模块说明 + ADR；扩展 docsync 检查（命令清单、模块文档、过时文档）。
+- 阶段 7 UI 收束：UI 改为消费 projection model。
+- 大型文件内测试模块：`commands.rs` 仍内嵌大量测试，后续可考虑随模块迁移到各自的 `#[cfg(test)]` 子模块。
 
-Before pushing or opening a PR:
+## 提交前检查清单
 
 - `git status --short`
 - `cargo fmt --check`
-- `cargo test commands::tests --lib` (compare the failing-test set against the 23-failure Windows baseline; do not introduce new failures)
+- `cargo test commands::tests --lib`（与 23 个 Windows 基线失败对照，不得引入新失败）
 - `cargo test --test mvp_contract`
 - `./scripts/deepcli preflight --quick --json`
-- `git diff --cached --check` when there are staged changes
-- scan staged or outgoing changes for local artifacts, credentials, sessions, logs, benchmark evidence, support bundles, and sensitive-looking tokens
-- expected commit identity `zero-kotori <kotorizero8@gmail.com>`
+- 暂存改动时 `git diff --cached --check`
+- 扫描暂存/外发改动中的本地产物、凭证、会话、日志、benchmark 证据、support bundle 和疑似敏感 token
+- 期望提交身份 `zero-kotori <kotorizero8@gmail.com>`
 
-Known limitation: `preflight --quick` intentionally skips clippy and gate. The 23 baseline test failures are environment-dependent (POSIX shell / git / cargo execution on Windows), not actionable refactor regressions.
+已知限制：`preflight --quick` 故意跳过 clippy 和 gate；那 23 个基线测试失败是平台相关（Windows 上跑 POSIX shell / git / cargo），不是重构回归。

@@ -1,23 +1,23 @@
-# Runtime Module
+# 运行时模块
 
-## Responsibility
+## 职责
 
-`src/runtime.rs` owns the agent loop, provider turn lifecycle, tool-call loop, context assembly, plan state updates, and session observation used by status and UI surfaces.
+`src/runtime.rs` 负责 agent 循环、provider 轮次生命周期、工具调用循环、上下文组装、计划状态更新，以及供状态与 UI 界面使用的会话观测。
 
-## Boundaries
+## 边界
 
-- Runtime orchestrates provider and tool work; it should not become a command parser or UI renderer.
-- Tool execution must go through `ToolExecutor` and permission checks.
-- Session state changes must go through session APIs.
-- Provider-specific request and stream parsing belongs in `src/providers.rs`.
-- Context compression behavior is not part of the current harness refactor unless a separate plan is written.
+- 运行时负责编排 provider 与工具工作；它不应沦为命令解析器或 UI 渲染器。
+- 工具执行必须经过 `ToolExecutor` 与权限检查。
+- 会话状态变更必须经过会话 API。
+- provider 特定的请求与流式解析归属于 `src/providers.rs`。
+- 上下文压缩行为不属于当前 harness 重构的范围，除非另行编写专门的计划。
 
-## Tests
+## 测试
 
-- Focused `runtime::tests::*` for provider-turn, tool-loop, session observation, and planning behavior.
-- Command or UI tests only when runtime state is externally projected.
-- `cargo test architecture_harness_docs_cover_commands_and_modules --test mvp_contract` for docsync coverage.
+- 针对性的 `runtime::tests::*`，覆盖 provider 轮次、工具循环、会话观测与计划行为。
+- 仅当运行时状态被外部投影时，才编写命令或 UI 测试。
+- `cargo test architecture_harness_docs_cover_commands_and_modules --test mvp_contract` 用于文档同步覆盖。
 
-## Documentation Sync
+## 文档同步
 
-Update this file and `docs/HARNESS.md` when runtime ownership, event sources, observation shape, or context boundaries change. Update stable command docs when runtime changes alter user-visible JSON reports.
+当运行时职责归属、事件来源、观测结构或上下文边界发生变化时，更新本文件与 `docs/HARNESS.md`。当运行时变更改变了用户可见的 JSON 报告时，更新稳定的命令文档。

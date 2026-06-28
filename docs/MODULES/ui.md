@@ -1,22 +1,22 @@
-# UI Module
+# UI 模块
 
-## Responsibility
+## 职责
 
-`src/ui.rs` owns the terminal UI: message input, transcript rendering, monitor tabs, quick actions, resume picker, approval interactions, running-safe side-command dispatch, and task observation layout.
+`src/ui.rs` 负责终端 UI：消息输入、对话记录渲染、监视标签页、快捷操作、resume 选择器、审批交互、运行安全的副命令分发，以及任务观测布局。
 
-## Boundaries
+## 边界
 
-- UI should render domain state and collect user intent; it should not define the canonical command, tool, permission, or session contract.
-- Running-safe command dispatch must match actual handler support and command documentation.
-- UI projections should come from runtime, session, and command report models rather than terminal text parsing.
-- High-risk actions should be prefilled or routed through approvals instead of being triggered by ambiguous UI clicks.
+- UI 应渲染领域状态并收集用户意图；它不应定义权威的命令、工具、权限或会话契约。
+- 运行安全的命令分发必须与实际的处理器支持及命令文档保持一致。
+- UI 投影应来自运行时、会话与命令报告模型，而不是解析终端文本。
+- 高风险操作应预填或经由审批路由，而不是由含糊的 UI 点击触发。
 
-## Tests
+## 测试
 
-- Focused `ui::tests::*` for message input, monitor tabs, quick actions, running-safe guards, resume picker, approvals, and rendering.
-- Command contract tests when UI consumes stable JSON or command checklists.
-- `cargo test architecture_harness_docs_cover_commands_and_modules --test mvp_contract` for docsync coverage.
+- 针对性的 `ui::tests::*`，覆盖消息输入、监视标签页、快捷操作、运行安全守卫、resume 选择器、审批与渲染。
+- 当 UI 消费稳定 JSON 或命令检查清单时的命令契约测试。
+- `cargo test architecture_harness_docs_cover_commands_and_modules --test mvp_contract` 用于文档同步覆盖。
 
-## Documentation Sync
+## 文档同步
 
-Update this file when monitor tabs, running-safe behavior, UI projection ownership, or high-risk interaction rules change. Update `docs/COMMANDS.md` when running-safe public behavior changes.
+当监视标签页、运行安全行为、UI 投影职责归属或高风险交互规则发生变化时，更新本文件。当运行安全的公开行为发生变化时，更新 `docs/COMMANDS.md`。

@@ -252,12 +252,7 @@ fn default_config_matches_documented_mvp_defaults() {
 fn architecture_harness_docs_cover_commands_and_modules() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let harness = fs::read_to_string(root.join("docs/HARNESS.md")).unwrap();
-    for section in [
-        "## Module Map",
-        "## Boundary Principles",
-        "## Documentation Sync",
-        "## Verification",
-    ] {
+    for section in ["## 模块地图", "## 边界原则", "## 文档同步", "## 验证"] {
         assert!(
             harness.contains(section),
             "docs/HARNESS.md missing section {section}"
@@ -324,12 +319,7 @@ fn architecture_harness_docs_cover_commands_and_modules() {
         let path = root.join("docs/MODULES").join(format!("{module}.md"));
         let contents = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
-        for section in [
-            "## Responsibility",
-            "## Boundaries",
-            "## Tests",
-            "## Documentation Sync",
-        ] {
+        for section in ["## 职责", "## 边界", "## 测试", "## 文档同步"] {
             assert!(
                 contents.contains(section),
                 "{} missing section {section}",

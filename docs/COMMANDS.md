@@ -1,83 +1,83 @@
-# deepcli Command Groups
+# deepcli 命令分组
 
-This file is the stage-0 command grouping baseline for the harness refactor. The current compatibility strategy is conservative: keep existing public slash commands working, but steer primary documentation and future implementation toward the `core` group. `support`, `legacy`, and `experimental` commands should stay thin and should not become new ownership centers.
+本文件是 harness 重构阶段 0 的命令分组基线。当前兼容策略偏保守：保持现有公开 slash 命令可用，但把主文档和后续实现导向 `core` 分组。`support`、`legacy`、`experimental` 命令应保持精简，不应成为新的所有权中心。
 
-| Command | Group | Owner | Status | Notes |
+| 命令 | 分组 | Owner | 状态 | 说明 |
 |---|---|---|---|---|
-| /help | support | commands | stable | Command discovery and topic help. |
-| /version | support | commands | stable | Local metadata and support report. |
-| /about | legacy | commands | stable alias | Alias for `/version`. |
-| /quickstart | support | commands | stable | First-run guide and setup check. |
-| /recipes | support | commands | stable | Workflow catalog; SOTA recipe remains a navigation aid. |
-| /scorecard | core | commands | stable | Product capability scoring. |
-| /opportunities | experimental | commands | stable | Non-blocking opportunity report. |
-| /benchmark | support | commands | stable | Local benchmark evidence management; detailed subcommands stay support. |
-| /round | core | commands | stable | Main product-loop gate report. |
-| /selftest | support | commands | stable | Product self-check. |
-| /preflight | core | commands | stable | Release and checkpoint preflight. |
-| /completion | support | commands | stable | Shell completion and command catalog. |
-| /init | support | commands | stable | Project bootstrap helper. |
-| /status | core | commands | stable | Active session and workspace status. |
-| /usage | core | commands | stable | Provider and session usage diagnostics. |
-| /health | support | commands | stable alias | Shortcut for doctor and environment checks. |
-| /diagnose | support | commands | stable | Workspace and session diagnostics. |
-| /support | support | commands | stable | Redacted support bundle creation. |
-| /doctor | support | commands | stable | Local setup and environment diagnostics. |
-| /trace | core | commands | stable | Session audit event inspection. |
-| /logs | support | commands | stable | Redacted log inspection. |
-| /privacy | core | commands | stable | Privacy and sensitive-value scan. |
-| /context | support | commands | stable | Workspace context preview. |
-| /permissions | core | permissions | stable | Permission mode inspection. |
-| /login | support | commands | stable alias | Credential setup shortcut. |
-| /auth | legacy | commands | stable alias | Alias for credential setup. |
-| /apikey | legacy | commands | stable alias | Alias for credential setup. |
-| /key | legacy | commands | stable alias | Alias for credential setup. |
-| /logout | support | commands | stable alias | Credential removal shortcut. |
-| /credentials | core | commands | stable | Provider credential management. |
-| /config | core | commands | stable | Effective config inspection and edits. |
-| /timeout | support | commands | stable | Provider-turn timeout shortcut. |
-| /model | core | commands | stable | Provider/model inspection and switching. |
-| /provider | legacy | commands | stable alias | Alias over `/model`. |
-| /use | legacy | commands | stable alias | Alias over `/model set`. |
-| /switch | legacy | commands | stable alias | Alias over `/model set`. |
-| /models | legacy | commands | stable alias | Alias over `/model list`. |
-| /providers | legacy | commands | stable alias | Alias over `/model list`. |
-| /goal | core | session | stable | Long-running goal contract and gate. |
-| /plan | core | session | stable | Requirement clarification and plan draft. |
-| /fork | core | session | stable | Persisted context cloning and resume verification. |
-| /diff | core | commands | stable | Workspace or session diff inspection. |
-| /review | core | commands | stable | Local diff risk review. |
-| /accept | core | commands | stable alias | Human acceptance report over `/verify`. |
-| /gate | core | commands | stable alias | Strict verification gate over `/verify`. |
-| /verify | core | commands | stable | Acceptance report and blocker aggregation. |
-| /handoff | core | commands | stable | Handoff and PR-ready report. |
-| /test | core | tools | stable | Test discovery and execution through tool layer. |
-| /env | core | tools | stable | Environment check, plan, setup, and test workflows. |
-| /check | legacy | tools | stable alias | Alias over `/env check`. |
-| /docker | legacy | tools | stable alias | Target-first alias over `/env`. |
-| /compiler | legacy | tools | stable alias | Target-first alias over `/env`. |
-| /setup | legacy | tools | stable alias | Alias over `/env setup`. |
-| /install | legacy | tools | stable alias | Alias over `/env install`. |
-| /git | core | tools | stable | Git inspect and controlled write actions. |
-| /web | support | tools | stable | Permission-checked web search. |
-| /prompt | support | commands | stable | Local prompt library. |
-| /skill | support | commands | stable | Local skill library. |
-| /agent | support | commands | stable | Subagent task descriptors. |
-| /btw | core | session | stable | Side-question queue. |
-| /approval | core | session | stable | Approval queue inspection and resolution. |
-| /session | core | session | stable | Persisted session inspection and maintenance. |
-| /history | legacy | session | stable alias | Alias over `/session list`. |
-| /cleanup | legacy | session | stable alias | Alias over `/session prune-empty`. |
-| /next | support | session | stable | Likely next action report. |
-| /resume | core | session | stable | Session resume and candidate preview. |
-| /rename | legacy | session | stable alias | Runtime session title rename. |
-| /stop | core | runtime | stable | Stop active TUI task and keep session resumable. |
-| /quit | core | ui | stable | Exit interactive session. |
-| /terminal | core | tools | stable | Open or preview same-workspace terminal. |
+| /help | support | commands | stable | 命令发现与主题帮助。 |
+| /version | support | commands | stable | 本地元数据与 support 报告。 |
+| /about | legacy | commands | stable alias | `/version` 的别名。 |
+| /quickstart | support | commands | stable | 首次运行引导与 setup 检查。 |
+| /recipes | support | commands | stable | 工作流目录；SOTA recipe 作为导航辅助。 |
+| /scorecard | core | commands | stable | 产品能力评分。 |
+| /opportunities | experimental | commands | stable | 非阻断的机会点报告。 |
+| /benchmark | support | commands | stable | 本地 benchmark 证据管理；细分子命令保持 support。 |
+| /round | core | commands | stable | 主产品循环 gate 报告。 |
+| /selftest | support | commands | stable | 产品自检。 |
+| /preflight | core | commands | stable | 发布与检查点 preflight。 |
+| /completion | support | commands | stable | Shell 补全与命令目录。 |
+| /init | support | commands | stable | 项目初始化助手。 |
+| /status | core | commands | stable | 活动会话与工作区状态。 |
+| /usage | core | commands | stable | Provider 与会话用量诊断。 |
+| /health | support | commands | stable alias | doctor 与环境检查的快捷方式。 |
+| /diagnose | support | commands | stable | 工作区与会话诊断。 |
+| /support | support | commands | stable | 生成脱敏 support bundle。 |
+| /doctor | support | commands | stable | 本地 setup 与环境诊断。 |
+| /trace | core | commands | stable | 会话审计事件检查。 |
+| /logs | support | commands | stable | 脱敏日志检查。 |
+| /privacy | core | commands | stable | 隐私与敏感值扫描。 |
+| /context | support | commands | stable | 工作区上下文预览。 |
+| /permissions | core | permissions | stable | 权限模式检查。 |
+| /login | support | commands | stable alias | 凭证设置快捷方式。 |
+| /auth | legacy | commands | stable alias | 凭证设置别名。 |
+| /apikey | legacy | commands | stable alias | 凭证设置别名。 |
+| /key | legacy | commands | stable alias | 凭证设置别名。 |
+| /logout | support | commands | stable alias | 凭证移除快捷方式。 |
+| /credentials | core | commands | stable | Provider 凭证管理。 |
+| /config | core | commands | stable | 有效配置检查与编辑。 |
+| /timeout | support | commands | stable | Provider-turn 超时快捷方式。 |
+| /model | core | commands | stable | Provider/model 检查与切换。 |
+| /provider | legacy | commands | stable alias | `/model` 的别名。 |
+| /use | legacy | commands | stable alias | `/model set` 的别名。 |
+| /switch | legacy | commands | stable alias | `/model set` 的别名。 |
+| /models | legacy | commands | stable alias | `/model list` 的别名。 |
+| /providers | legacy | commands | stable alias | `/model list` 的别名。 |
+| /goal | core | session | stable | 长期目标契约与 gate。 |
+| /plan | core | session | stable | 需求澄清与计划草稿。 |
+| /fork | core | session | stable | 持久化上下文复制与恢复验证。 |
+| /diff | core | commands | stable | 工作区或会话 diff 检查。 |
+| /review | core | commands | stable | 本地 diff 风险审查。 |
+| /accept | core | commands | stable alias | 基于 `/verify` 的人工验收报告。 |
+| /gate | core | commands | stable alias | 基于 `/verify` 的严格验证 gate。 |
+| /verify | core | commands | stable | 验收报告与阻断项汇总。 |
+| /handoff | core | commands | stable | 交接与可提 PR 的报告。 |
+| /test | core | tools | stable | 经工具层做测试发现与执行。 |
+| /env | core | tools | stable | 环境 check/plan/setup/test 工作流。 |
+| /check | legacy | tools | stable alias | `/env check` 的别名。 |
+| /docker | legacy | tools | stable alias | 目标优先的 `/env` 别名。 |
+| /compiler | legacy | tools | stable alias | 目标优先的 `/env` 别名。 |
+| /setup | legacy | tools | stable alias | `/env setup` 的别名。 |
+| /install | legacy | tools | stable alias | `/env install` 的别名。 |
+| /git | core | tools | stable | Git 检查与受控写操作。 |
+| /web | support | tools | stable | 经权限检查的 web 搜索。 |
+| /prompt | support | commands | stable | 本地 prompt 库。 |
+| /skill | support | commands | stable | 本地 skill 库。 |
+| /agent | support | commands | stable | 子 agent 任务描述。 |
+| /btw | core | session | stable | 旁路问题队列。 |
+| /approval | core | session | stable | 审批队列检查与处理。 |
+| /session | core | session | stable | 持久化会话检查与维护。 |
+| /history | legacy | session | stable alias | `/session list` 的别名。 |
+| /cleanup | legacy | session | stable alias | `/session prune-empty` 的别名。 |
+| /next | support | session | stable | 可能的下一步动作报告。 |
+| /resume | core | session | stable | 会话恢复与候选预览。 |
+| /rename | legacy | session | stable alias | 运行时会话标题重命名。 |
+| /stop | core | runtime | stable | 停止活动 TUI 任务并保持会话可恢复。 |
+| /quit | core | ui | stable | 退出交互会话。 |
+| /terminal | core | tools | stable | 打开或预览同工作区终端。 |
 
-Compatibility notes:
+兼容性说明：
 
-- `legacy` means "keep compatible unless explicitly removed later"; it does not mean broken or deprecated today.
-- New small slash commands and top-level aliases are frozen unless they directly serve the core harness refactor or an already-confirmed core capability.
-- Stable JSON schemas should keep their existing version unless a migration plan and tests are added in the same change.
-- Running-safe status is still sourced from code; this document records grouping and ownership, not live TUI dispatch behavior.
+- `legacy` 表示“在未明确移除前保持兼容”，并不代表当前已损坏或废弃。
+- 除非直接服务于核心 harness 重构或已确认的核心能力，否则冻结新增的细碎 slash 命令与顶层别名。
+- 稳定 JSON schema 应保持现有版本，除非在同一次改动中加入迁移计划和测试。
+- running-safe 状态仍以代码为准；本文档记录的是分组与所有权，不是运行时 TUI 分发行为。
