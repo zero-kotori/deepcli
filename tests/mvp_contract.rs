@@ -409,6 +409,7 @@ fn commands_module_docs_cover_split_source_files() {
         "src/commands/productloop.rs",
         "src/commands/session.rs",
         "src/commands/env.rs",
+        "src/commands/delivery.rs",
     ] {
         assert!(
             root.join(source).exists(),
