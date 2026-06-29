@@ -149,6 +149,35 @@ fn command_docs_match_registry() {
 }
 
 #[test]
+fn authoritative_docs_exist_and_cover_schema_owner() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    for doc in [
+        "docs/ARCHITECTURE.md",
+        "docs/CORE_FEATURES.md",
+        "docs/COMMANDS.md",
+        "docs/HARNESS.md",
+        "docs/ADR/0001-harness-first.md",
+        "docs/ADR/0002-command-surface-pruning.md",
+        "docs/ADR/0003-schema-id-registry.md",
+    ] {
+        let path = root.join(doc);
+        let body = fs::read_to_string(&path)
+            .unwrap_or_else(|_| panic!("authoritative doc {doc} should exist"));
+        assert!(
+            body.trim().len() > 80,
+            "authoritative doc {doc} should not be empty"
+        );
+    }
+
+    // The stable schema-id registry must have a documented owner entry.
+    let core_features = fs::read_to_string(root.join("docs/CORE_FEATURES.md")).unwrap();
+    assert!(
+        core_features.contains("schema_ids"),
+        "CORE_FEATURES.md should document the schema-id registry owner"
+    );
+}
+
+#[test]
 fn mvp_tool_registry_exposes_required_tools() {
     let registry = ToolRegistry::mvp();
     for tool in [
