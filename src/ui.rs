@@ -2163,13 +2163,21 @@ fn select_monitor_tab_at_position(
     let mut offset = 0usize;
     for segment in monitor_tab_strip(state.monitor_tab) {
         let end = offset + segment.text.len();
-        if let Some(tab) = segment.tab {
-            if (offset..end).contains(&relative_column) {
+        let hit = (offset..end).contains(&relative_column);
+        match segment.kind {
+            MonitorTabSegmentKind::Tab(tab) if hit => {
                 state.monitor_tab = tab;
                 state.selected_command = 0;
                 state.last_event = format!("monitor tab: {}", state.monitor_tab.label());
                 return true;
             }
+            MonitorTabSegmentKind::EnterAdvanced if hit => {
+                state.monitor_tab = first_advanced_monitor_tab();
+                state.selected_command = 0;
+                state.last_event = format!("monitor tab: {}", state.monitor_tab.label());
+                return true;
+            }
+            _ => {}
         }
         offset = end + 1;
     }
@@ -3917,33 +3925,70 @@ fn format_task_monitor_text(
     truncate_panel_lines_with_focus(lines, height, selected_action_line)
 }
 
+const MONITOR_ADVANCED_TOGGLE_LABEL: &str = "+advanced";
+
+enum MonitorTabSegmentKind {
+    Tab(MonitorTab),
+    Separator,
+    EnterAdvanced,
+}
+
 struct MonitorTabSegment {
-    tab: Option<MonitorTab>,
+    kind: MonitorTabSegmentKind,
     text: String,
 }
 
+fn first_advanced_monitor_tab() -> MonitorTab {
+    MonitorTab::all()
+        .iter()
+        .copied()
+        .find(|tab| tab.tier() == MonitorTier::Advanced)
+        .unwrap_or(MonitorTab::Overview)
+}
+
+// The advanced/support diagnostics stay collapsed behind a single toggle until
+// the active tab is itself advanced, so the main strip only carries core task
+// views by default.
 fn monitor_tab_strip(active: MonitorTab) -> Vec<MonitorTabSegment> {
     let mut segments = Vec::new();
-    let mut advanced_marked = false;
-    for tab in MonitorTab::all() {
-        if tab.tier() == MonitorTier::Advanced && !advanced_marked {
-            advanced_marked = true;
+    for tab in MonitorTab::all()
+        .iter()
+        .filter(|tab| tab.tier() == MonitorTier::Core)
+    {
+        segments.push(MonitorTabSegment {
+            kind: MonitorTabSegmentKind::Tab(*tab),
+            text: monitor_tab_label(*tab, active),
+        });
+    }
+    if active.tier() == MonitorTier::Advanced {
+        segments.push(MonitorTabSegment {
+            kind: MonitorTabSegmentKind::Separator,
+            text: "|".to_string(),
+        });
+        for tab in MonitorTab::all()
+            .iter()
+            .filter(|tab| tab.tier() == MonitorTier::Advanced)
+        {
             segments.push(MonitorTabSegment {
-                tab: None,
-                text: "|".to_string(),
+                kind: MonitorTabSegmentKind::Tab(*tab),
+                text: monitor_tab_label(*tab, active),
             });
         }
-        let text = if *tab == active {
-            format!("[{}]", tab.label())
-        } else {
-            tab.label().to_string()
-        };
+    } else {
         segments.push(MonitorTabSegment {
-            tab: Some(*tab),
-            text,
+            kind: MonitorTabSegmentKind::EnterAdvanced,
+            text: MONITOR_ADVANCED_TOGGLE_LABEL.to_string(),
         });
     }
     segments
+}
+
+fn monitor_tab_label(tab: MonitorTab, active: MonitorTab) -> String {
+    if tab == active {
+        format!("[{}]", tab.label())
+    } else {
+        tab.label().to_string()
+    }
 }
 
 fn format_monitor_tabs(active: MonitorTab) -> String {
@@ -7736,16 +7781,95 @@ mod tests {
     }
 
     #[test]
-    fn monitor_tab_strip_separates_core_from_advanced_and_stays_clickable() {
-        let strip = monitor_tab_strip(MonitorTab::Overview);
-        let separators = strip.iter().filter(|seg| seg.tab.is_none()).count();
-        assert_eq!(separators, 1, "exactly one core/advanced separator");
-        let rendered = format_monitor_tabs(MonitorTab::Overview);
-        // the separator sits between the last core tab and the first advanced tab.
-        let approvals = rendered.find("Approvals").unwrap();
-        let result = rendered.find("Result").unwrap();
-        let bar = rendered.find('|').unwrap();
+    fn monitor_tab_strip_collapses_advanced_until_active() {
+        // From a core tab the advanced diagnostics are collapsed behind a toggle.
+        let collapsed = format_monitor_tabs(MonitorTab::Overview);
+        assert!(collapsed.contains("[Overview]"));
+        assert!(collapsed.contains(MONITOR_ADVANCED_TOGGLE_LABEL));
+        assert!(!collapsed.contains("Result"));
+        assert!(!collapsed.contains('|'));
+
+        // Once an advanced tab is active the full advanced group is revealed
+        // after the separator, and the toggle disappears.
+        let expanded = format_monitor_tabs(MonitorTab::Result);
+        assert!(expanded.contains("[Result]"));
+        assert!(!expanded.contains(MONITOR_ADVANCED_TOGGLE_LABEL));
+        let approvals = expanded.find("Approvals").unwrap();
+        let bar = expanded.find('|').unwrap();
+        let result = expanded.find("Result").unwrap();
         assert!(approvals < bar && bar < result);
+    }
+
+    #[test]
+    fn monitor_advanced_toggle_enters_first_advanced_tab() {
+        let mut state = TuiState {
+            runtime: None,
+            active_session: None,
+            input: MessageBox::new(),
+            chat: Vec::new(),
+            transcript_scroll: 0,
+            result_scroll: 0,
+            workspace_changes: None,
+            workspace_changes_checked_at: None,
+            tool_log: Vec::new(),
+            resume_picker: None,
+            credential_prompt: None,
+            side_question_prompt: None,
+            selected_tool: None,
+            selected_command: 3,
+            selected_change: 0,
+            change_patch_scroll: 0,
+            monitor_tab: MonitorTab::Overview,
+            selected_approval: 0,
+            running: false,
+            exit_requested: false,
+            last_event: "ready".to_string(),
+            worker: None,
+        };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 24,
+        };
+        let layout = chat_ui_layout(area);
+        let tabs = format_monitor_tabs(state.monitor_tab);
+        let toggle_offset = tabs.find(MONITOR_ADVANCED_TOGGLE_LABEL).unwrap() as u16;
+        let (progress_tx, _progress_rx) = mpsc::channel();
+        let (done_tx, _done_rx) = mpsc::channel();
+
+        handle_tui_mouse(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: layout.tools.x + 1 + toggle_offset,
+                row: layout.tools.y + 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            &progress_tx,
+            &done_tx,
+            area,
+        );
+        assert_eq!(state.monitor_tab, first_advanced_monitor_tab());
+        assert_eq!(state.monitor_tab, MonitorTab::Result);
+        assert_eq!(state.selected_command, 0);
+
+        // From the expanded advanced group, clicking a core tab collapses again.
+        let expanded = format_monitor_tabs(state.monitor_tab);
+        let overview_offset = expanded.find("Overview").unwrap() as u16;
+        handle_tui_mouse(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: layout.tools.x + 1 + overview_offset,
+                row: layout.tools.y + 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            &progress_tx,
+            &done_tx,
+            area,
+        );
+        assert_eq!(state.monitor_tab, MonitorTab::Overview);
     }
 
     #[test]
@@ -7783,7 +7907,7 @@ mod tests {
         let layout = chat_ui_layout(area);
         let tabs = format_monitor_tabs(state.monitor_tab);
         let changes_offset = tabs.find("Changes").unwrap() as u16;
-        let result_offset = tabs.find("Result").unwrap() as u16;
+        let toggle_offset = tabs.find(MONITOR_ADVANCED_TOGGLE_LABEL).unwrap() as u16;
         let (progress_tx, _progress_rx) = mpsc::channel();
         let (done_tx, _done_rx) = mpsc::channel();
 
@@ -7808,7 +7932,7 @@ mod tests {
             &mut state,
             MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
-                column: layout.tools.x + 1 + result_offset,
+                column: layout.tools.x + 1 + toggle_offset,
                 row: layout.tools.y + 1,
                 modifiers: KeyModifiers::NONE,
             },
