@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
@@ -810,7 +811,7 @@ fn format_restore_backup_report(input: &RestoreBackupFormat<'_>) -> String {
 
 fn format_restore_backup_json(input: &RestoreBackupFormat<'_>, report: &str) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.restore_backup.v1",
+        "schema": schema_ids::SESSION_RESTORE_BACKUP_V1,
         "status": input.status,
         "dryRun": input.dry_run,
         "workspace": input.workspace.display().to_string(),
@@ -1116,7 +1117,7 @@ fn format_session_prune_empty_json(
 ) -> Result<String> {
     let next_actions = session_prune_empty_next_actions(report);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.prune_empty.v1",
+        "schema": schema_ids::SESSION_PRUNE_EMPTY_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "dryRun": !report.force,
@@ -1212,7 +1213,7 @@ fn format_session_search_json(
 ) -> Result<String> {
     let next_actions = session_search_next_actions(report);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.search.v1",
+        "schema": schema_ids::SESSION_SEARCH_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "query": redact_sensitive_text(&report.query),
@@ -1418,7 +1419,7 @@ fn format_session_list_json(
     let next_actions = session_list_next_actions(report);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.list.v1",
+        "schema": schema_ids::SESSION_LIST_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "includeAll": report.options.include_all,

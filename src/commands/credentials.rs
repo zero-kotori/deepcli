@@ -4,6 +4,7 @@ use super::{
 };
 use crate::config::{absolutize_workspace_path, AppConfig, ProviderCredentials};
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use crossterm::{
@@ -381,7 +382,7 @@ fn format_credentials_status_json(
         .collect::<Vec<_>>();
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.credentials.status.v1",
+        "schema": schema_ids::CREDENTIALS_STATUS_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "provider": report.provider_filter.as_deref(),
