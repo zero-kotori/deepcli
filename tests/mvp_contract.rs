@@ -122,6 +122,49 @@ fn command_registry_exposes_groups_and_drives_help_metadata() {
 }
 
 #[test]
+fn command_docs_match_registry() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("docs/COMMANDS.md");
+    let doc = fs::read_to_string(&path).expect("read docs/COMMANDS.md");
+
+    let mut documented: BTreeMap<String, String> = BTreeMap::new();
+    for line in doc.lines() {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("| /") {
+            continue;
+        }
+        let cells: Vec<&str> = trimmed
+            .trim_matches('|')
+            .split('|')
+            .map(str::trim)
+            .collect();
+        if cells.len() < 2 {
+            continue;
+        }
+        documented.insert(cells[0].to_string(), cells[1].to_string());
+    }
+
+    let registry: BTreeMap<String, String> = CommandRouter::help_summaries()
+        .iter()
+        .map(|summary| (summary.name.to_string(), summary.group.as_str().to_string()))
+        .collect();
+
+    let documented_names: BTreeSet<&String> = documented.keys().collect();
+    let registry_names: BTreeSet<&String> = registry.keys().collect();
+    assert_eq!(
+        documented_names, registry_names,
+        "docs/COMMANDS.md command list drifted from the command registry"
+    );
+
+    for (name, group) in &registry {
+        assert_eq!(
+            documented.get(name),
+            Some(group),
+            "{name} group in docs/COMMANDS.md drifted from the registry"
+        );
+    }
+}
+
+#[test]
 fn mvp_tool_registry_exposes_required_tools() {
     let registry = ToolRegistry::mvp();
     for tool in [

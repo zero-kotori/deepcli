@@ -45,7 +45,7 @@
 - 难以回退的架构决策：在 `docs/ADR/` 下新增或更新 ADR。
 - 删除、降级或 legacy 行为：从面向用户的文档中删除旧承诺，或将条目标记为 support/legacy。
 
-`tests/mvp_contract.rs::architecture_harness_docs_cover_commands_and_modules` 检查第一层 docsync：harness 章节、命令分组表、模块 owner 文档是否齐备。
+`tests/mvp_contract.rs::architecture_harness_docs_cover_commands_and_modules` 检查第一层 docsync：harness 章节、命令分组表、模块 owner 文档是否齐备。`tests/mvp_contract.rs::command_docs_match_registry` 进一步校验 `docs/COMMANDS.md` 的命令清单与分组与命令 registry（`CommandRouter::help_summaries`）逐项一致，新增/删除命令或改动分组时若未同步该文档即会失败。
 
 ## 验证
 
