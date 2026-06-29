@@ -313,7 +313,6 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/round --output <workspace-relative-path>",
                 "/round --fail-on-gaps",
                 "/round --fail-below <percent>",
-                "/iterate [--json]",
                 "deepcli round --json",
                 "deepcli round --json --run-benchmark --fail-on-command",
             ],
@@ -323,7 +322,6 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/round --json --run-benchmark --fail-on-command",
                 "/round --json --fail-on-gaps",
                 "deepcli round --json",
-                "deepcli iterate --json",
             ],
             notes: &["`/round` is a local product-loop report for the designer -> engineer -> verifier cycle. By default it aggregates `/scorecard`, `/benchmark status`, and optional goal readiness into the stable `deepcli.round.v1` schema without creating a session, calling a provider, or executing shell. The `scorecard` gate tracks the round score threshold; benchmark evidence and goal readiness have their own gates, while remaining gaps still keep the round from being ready. The benchmark gate summarizes missing, weak, stale, failed, or timed-out required presets so users can see the evidence gap without opening a second report. The JSON report includes top-level `checklist[]` for the global next-action queue, and each gate includes `nextAction` plus a gate-level `checklist[]`, so UIs can render round-level and gate-level action buttons without parsing the report. The top-level `nextActions` list is ordered by failing gate remediation; when scorecard passes and only benchmark-owned gaps remain, it skips the redundant `deepcli scorecard --json` action and starts with `deepcli round --json --run-benchmark --fail-on-command`. When all gates pass and the round is ready, `nextActions` keeps preflight/gate and then selects the current baseline step: generate `.deepcli/baselines/competitor.json` if it is missing, or run baseline compare when it exists. When a goal exists, the JSON report includes `goalStatus`; an unready goal adds a `goal_readiness` gate and a `deepcli goal gate --json` next action. Add `--run-benchmark` or `--run-suite` when you want one command to execute the benchmark suite first, then report the updated round status. Use `--fail-on-command` to fail when an executed benchmark command fails, and `--fail-on-gaps` or `--strict` when CI should fail unless scorecard, benchmark evidence, and goal readiness are all ready. While an agent task is running in the TUI, read-only `/round` reports are allowed; benchmark-producing `--run-benchmark`, `--run-suite`, `--preset`, `--presets`, `--fail-on-command`, and `--fail-fast` options should wait until the task is stopped or finished."],
         },
@@ -1091,17 +1089,17 @@ fn help_topics() -> &'static [CommandHelp] {
             name: "/stop",
             listing: "/stop",
             summary: "Stop the currently running TUI task and keep the session resumable.",
-            usage: &["/stop", "/cancel", "/abort"],
+            usage: &["/stop"],
             examples: &["/stop"],
-            notes: &["`/cancel` and `/abort` are accepted as aliases. The session is marked paused and can be resumed later."],
+            notes: &["The session is marked paused and can be resumed later."],
         },
         CommandHelp {
             name: "/quit",
             listing: "/quit",
             summary: "Exit the current interactive session.",
-            usage: &["/quit", "/exit"],
+            usage: &["/quit"],
             examples: &["/quit"],
-            notes: &["`/exit` is accepted as an alias."],
+            notes: &[],
         },
         CommandHelp {
             name: "/terminal",
@@ -1129,24 +1127,10 @@ fn help_topics() -> &'static [CommandHelp] {
 
 fn normalize_help_topic(topic: &str) -> String {
     let trimmed = topic.trim();
-    let normalized = if trimmed.starts_with('/') {
+    if trimmed.starts_with('/') {
         trimmed.to_string()
     } else {
         format!("/{trimmed}")
-    };
-    if matches!(normalized.as_str(), "/cancel" | "/abort") {
-        "/stop".to_string()
-    } else if normalized == "/exit" {
-        "/quit".to_string()
-    } else if matches!(
-        normalized.as_str(),
-        "/recipe" | "/playbook" | "/workflow" | "/workflows"
-    ) {
-        "/recipes".to_string()
-    } else if matches!(normalized.as_str(), "/iterate" | "/iteration") {
-        "/round".to_string()
-    } else {
-        normalized
     }
 }
 

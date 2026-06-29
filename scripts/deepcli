@@ -133,7 +133,7 @@ is_help_flag() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|compiler|install|git|web|prompt|skill|agent|btw|approval|session|cleanup|rename|stop|quit|terminal )
+    help|version|quickstart|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|compiler|install|git|web|prompt|skill|agent|btw|approval|session|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -181,8 +181,6 @@ Usage:
                                    Run a local product install/readiness self-test
   deepcli preflight [--json] [--dry-run] [--quick]
                                    Run local publish-ready checks before commit/push
-  deepcli release-check [--json] [--dry-run]
-                                   Alias for preflight release checks
   deepcli completion [bash|zsh|fish|json|install|status]
                                    Generate, install, or inspect shell completion
   deepcli sessions [--all] [--limit n] [--json] [--output path]
@@ -268,7 +266,6 @@ Examples:
   deepcli quickstart --json --fail-on-missing
   deepcli recipes
   deepcli recipes release --json
-  deepcli playbook support
   deepcli opportunities --json
   deepcli benchmark presets --json
   deepcli benchmark status --json
@@ -283,7 +280,6 @@ Examples:
   deepcli selftest --json --output .deepcli/exports/selftest.json
   deepcli selftest --json --fail-on-issues
   deepcli preflight --dry-run
-  deepcli release-check --dry-run
   deepcli preflight --json --output .deepcli/exports/preflight.json
   deepcli completion status zsh
   deepcli completion install zsh
@@ -576,7 +572,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|compiler|install|git|web|prompt|skill|agent|btw|approval|cleanup|rename|stop|quit|terminal )
+  version|quickstart|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|compiler|install|git|web|prompt|skill|agent|btw|approval|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     if is_help_flag "${1:-}"; then

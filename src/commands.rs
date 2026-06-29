@@ -1082,12 +1082,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/playbook support").unwrap(),
-            Some(SlashCommand::Recipes {
-                args: vec!["support".to_string()]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/scorecard --json").unwrap(),
             Some(SlashCommand::Scorecard {
                 args: vec!["--json".to_string()]
@@ -1103,12 +1097,6 @@ mod tests {
             CommandRouter::parse("/round --json").unwrap(),
             Some(SlashCommand::Round {
                 args: vec!["--json".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/iterate --fail-on-gaps").unwrap(),
-            Some(SlashCommand::Round {
-                args: vec!["--fail-on-gaps".to_string()]
             })
         );
         assert_eq!(
@@ -1210,12 +1198,6 @@ mod tests {
             CommandRouter::parse("/preflight --json").unwrap(),
             Some(SlashCommand::Preflight {
                 args: vec!["--json".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/release-check --dry-run").unwrap(),
-            Some(SlashCommand::Preflight {
-                args: vec!["--dry-run".to_string()]
             })
         );
         assert_eq!(
@@ -1524,10 +1506,6 @@ mod tests {
         );
         assert_eq!(
             CommandRouter::parse("/stop").unwrap(),
-            Some(SlashCommand::Stop)
-        );
-        assert_eq!(
-            CommandRouter::parse("/cancel").unwrap(),
             Some(SlashCommand::Stop)
         );
         assert_eq!(
@@ -3584,11 +3562,6 @@ mod tests {
         assert!(recipes_help.contains("deepcli.recipes.v1"));
         assert!(recipes_help.contains("Supported topics"));
         assert!(recipes_help.contains("deepcli recipes release --json"));
-        assert!(recipes_help.contains("deepcli playbook support"));
-
-        let playbook_help = CommandRouter::help_for(&["playbook".to_string()]).unwrap();
-        assert!(playbook_help.contains("/recipes - "));
-
         let scorecard_help = CommandRouter::help_for(&["scorecard".to_string()]).unwrap();
         assert!(scorecard_help.contains("/scorecard - "));
         assert!(scorecard_help.contains("running-safe: yes"));
@@ -3827,10 +3800,9 @@ mod tests {
         assert!(resume_help.contains("does not start the TUI"));
         assert!(resume_help.contains("workspace-contained output"));
 
-        let stop_help = CommandRouter::help_for(&["cancel".to_string()]).unwrap();
+        let stop_help = CommandRouter::help_for(&["stop".to_string()]).unwrap();
         assert!(stop_help.contains("/stop - "));
         assert!(stop_help.contains("running-safe: yes"));
-        assert!(stop_help.contains("/abort"));
 
         let slash_help = CommandRouter::help_for(&["/credentials".to_string()]).unwrap();
         assert!(slash_help.contains("/credentials status [provider] [--json] [--output path]"));
@@ -3838,9 +3810,8 @@ mod tests {
         assert!(slash_help.contains("workspace-contained file"));
         assert!(slash_help.contains("Plaintext API keys are redacted"));
 
-        let alias_help = CommandRouter::help_for(&["exit".to_string()]).unwrap();
+        let alias_help = CommandRouter::help_for(&["quit".to_string()]).unwrap();
         assert!(alias_help.contains("/quit - "));
-        assert!(alias_help.contains("/exit"));
 
         let init_help = CommandRouter::help_for(&["init".to_string()]).unwrap();
         assert!(init_help.contains("/init --probe-provider"));

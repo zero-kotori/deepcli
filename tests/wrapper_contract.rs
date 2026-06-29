@@ -377,20 +377,11 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/recipes", "release", "--json"]
     ));
 
-    let playbook = run_wrapper(&["playbook", "support"]);
-    assert!(ends_with_args(&playbook.args, &["/playbook", "support"]));
-
     let scorecard = run_wrapper(&["scorecard", "--json"]);
     assert!(ends_with_args(&scorecard.args, &["/scorecard", "--json"]));
 
     let round = run_wrapper(&["round", "--json"]);
     assert!(ends_with_args(&round.args, &["/round", "--json"]));
-
-    let iterate = run_wrapper(&["iterate", "--json", "--fail-on-gaps"]);
-    assert!(ends_with_args(
-        &iterate.args,
-        &["/iterate", "--json", "--fail-on-gaps"]
-    ));
 
     let goal = run_wrapper(&["goal", "完整实现全部需求", "--json"]);
     assert!(ends_with_args(
@@ -474,12 +465,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/preflight", "--dry-run", "--json"]
     ));
 
-    let release_check = run_wrapper(&["release-check", "--dry-run"]);
-    assert!(ends_with_args(
-        &release_check.args,
-        &["/release-check", "--dry-run"]
-    ));
-
     let completion = run_wrapper(&["completion", "zsh"]);
     assert!(ends_with_args(&completion.args, &["/completion", "zsh"]));
 
@@ -494,9 +479,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &completion_status.args,
         &["/completion", "status", "zsh", "--json"]
     ));
-
-    let completions = run_wrapper(&["completions", "json"]);
-    assert!(ends_with_args(&completions.args, &["/completions", "json"]));
 
     let diagnose = run_wrapper(&["diagnose", "--limit", "3"]);
     assert!(ends_with_args(
@@ -1298,18 +1280,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(ends_with_args(
         &preflight.args,
         &["/preflight", "--dry-run", "--json"]
-    ));
-
-    let release_check = run_wrapper(&["deepseek", "release-check", "--dry-run"]);
-    assert!(has_adjacent(&release_check.args, "--provider", "deepseek"));
-    assert!(has_adjacent(
-        &release_check.args,
-        "--model",
-        "deepseek-v4-pro"
-    ));
-    assert!(ends_with_args(
-        &release_check.args,
-        &["/release-check", "--dry-run"]
     ));
 
     let completion = run_wrapper(&["deepseek", "completion", "json"]);

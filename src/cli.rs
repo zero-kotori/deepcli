@@ -347,24 +347,13 @@ fn top_level_entries() -> &'static [&'static str] {
         "version",
         "quickstart",
         "recipes",
-        "recipe",
-        "playbook",
-        "workflow",
-        "workflows",
         "scorecard",
         "opportunities",
-        "opportunity",
         "benchmark",
-        "bench",
-        "sota",
         "round",
-        "iterate",
-        "iteration",
         "selftest",
         "preflight",
-        "release-check",
         "completion",
-        "completions",
         "init",
         "status",
         "usage",
@@ -537,24 +526,13 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "version"
             | "quickstart"
             | "recipes"
-            | "recipe"
-            | "playbook"
-            | "workflow"
-            | "workflows"
             | "scorecard"
             | "opportunities"
-            | "opportunity"
             | "benchmark"
-            | "bench"
-            | "sota"
             | "round"
-            | "iterate"
-            | "iteration"
             | "selftest"
             | "preflight"
-            | "release-check"
             | "completion"
-            | "completions"
             | "init"
             | "status"
             | "usage"
@@ -564,7 +542,6 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "trace"
             | "logs"
             | "privacy"
-            | "log"
             | "context"
             | "permissions"
             | "login"
@@ -1230,12 +1207,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["playbook".into(), "support".into()]).unwrap(),
-            Some(SlashCommand::Recipes {
-                args: vec!["support".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["scorecard".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Scorecard {
                 args: vec!["--json".to_string()]
@@ -1266,12 +1237,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["iterate".into(), "--fail-on-gaps".into()]).unwrap(),
-            Some(SlashCommand::Round {
-                args: vec!["--fail-on-gaps".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["benchmark".into(), "--fail-below".into(), "85".into()])
                 .unwrap(),
             Some(SlashCommand::Benchmark {
@@ -1288,12 +1253,6 @@ mod tests {
             parse_one_shot_command(&["preflight".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Preflight {
                 args: vec!["--json".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["release-check".into(), "--dry-run".into()]).unwrap(),
-            Some(SlashCommand::Preflight {
-                args: vec!["--dry-run".to_string()]
             })
         );
         assert_eq!(
@@ -1332,12 +1291,6 @@ mod tests {
                     "zsh".to_string(),
                     "--json".to_string()
                 ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["completions".into(), "json".into()]).unwrap(),
-            Some(SlashCommand::Completion {
-                args: vec!["json".to_string()]
             })
         );
         assert_eq!(

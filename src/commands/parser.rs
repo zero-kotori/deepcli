@@ -72,16 +72,14 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/help" => SlashCommand::Help { args },
         "/version" => SlashCommand::Version { args },
         "/quickstart" => SlashCommand::Quickstart { args },
-        "/recipes" | "/recipe" | "/playbook" | "/workflow" | "/workflows" => {
-            SlashCommand::Recipes { args }
-        }
+        "/recipes" => SlashCommand::Recipes { args },
         "/scorecard" => SlashCommand::Scorecard { args },
         "/opportunities" => SlashCommand::Opportunities { args },
         "/benchmark" => SlashCommand::Benchmark { args },
-        "/round" | "/iterate" | "/iteration" => SlashCommand::Round { args },
+        "/round" => SlashCommand::Round { args },
         "/selftest" => SlashCommand::Selftest { args },
-        "/preflight" | "/release-check" => SlashCommand::Preflight { args },
-        "/completion" | "/completions" => SlashCommand::Completion { args },
+        "/preflight" => SlashCommand::Preflight { args },
+        "/completion" => SlashCommand::Completion { args },
         "/init" => SlashCommand::Init { args },
         "/status" => SlashCommand::Status { args },
         "/usage" => SlashCommand::Usage { args },
@@ -150,8 +148,8 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/session" => SlashCommand::Session { args },
         "/resume" => SlashCommand::Resume { args },
         "/rename" => SlashCommand::Rename { args },
-        "/stop" | "/cancel" | "/abort" => SlashCommand::Stop,
-        "/quit" | "/exit" => SlashCommand::Quit,
+        "/stop" => SlashCommand::Stop,
+        "/quit" => SlashCommand::Quit,
         "/terminal" => SlashCommand::Terminal { args },
         other => bail!("unknown slash command `{other}`"),
     }))

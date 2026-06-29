@@ -279,7 +279,7 @@ pub async fn run_basic_repl(runtime: &mut AgentRuntime) -> Result<()> {
         if input.is_empty() {
             continue;
         }
-        if matches!(input.trim(), "/quit" | "/exit") {
+        if input.trim() == "/quit" {
             break;
         }
         let output = runtime.handle_input(input).await?;
@@ -3183,7 +3183,7 @@ fn submit_tui_input(
     state.transcript_scroll = 0;
     state.result_scroll = 0;
     let trimmed = input.trim();
-    if matches!(trimmed, "/quit" | "/exit") {
+    if trimmed == "/quit" {
         if state.running {
             stop_running_task(state, true, trimmed);
             return;
