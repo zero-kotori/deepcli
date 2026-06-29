@@ -7,6 +7,7 @@ pub mod privacy;
 pub mod prompts;
 pub mod providers;
 pub mod runtime;
+pub mod schema_ids;
 pub mod session;
 pub mod skills;
 pub mod tools;
