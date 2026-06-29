@@ -308,88 +308,89 @@ struct ChatLine {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MonitorTier {
+    Core,
+    Advanced,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MonitorTab {
     Overview,
-    Result,
     Changes,
+    Tools,
+    Tests,
+    Approvals,
+    Result,
     Usage,
     Health,
     Library,
     Deliver,
-    Tools,
-    Tests,
     Environment,
-    Approvals,
     Trace,
 }
 
 impl MonitorTab {
-    fn next(self) -> Self {
+    fn all() -> &'static [Self] {
+        &[
+            // core task views first
+            Self::Overview,
+            Self::Changes,
+            Self::Tools,
+            Self::Tests,
+            Self::Approvals,
+            // advanced / support diagnostics
+            Self::Result,
+            Self::Usage,
+            Self::Health,
+            Self::Library,
+            Self::Deliver,
+            Self::Environment,
+            Self::Trace,
+        ]
+    }
+
+    fn tier(self) -> MonitorTier {
         match self {
-            Self::Overview => Self::Result,
-            Self::Result => Self::Changes,
-            Self::Changes => Self::Usage,
-            Self::Usage => Self::Health,
-            Self::Health => Self::Library,
-            Self::Library => Self::Deliver,
-            Self::Deliver => Self::Tools,
-            Self::Tools => Self::Tests,
-            Self::Tests => Self::Environment,
-            Self::Environment => Self::Approvals,
-            Self::Approvals => Self::Trace,
-            Self::Trace => Self::Overview,
+            Self::Overview | Self::Changes | Self::Tools | Self::Tests | Self::Approvals => {
+                MonitorTier::Core
+            }
+            Self::Result
+            | Self::Usage
+            | Self::Health
+            | Self::Library
+            | Self::Deliver
+            | Self::Environment
+            | Self::Trace => MonitorTier::Advanced,
         }
     }
 
+    fn next(self) -> Self {
+        let tabs = Self::all();
+        let idx = tabs.iter().position(|tab| *tab == self).unwrap_or(0);
+        tabs[(idx + 1) % tabs.len()]
+    }
+
     fn previous(self) -> Self {
-        match self {
-            Self::Overview => Self::Trace,
-            Self::Result => Self::Overview,
-            Self::Changes => Self::Result,
-            Self::Usage => Self::Changes,
-            Self::Health => Self::Usage,
-            Self::Library => Self::Health,
-            Self::Deliver => Self::Library,
-            Self::Tools => Self::Deliver,
-            Self::Tests => Self::Tools,
-            Self::Environment => Self::Tests,
-            Self::Approvals => Self::Environment,
-            Self::Trace => Self::Approvals,
-        }
+        let tabs = Self::all();
+        let idx = tabs.iter().position(|tab| *tab == self).unwrap_or(0);
+        tabs[(idx + tabs.len() - 1) % tabs.len()]
     }
 
     fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
-            Self::Result => "Result",
             Self::Changes => "Changes",
+            Self::Tools => "Tools",
+            Self::Tests => "Tests",
+            Self::Approvals => "Approvals",
+            Self::Result => "Result",
             Self::Usage => "Usage",
             Self::Health => "Health",
             Self::Library => "Library",
             Self::Deliver => "Deliver",
-            Self::Tools => "Tools",
-            Self::Tests => "Tests",
             Self::Environment => "Environment",
-            Self::Approvals => "Approvals",
             Self::Trace => "Trace",
         }
-    }
-
-    fn all() -> &'static [Self] {
-        &[
-            Self::Overview,
-            Self::Result,
-            Self::Changes,
-            Self::Usage,
-            Self::Health,
-            Self::Library,
-            Self::Deliver,
-            Self::Tools,
-            Self::Tests,
-            Self::Environment,
-            Self::Approvals,
-            Self::Trace,
-        ]
     }
 }
 
@@ -2160,18 +2161,15 @@ fn select_monitor_tab_at_position(
 
     let relative_column = column.saturating_sub(tools_area.x + 1) as usize;
     let mut offset = 0usize;
-    for tab in MonitorTab::all() {
-        let rendered = if *tab == state.monitor_tab {
-            format!("[{}]", tab.label())
-        } else {
-            tab.label().to_string()
-        };
-        let end = offset + rendered.len();
-        if (offset..end).contains(&relative_column) {
-            state.monitor_tab = *tab;
-            state.selected_command = 0;
-            state.last_event = format!("monitor tab: {}", state.monitor_tab.label());
-            return true;
+    for segment in monitor_tab_strip(state.monitor_tab) {
+        let end = offset + segment.text.len();
+        if let Some(tab) = segment.tab {
+            if (offset..end).contains(&relative_column) {
+                state.monitor_tab = tab;
+                state.selected_command = 0;
+                state.last_event = format!("monitor tab: {}", state.monitor_tab.label());
+                return true;
+            }
         }
         offset = end + 1;
     }
@@ -3919,16 +3917,39 @@ fn format_task_monitor_text(
     truncate_panel_lines_with_focus(lines, height, selected_action_line)
 }
 
+struct MonitorTabSegment {
+    tab: Option<MonitorTab>,
+    text: String,
+}
+
+fn monitor_tab_strip(active: MonitorTab) -> Vec<MonitorTabSegment> {
+    let mut segments = Vec::new();
+    let mut advanced_marked = false;
+    for tab in MonitorTab::all() {
+        if tab.tier() == MonitorTier::Advanced && !advanced_marked {
+            advanced_marked = true;
+            segments.push(MonitorTabSegment {
+                tab: None,
+                text: "|".to_string(),
+            });
+        }
+        let text = if *tab == active {
+            format!("[{}]", tab.label())
+        } else {
+            tab.label().to_string()
+        };
+        segments.push(MonitorTabSegment {
+            tab: Some(*tab),
+            text,
+        });
+    }
+    segments
+}
+
 fn format_monitor_tabs(active: MonitorTab) -> String {
-    MonitorTab::all()
+    monitor_tab_strip(active)
         .iter()
-        .map(|tab| {
-            if *tab == active {
-                format!("[{}]", tab.label())
-            } else {
-                tab.label().to_string()
-            }
-        })
+        .map(|segment| segment.text.as_str())
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -7652,22 +7673,79 @@ mod tests {
         state.input.set_buffer("hello".to_string());
 
         cycle_monitor_tab(&mut state, true);
-        assert_eq!(state.monitor_tab, MonitorTab::Result);
-        cycle_monitor_tab(&mut state, true);
         assert_eq!(state.monitor_tab, MonitorTab::Changes);
         cycle_monitor_tab(&mut state, true);
-        assert_eq!(state.monitor_tab, MonitorTab::Usage);
-        cycle_monitor_tab(&mut state, true);
-        assert_eq!(state.monitor_tab, MonitorTab::Health);
-        cycle_monitor_tab(&mut state, true);
-        assert_eq!(state.monitor_tab, MonitorTab::Library);
-        cycle_monitor_tab(&mut state, true);
-        assert_eq!(state.monitor_tab, MonitorTab::Deliver);
-        cycle_monitor_tab(&mut state, true);
         assert_eq!(state.monitor_tab, MonitorTab::Tools);
+        cycle_monitor_tab(&mut state, true);
+        assert_eq!(state.monitor_tab, MonitorTab::Tests);
+        cycle_monitor_tab(&mut state, true);
+        assert_eq!(state.monitor_tab, MonitorTab::Approvals);
+        cycle_monitor_tab(&mut state, true);
+        assert_eq!(state.monitor_tab, MonitorTab::Result);
+        cycle_monitor_tab(&mut state, true);
+        assert_eq!(state.monitor_tab, MonitorTab::Usage);
         assert_eq!(state.input.buffer(), "hello");
         cycle_monitor_tab(&mut state, false);
-        assert_eq!(state.monitor_tab, MonitorTab::Deliver);
+        assert_eq!(state.monitor_tab, MonitorTab::Result);
+    }
+
+    #[test]
+    fn monitor_tabs_lead_with_core_views_then_advanced() {
+        let tabs = MonitorTab::all();
+        let core: Vec<MonitorTab> = tabs
+            .iter()
+            .copied()
+            .filter(|tab| tab.tier() == MonitorTier::Core)
+            .collect();
+        assert_eq!(
+            core,
+            vec![
+                MonitorTab::Overview,
+                MonitorTab::Changes,
+                MonitorTab::Tools,
+                MonitorTab::Tests,
+                MonitorTab::Approvals,
+            ]
+        );
+        // core tabs occupy the front of the strip with no advanced tab interleaved.
+        let first_advanced = tabs
+            .iter()
+            .position(|tab| tab.tier() == MonitorTier::Advanced)
+            .unwrap();
+        assert!(tabs[..first_advanced]
+            .iter()
+            .all(|tab| tab.tier() == MonitorTier::Core));
+        assert!(tabs[first_advanced..]
+            .iter()
+            .all(|tab| tab.tier() == MonitorTier::Advanced));
+    }
+
+    #[test]
+    fn monitor_tab_next_previous_cover_full_cycle_from_ordering() {
+        let tabs = MonitorTab::all();
+        // next() walks the full ordering and wraps.
+        let mut tab = tabs[0];
+        for expected in tabs.iter().skip(1).chain(std::iter::once(&tabs[0])) {
+            tab = tab.next();
+            assert_eq!(tab, *expected);
+        }
+        // previous() is the exact inverse.
+        for window in tabs {
+            assert_eq!(window.next().previous(), *window);
+        }
+    }
+
+    #[test]
+    fn monitor_tab_strip_separates_core_from_advanced_and_stays_clickable() {
+        let strip = monitor_tab_strip(MonitorTab::Overview);
+        let separators = strip.iter().filter(|seg| seg.tab.is_none()).count();
+        assert_eq!(separators, 1, "exactly one core/advanced separator");
+        let rendered = format_monitor_tabs(MonitorTab::Overview);
+        // the separator sits between the last core tab and the first advanced tab.
+        let approvals = rendered.find("Approvals").unwrap();
+        let result = rendered.find("Result").unwrap();
+        let bar = rendered.find('|').unwrap();
+        assert!(approvals < bar && bar < result);
     }
 
     #[test]
