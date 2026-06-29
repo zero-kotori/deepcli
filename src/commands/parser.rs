@@ -122,20 +122,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/credentials" => SlashCommand::Credentials { args },
         "/config" => SlashCommand::Config { args },
         "/timeout" => SlashCommand::Timeout { args },
-        "/use" | "/switch" => SlashCommand::Model {
-            args: prefixed_command_args("set", args),
-        },
-        "/provider" if args.is_empty() || args.first().is_some_and(|arg| arg.starts_with('-')) => {
-            SlashCommand::Model {
-                args: prefixed_command_args("show", args),
-            }
-        }
-        "/provider" => SlashCommand::Model {
-            args: prefixed_command_args("set", args),
-        },
-        "/models" | "/providers" => SlashCommand::Model {
-            args: prefixed_command_args("list", args),
-        },
         "/model" => SlashCommand::Model {
             args: normalize_model_args(args),
         },

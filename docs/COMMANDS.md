@@ -37,11 +37,6 @@
 | /config | core | commands | stable | 有效配置检查与编辑。 |
 | /timeout | support | commands | stable | Provider-turn 超时快捷方式。 |
 | /model | core | commands | stable | Provider/model 检查与切换。 |
-| /provider | legacy | commands | stable alias | `/model` 的别名。 |
-| /use | legacy | commands | stable alias | `/model set` 的别名。 |
-| /switch | legacy | commands | stable alias | `/model set` 的别名。 |
-| /models | legacy | commands | stable alias | `/model list` 的别名。 |
-| /providers | legacy | commands | stable alias | `/model list` 的别名。 |
 | /goal | core | session | stable | 长期目标契约与 gate。 |
 | /plan | core | session | stable | 需求澄清与计划草稿。 |
 | /fork | core | session | stable | 持久化上下文复制与恢复验证。 |

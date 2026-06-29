@@ -6806,8 +6806,6 @@ mod tests {
             "/check",
             "/docker",
             "/compiler",
-            "/models",
-            "/providers",
             "/accept",
             "/gate",
             "/verify",
@@ -6949,11 +6947,7 @@ mod tests {
         let model_suggestions = slash_command_suggestions_for_state("/mo", false).unwrap();
         assert!(model_suggestions
             .iter()
-            .any(|summary| summary.name == "/models"));
-        let provider_suggestions = slash_command_suggestions_for_state("/prov", false).unwrap();
-        assert!(provider_suggestions
-            .iter()
-            .any(|summary| summary.name == "/providers"));
+            .any(|summary| summary.name == "/model"));
         let history_suggestions = slash_command_suggestions_for_state("/hi", false).unwrap();
         assert_eq!(history_suggestions[0].name, "/history");
         let session_suggestions = slash_command_suggestions_for_state("/se", true).unwrap();

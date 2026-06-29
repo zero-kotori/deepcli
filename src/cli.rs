@@ -389,11 +389,6 @@ fn top_level_entries() -> &'static [&'static str] {
         "config",
         "timeout",
         "model",
-        "provider",
-        "use",
-        "switch",
-        "models",
-        "providers",
         "goal",
         "plan",
         "fork",
@@ -510,11 +505,6 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             }
             Some(parts)
         }
-        "models" | "providers" => {
-            let mut parts = vec!["/model".to_string(), "list".to_string()];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
         "history" => {
             let mut parts = vec!["/session".to_string(), "list".to_string()];
             parts.extend(task.iter().skip(1).cloned());
@@ -531,11 +521,6 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             Some(parts)
         }
         "login" | "auth" | "apikey" | "key" | "logout" => {
-            let mut parts = vec![format!("/{first}")];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
-        "use" | "switch" | "provider" => {
             let mut parts = vec![format!("/{first}")];
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
@@ -576,8 +561,6 @@ fn is_cli_help_flag(value: &str) -> bool {
 fn top_level_help_topic(value: &str) -> Option<String> {
     match value {
         "sessions" | "history" => Some("session".to_string()),
-        "models" | "providers" => Some("model".to_string()),
-        "opportunity" => Some("opportunities".to_string()),
         alias if is_top_level_slash_alias(alias) => Some(alias.to_string()),
         _ => None,
     }
@@ -632,11 +615,6 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "config"
             | "timeout"
             | "model"
-            | "provider"
-            | "use"
-            | "switch"
-            | "models"
-            | "providers"
             | "goal"
             | "plan"
             | "fork"
@@ -1361,12 +1339,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["opportunity".into(), "--help".into()]).unwrap(),
-            Some(SlashCommand::Help {
-                args: vec!["opportunities".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["sessions".into(), "-h".into()]).unwrap(),
             Some(SlashCommand::Help {
                 args: vec!["session".to_string()]
@@ -1560,50 +1532,9 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["use".into(), "kimi".into()]).unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["switch".into(), "deepseek".into(), "deepseek-v4-pro".into()])
-                .unwrap(),
-            Some(SlashCommand::Model {
-                args: vec![
-                    "set".to_string(),
-                    "deepseek".to_string(),
-                    "deepseek-v4-pro".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["provider".into(), "kimi".into()]).unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["provider".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["show".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["model".into(), "kimi".into()]).unwrap(),
             Some(SlashCommand::Model {
                 args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["models".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["list".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["providers".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["list".to_string(), "--json".to_string()]
             })
         );
         assert_eq!(
@@ -2045,8 +1976,6 @@ mod tests {
             vec!["/model", "show", "--json"],
             vec!["/model", "list"],
             vec!["/model", "list", "--json"],
-            vec!["/models", "--json"],
-            vec!["/providers", "--json"],
             vec!["/plan"],
             vec!["/plan", "--json"],
             vec!["/plan", "show"],
@@ -2216,8 +2145,6 @@ mod tests {
         for command in [
             vec!["version", "--json"],
             vec!["about", "--json"],
-            vec!["providers", "--json"],
-            vec!["models", "--json"],
             vec!["history", "--limit", "5"],
             vec!["health", "--json"],
             vec!["privacy", "--json"],
@@ -2347,13 +2274,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_shot_model_switch_aliases_run_locally_without_provider_or_empty_session() {
-        for command in [
-            vec!["use", "kimi"],
-            vec!["switch", "deepseek"],
-            vec!["provider", "kimi"],
-            vec!["model", "kimi"],
-            vec!["model", "set", "deepseek"],
-        ] {
+        for command in [vec!["model", "kimi"], vec!["model", "set", "deepseek"]] {
             let dir = tempdir().unwrap();
             run_cli(Cli {
                 task: command.iter().map(|part| (*part).to_string()).collect(),

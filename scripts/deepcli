@@ -133,7 +133,7 @@ is_help_flag() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
+    help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -146,10 +146,6 @@ help_topic_for_top_level_command() {
   case "${1:-}" in
     sessions|history )
       printf '%s\n' session
-      return 0
-      ;;
-    models|providers )
-      printf '%s\n' model
       return 0
       ;;
     * )
@@ -233,12 +229,6 @@ Usage:
                                    Inspect configured provider/model state
   deepcli model set <provider> [model]
                                    Switch default provider/model without starting a chat
-  deepcli use|switch <provider> [model]
-                                   Shortcut for model switching
-  deepcli provider [provider] [model]
-                                   Show provider state or switch provider/model
-  deepcli models|providers [--json] [--output path]
-                                   Shortcut for /model list
   deepcli prompt list|get|render [args] [--json] [--output path]
                                    Inspect reusable prompts and rendered prompt text
   deepcli skill list|run [args] [--json] [--output path]
@@ -266,9 +256,9 @@ Usage:
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|provider|use|switch|models|providers|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
@@ -608,7 +598,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|opportunity|benchmark|bench|sota|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|log|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|provider|use|switch|models|providers|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|search|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
+  version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     if is_help_flag "${1:-}"; then

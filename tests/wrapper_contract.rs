@@ -787,30 +787,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         ]
     ));
 
-    let providers = run_wrapper(&["providers", "--json"]);
-    assert!(ends_with_args(&providers.args, &["/providers", "--json"]));
-
-    let model_alias = run_wrapper(&["models", "--json"]);
-    assert!(ends_with_args(&model_alias.args, &["/models", "--json"]));
-
-    let use_model = run_wrapper(&["use", "kimi"]);
-    assert!(ends_with_args(&use_model.args, &["/use", "kimi"]));
-
-    let switch_model = run_wrapper(&["switch", "deepseek", "deepseek-v4-pro"]);
-    assert!(ends_with_args(
-        &switch_model.args,
-        &["/switch", "deepseek", "deepseek-v4-pro"]
-    ));
-
-    let provider_set = run_wrapper(&["provider", "kimi"]);
-    assert!(ends_with_args(&provider_set.args, &["/provider", "kimi"]));
-
-    let provider_show = run_wrapper(&["provider", "--json"]);
-    assert!(ends_with_args(
-        &provider_show.args,
-        &["/provider", "--json"]
-    ));
-
     let prompts = run_wrapper(&[
         "prompt",
         "list",
@@ -1486,41 +1462,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(ends_with_args(
         &health_shell.args,
         &["/health", "shell", "--json"]
-    ));
-
-    let providers = run_wrapper(&["deepseek", "providers"]);
-    assert!(has_adjacent(&providers.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&providers.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&providers.args, &["/providers"]));
-
-    let use_default = run_wrapper(&["deepseek", "use"]);
-    assert!(has_adjacent(&use_default.args, "--provider", "deepseek"));
-    assert!(has_adjacent(
-        &use_default.args,
-        "--model",
-        "deepseek-v4-pro"
-    ));
-    assert!(ends_with_args(&use_default.args, &["/use", "deepseek"]));
-
-    let switch_kimi = run_wrapper(&["deepseek", "switch", "kimi"]);
-    assert!(has_adjacent(&switch_kimi.args, "--provider", "deepseek"));
-    assert!(has_adjacent(
-        &switch_kimi.args,
-        "--model",
-        "deepseek-v4-pro"
-    ));
-    assert!(ends_with_args(&switch_kimi.args, &["/switch", "kimi"]));
-
-    let provider_show = run_wrapper(&["deepseek", "provider", "--json"]);
-    assert!(has_adjacent(&provider_show.args, "--provider", "deepseek"));
-    assert!(has_adjacent(
-        &provider_show.args,
-        "--model",
-        "deepseek-v4-pro"
-    ));
-    assert!(ends_with_args(
-        &provider_show.args,
-        &["/provider", "--json"]
     ));
 
     let version = run_wrapper(&["deepseek", "version", "--json"]);

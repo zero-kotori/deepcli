@@ -1801,34 +1801,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/provider --json").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["show".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/provider kimi").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/use deepseek deepseek-v4-pro").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec![
-                    "set".to_string(),
-                    "deepseek".to_string(),
-                    "deepseek-v4-pro".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/switch kimi").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/model list --json --output .deepcli/exports/models.json")
                 .unwrap(),
             Some(SlashCommand::Model {
@@ -1838,18 +1810,6 @@ mod tests {
                     "--output".to_string(),
                     ".deepcli/exports/models.json".to_string()
                 ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/models --json").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["list".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/providers --json").unwrap(),
-            Some(SlashCommand::Model {
-                args: vec!["list".to_string(), "--json".to_string()]
             })
         );
         assert_eq!(
@@ -3979,35 +3939,9 @@ mod tests {
         assert!(model_help.contains("/model show [--json] [--output path]"));
         assert!(model_help.contains("/model list [--json] [--output path]"));
         assert!(model_help.contains("/model <provider> [model]"));
-        assert!(model_help.contains("/use <provider> [model]"));
-        assert!(model_help.contains("/switch <provider> [model]"));
         assert!(model_help.contains("run locally without creating an empty session"));
         assert!(model_help.contains("deepcli.model.inspect.v1"));
         assert!(model_help.contains("workspace-contained file"));
-
-        let provider_help = CommandRouter::help_for(&["provider".to_string()]).unwrap();
-        assert!(provider_help.contains("/provider <provider> [model]"));
-        assert!(provider_help.contains("maps to `/model show`"));
-        assert!(provider_help.contains("maps to `/model set <provider> [model]`"));
-
-        let use_help = CommandRouter::help_for(&["use".to_string()]).unwrap();
-        assert!(use_help.contains("/use <provider> [model]"));
-        assert!(use_help.contains("Alias for `/model set`"));
-
-        let switch_help = CommandRouter::help_for(&["switch".to_string()]).unwrap();
-        assert!(switch_help.contains("/switch <provider> [model]"));
-        assert!(switch_help.contains("Alias for `/use`"));
-
-        let models_help = CommandRouter::help_for(&["models".to_string()]).unwrap();
-        assert!(models_help.contains("/models - "));
-        assert!(models_help.contains("/providers [--json]"));
-        assert!(models_help.contains("/model list"));
-        assert!(models_help.contains("should not create an empty session"));
-
-        let providers_help = CommandRouter::help_for(&["providers".to_string()]).unwrap();
-        assert!(providers_help.contains("/providers - "));
-        assert!(providers_help.contains("/model list"));
-        assert!(providers_help.contains("/model set <provider>"));
 
         let git_help = CommandRouter::help_for(&["git".to_string()]).unwrap();
         assert!(git_help.contains("/git status --json"));
