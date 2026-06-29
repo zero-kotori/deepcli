@@ -133,7 +133,7 @@ is_help_flag() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
+    help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -216,7 +216,7 @@ Usage:
   deepcli health [--json]          Run a quick local health check
   deepcli credentials status [provider] [--json] [--output path]
                                    Inspect provider credential readiness
-  deepcli login|auth|apikey|key [provider] [--stdin] [--force]
+  deepcli login|apikey [provider] [--stdin] [--force]
                                    Securely set a provider API key
   deepcli logout [provider]        Remove a local provider API key
   deepcli config show|sources|validate|get [args] [--json] [--output path]
@@ -598,7 +598,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|auth|apikey|key|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
+  version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     if is_help_flag "${1:-}"; then

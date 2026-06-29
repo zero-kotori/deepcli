@@ -3918,12 +3918,8 @@ mod tests {
         assert!(login_help.contains("should not create a session or call a provider"));
         assert!(login_help.contains("running-safe: no"));
 
-        let auth_help = CommandRouter::help_for(&["auth".to_string()]).unwrap();
-        assert!(auth_help.contains("Alias for `/login`"));
         let apikey_help = CommandRouter::help_for(&["apikey".to_string()]).unwrap();
         assert!(apikey_help.contains("no provider call"));
-        let key_help = CommandRouter::help_for(&["key".to_string()]).unwrap();
-        assert!(key_help.contains("/credentials status"));
 
         let logout_help = CommandRouter::help_for(&["logout".to_string()]).unwrap();
         assert!(logout_help.contains("/logout [provider]"));
@@ -13746,21 +13742,9 @@ diff --git a/docs/b.md b/docs/b.md
             })
         );
         assert_eq!(
-            CommandRouter::parse("/auth --stdin").unwrap(),
-            Some(SlashCommand::Credentials {
-                args: vec!["set".to_string(), "--stdin".to_string()]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/apikey kimi").unwrap(),
             Some(SlashCommand::Credentials {
                 args: vec!["set".to_string(), "kimi".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/key deepseek").unwrap(),
-            Some(SlashCommand::Credentials {
-                args: vec!["set".to_string(), "deepseek".to_string()]
             })
         );
         assert_eq!(

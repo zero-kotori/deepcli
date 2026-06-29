@@ -66,8 +66,8 @@ pub(super) fn command_group_name(name: &str) -> CommandGroup {
         | "/diff" | "/review" | "/accept" | "/gate" | "/verify" | "/handoff" | "/test" | "/env"
         | "/git" | "/btw" | "/approval" | "/session" | "/resume" | "/stop" | "/quit"
         | "/terminal" => CommandGroup::Core,
-        "/about" | "/auth" | "/apikey" | "/key" | "/check" | "/docker" | "/compiler" | "/setup"
-        | "/install" | "/history" | "/cleanup" | "/rename" => CommandGroup::Legacy,
+        "/about" | "/apikey" | "/check" | "/docker" | "/compiler" | "/setup" | "/install"
+        | "/history" | "/cleanup" | "/rename" => CommandGroup::Legacy,
         "/opportunities" => CommandGroup::Experimental,
         _ => CommandGroup::Support,
     }

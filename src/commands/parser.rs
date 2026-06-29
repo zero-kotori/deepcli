@@ -113,7 +113,7 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/privacy" => SlashCommand::Privacy { args },
         "/context" => SlashCommand::Context,
         "/permissions" => SlashCommand::Permissions { args },
-        "/login" | "/auth" | "/apikey" | "/key" => SlashCommand::Credentials {
+        "/login" | "/apikey" => SlashCommand::Credentials {
             args: prefixed_command_args("set", args),
         },
         "/logout" => SlashCommand::Credentials {

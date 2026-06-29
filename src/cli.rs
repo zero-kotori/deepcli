@@ -381,9 +381,7 @@ fn top_level_entries() -> &'static [&'static str] {
         "context",
         "permissions",
         "login",
-        "auth",
         "apikey",
-        "key",
         "logout",
         "credentials",
         "config",
@@ -520,7 +518,7 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
         }
-        "login" | "auth" | "apikey" | "key" | "logout" => {
+        "login" | "apikey" | "logout" => {
             let mut parts = vec![format!("/{first}")];
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
@@ -607,9 +605,7 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "context"
             | "permissions"
             | "login"
-            | "auth"
             | "apikey"
-            | "key"
             | "logout"
             | "credentials"
             | "config"
@@ -1508,12 +1504,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["auth".into(), "--stdin".into()]).unwrap(),
-            Some(SlashCommand::Credentials {
-                args: vec!["set".to_string(), "--stdin".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["logout".into(), "deepseek".into()]).unwrap(),
             Some(SlashCommand::Credentials {
                 args: vec!["remove".to_string(), "deepseek".to_string()]
@@ -2180,9 +2170,7 @@ mod tests {
     async fn one_shot_credential_aliases_run_locally_without_provider_or_empty_session() {
         for command in [
             vec!["login", "deepseek"],
-            vec!["auth", "deepseek"],
             vec!["apikey", "deepseek"],
-            vec!["key", "deepseek"],
             vec!["credentials", "set"],
         ] {
             let dir = tempdir().unwrap();

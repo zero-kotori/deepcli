@@ -341,9 +341,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/login", "deepseek", "--stdin"]
     ));
 
-    let auth = run_wrapper(&["auth", "--stdin"]);
-    assert!(ends_with_args(&auth.args, &["/auth", "--stdin"]));
-
     let logout = run_wrapper(&["logout", "deepseek"]);
     assert!(ends_with_args(&logout.args, &["/logout", "deepseek"]));
 
@@ -1486,11 +1483,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
         &login.args,
         &["/login", "deepseek", "--stdin"]
     ));
-
-    let auth = run_wrapper(&["deepseek", "auth", "kimi", "--stdin"]);
-    assert!(has_adjacent(&auth.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&auth.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&auth.args, &["/auth", "kimi", "--stdin"]));
 
     let logout = run_wrapper(&["deepseek", "logout"]);
     assert!(has_adjacent(&logout.args, "--provider", "deepseek"));

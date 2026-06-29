@@ -638,28 +638,12 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &["Alias for `/credentials remove`; clears the apiKey in the local credentials file, preserves endpoint/model metadata, and does not create a session or call a provider."],
         },
         CommandHelp {
-            name: "/auth",
-            listing: "/auth [provider] [--stdin] [--force]",
-            summary: "Alias for /login.",
-            usage: &["/auth [provider] [--stdin] [--force]", "/login [provider] [--stdin] [--force]"],
-            examples: &["/auth deepseek", "deepcli auth kimi"],
-            notes: &["Alias for `/login`; stores credentials through the same redacted `/credentials set` path."],
-        },
-        CommandHelp {
             name: "/apikey",
             listing: "/apikey [provider] [--stdin] [--force]",
             summary: "Alias for /login when the user thinks in terms of API keys.",
             usage: &["/apikey [provider] [--stdin] [--force]", "/credentials set [provider] [--stdin] [--force]"],
             examples: &["/apikey deepseek --stdin", "deepcli apikey kimi"],
             notes: &["Alias for `/login`; no provider call is made before the key is stored."],
-        },
-        CommandHelp {
-            name: "/key",
-            listing: "/key [provider] [--stdin] [--force]",
-            summary: "Short alias for /login.",
-            usage: &["/key [provider] [--stdin] [--force]", "/credentials set [provider] [--stdin] [--force]"],
-            examples: &["/key deepseek", "deepcli key kimi --stdin"],
-            notes: &["Alias for `/login`; use `/credentials status` to inspect configured providers afterward."],
         },
         CommandHelp {
             name: "/config",

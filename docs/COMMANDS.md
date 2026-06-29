@@ -29,9 +29,7 @@
 | /context | support | commands | stable | 工作区上下文预览。 |
 | /permissions | core | permissions | stable | 权限模式检查。 |
 | /login | support | commands | stable alias | 凭证设置快捷方式。 |
-| /auth | legacy | commands | stable alias | 凭证设置别名。 |
 | /apikey | legacy | commands | stable alias | 凭证设置别名。 |
-| /key | legacy | commands | stable alias | 凭证设置别名。 |
 | /logout | support | commands | stable alias | 凭证移除快捷方式。 |
 | /credentials | core | commands | stable | Provider 凭证管理。 |
 | /config | core | commands | stable | 有效配置检查与编辑。 |
