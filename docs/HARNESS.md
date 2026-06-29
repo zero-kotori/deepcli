@@ -21,6 +21,7 @@
 - `src/workspace.rs` 负责工作区授权与上下文源过滤。
 - `src/privacy.rs` 负责脱敏与隐私发现逻辑。
 - `src/prompts.rs`、`src/skills.rs`、`src/agents.rs` 负责本地库元数据。
+- `src/schema_ids.rs` 是稳定 JSON schema 标识符（`deepcli.<name>.v1`）的所有权 registry，生产发射点统一从这里取常量，测试断言保留字面量作为独立值锚点。
 
 `src/commands.rs` 的命令 handler 现已拆分到按命令/领域划分的子模块：`src/commands/<name>.rs`（如 `goal`、`diagnose`、`doctor`、`recipes`、`opportunities`、`productloop`、`session`、`env`、`delivery` 等）。子模块通过 `super::` 复用 `src/commands.rs` 中的共享 helper，`src/commands.rs` 通过 `pub(crate) use` re-export 各 handler 与跨模块 helper。
 
