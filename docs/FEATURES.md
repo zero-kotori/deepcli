@@ -72,7 +72,7 @@ TUI 面向实际编码任务，而不是简单聊天框：
 - `benchmark baselines --json` 在只有 ready 的 `.deepcli/baselines/current-main.json`、但默认 `.deepcli/baselines/competitor.json` 缺失时返回 `status=needs_default`，首个 `nextActions` 指向 competitor template，避免 inventory 把非默认 baseline 误当成完整对照基线。
 - `/session list --json` 和 `/session show|history|summary|tools|tests|diffs|backups --json` 会输出可执行 `nextActions` 并派生顶层 `checklist[]`；列表页会围绕首个展示会话给出 resume preview、history、next 和 diagnose，检查页会给出同一会话的 resume preview、next、diagnose、列表和帮助动作。
 - `/session search` 可按标题、摘要、消息、工具调用、测试、diff 等搜索历史；JSON 会给出围绕首个命中的 resume preview、history、next/diagnose 动作，无命中时给出会话列表和 resume preview 动作，并从 `nextActions` 派生顶层 `checklist[]` 供恢复 UI 直接渲染。
-- `/next --json` 和 `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令，并从 `nextActions` 派生顶层 `checklist[]`、从 `quickLinks` 派生 `quickLinkChecklist[]`；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，并从推荐动作派生顶层 `checklist[]`、从辅助链接派生 `quickLinkChecklist[]`，解释性原因保留在 `signals` 和 `report`。
+- `/session next --json` 的 `nextActions`/`quickLinks` 使用可直接执行的 `deepcli ...` 命令，并从 `nextActions` 派生顶层 `checklist[]`、从 `quickLinks` 派生 `quickLinkChecklist[]`；`/session diagnose --json` 的 `recommendedNextActions`/`quickLinks` 也使用同一命令格式，并从推荐动作派生顶层 `checklist[]`、从辅助链接派生 `quickLinkChecklist[]`，解释性原因保留在 `signals` 和 `report`。
 - `/session restore-backup latest --dry-run --json` 会输出稳定 `deepcli.session.restore_backup.v1` 预览，包含选中的 backup、目标文件、脱敏 diff 和下一步恢复命令；真实恢复也支持 `--json`/`--output`，但仍通过受控工具执行器写文件并记录新的 backup/diff。Agent 运行中可直接执行不带 `--output` 的 dry-run 预览；`/session rename`、`/session export`、`/session prune-empty --force`、`/session ... --output`、真实恢复和预览 artifact 写入都需要等待任务结束或先 `/stop`。
 - `/cleanup sessions` 可预览或删除空的一次性会话；JSON 顶层 `nextActions` 使用可直接执行的 `deepcli session prune-empty --force --json`、`deepcli session list ... --json` 和 `deepcli history ...` 命令，并从这些动作派生 `checklist[]`。
 
@@ -204,7 +204,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 `session prune-empty --dry-run --json` 会保持 JSON 工作流，顶层确认动作是 `deepcli session prune-empty --force --json`，并输出匹配的 `checklist[]`，外部历史页和恢复面板可以直接渲染删除、列表和历史按钮。
 
-`preflight` / `release-check` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 跳过较慢的 clippy/gate，并把 privacy 检查切换为 `privacy --no-history`，用于快速本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；JSON 顶层 `checklist[]` 会把检查队列结构化为 `step`、`label`、`command`、`status` 和 `required`，方便 TUI、外部 UI 或脚本直接渲染发布检查清单；文本和 JSON 报告包含 `diagnostics` 摘要，展示总耗时、最慢检查、最大输出检查和失败 required check，避免用户在长报告中手动查找瓶颈。
+`preflight` 是提交/推送前的一键本地检查入口，串联 `cargo fmt --check`、`git diff --check`、`cargo clippy --all-targets -- -D warnings`、`selftest`、`doctor --quick`、`privacy --fail-on-findings` 和 `gate --json`，并输出稳定 JSON 报告；`--dry-run` 只预览检查清单，且顶层 `nextActions` 给出可直接执行的 `deepcli preflight ... --json` 命令；`--quick` 跳过较慢的 clippy/gate，并把 privacy 检查切换为 `privacy --no-history`，用于快速本地迭代。提交、推送或发布前仍应运行 full preflight，因为 full mode 保留完整历史隐私扫描；JSON 顶层 `checklist[]` 会把检查队列结构化为 `step`、`label`、`command`、`status` 和 `required`，方便 TUI、外部 UI 或脚本直接渲染发布检查清单；文本和 JSON 报告包含 `diagnostics` 摘要，展示总耗时、最慢检查、最大输出检查和失败 required check，避免用户在长报告中手动查找瓶颈。
 
 `recipes` / `playbook` 是任务型工作流目录，按 start、code、debug、release、support、environment、shell、sota 等主题输出可复制命令和稳定 `deepcli.recipes.v1` JSON，适合 TUI、外部 UI 或团队脚本引导用户选择下一步；JSON 顶层包含 `title`、`summary`、`nextActions` 和 `checklist`，普通单 topic 的 checklist 可直接渲染选中工作流，`recipes sota` 的 checklist 与顶层 `nextActions` 一一对应，表示当前状态感知动作队列；静态完整命令链保留在 `recipes[].commands`，说明性上下文留在 `recipes[].notes` 和 report 中；`recipes sota` 可通过 `product-loop`、`benchmark` 或 `round` alias 进入，用于把产品缺口检查、benchmark evidence、baseline 模板、baseline compare 和 gate 串成一条本地闭环，并会把当前 `round` 的失败 gate 修复动作放在顶层 `nextActions` 前面，避免产品循环入口先推荐已知无效的只读报告；默认 competitor baseline 缺失且当前 artifact 可完整捕获时，顶层 `nextActions` 和 `checklist` 都会先提示 `baseline-template --from-current` 生成 compare-ready 本地基线，再保留生成 `.deepcli/baselines/competitor.json` 的手工模板动作，默认 baseline ready 后再提示执行 baseline compare；该命令本地只读，不创建 session、不调用 Provider；`.deepcli/baselines/` 默认本地忽略。
 
@@ -307,7 +307,6 @@ git diff --check
 ./scripts/deepcli benchmark compare --baseline .deepcli/baselines/competitor.json --json
 ./scripts/deepcli benchmark clean --dry-run --json
 ./scripts/deepcli preflight --json
-./scripts/deepcli release-check --dry-run
 ```
 
 ## 后续方向
