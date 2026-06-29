@@ -1140,8 +1140,8 @@ fn help_topics() -> &'static [CommandHelp] {
             name: "/web",
             listing: "/web search <query>",
             summary: "Run a permission-checked web search through deepcli's network tool.",
-            usage: &["/web search <query>", "/web <query>", "/search <query>"],
-            examples: &["/web search rust ownership", "/search sysy compiler koopa"],
+            usage: &["/web search <query>", "/web <query>"],
+            examples: &["/web search rust ownership"],
             notes: &["Queries that look like secrets are rejected before any network request."],
         },
         CommandHelp {
@@ -1374,12 +1374,6 @@ fn normalize_help_topic(topic: &str) -> String {
         "/recipe" | "/playbook" | "/workflow" | "/workflows"
     ) {
         "/recipes".to_string()
-    } else if normalized == "/bench" {
-        "/benchmark".to_string()
-    } else if normalized == "/sota" {
-        "/scorecard".to_string()
-    } else if normalized == "/opportunity" {
-        "/opportunities".to_string()
     } else if matches!(normalized.as_str(), "/iterate" | "/iteration") {
         "/round".to_string()
     } else {

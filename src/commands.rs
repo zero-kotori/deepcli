@@ -1109,12 +1109,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/opportunity --json").unwrap(),
-            Some(SlashCommand::Opportunities {
-                args: vec!["--json".to_string()]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/round --json").unwrap(),
             Some(SlashCommand::Round {
                 args: vec!["--json".to_string()]
@@ -1734,16 +1728,6 @@ mod tests {
                     "search".to_string(),
                     "rust".to_string(),
                     "ownership".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/search sysy compiler").unwrap(),
-            Some(SlashCommand::Web {
-                args: vec![
-                    "search".to_string(),
-                    "sysy".to_string(),
-                    "compiler".to_string()
                 ]
             })
         );
@@ -3753,13 +3737,13 @@ mod tests {
         assert!(scorecard_help.contains("sustained product loop"));
         assert!(scorecard_help.contains("deepcli benchmark --fail-below 85"));
 
-        let opportunities_help = CommandRouter::help_for(&["opportunity".to_string()]).unwrap();
+        let opportunities_help = CommandRouter::help_for(&["opportunities".to_string()]).unwrap();
         assert!(opportunities_help.contains("/opportunities - "));
         assert!(opportunities_help.contains("running-safe: yes"));
         assert!(opportunities_help.contains("deepcli.opportunities.v1"));
         assert!(opportunities_help.contains("deepcli opportunities --json"));
 
-        let bench_help = CommandRouter::help_for(&["bench".to_string()]).unwrap();
+        let bench_help = CommandRouter::help_for(&["benchmark".to_string()]).unwrap();
         assert!(bench_help.contains("/benchmark - "));
         assert!(bench_help.contains("deepcli.benchmark.record.v1"));
         assert!(bench_help.contains("deepcli.benchmark.suite.v1"));
@@ -4112,7 +4096,6 @@ mod tests {
 
         let web_help = CommandRouter::help_for(&["web".to_string()]).unwrap();
         assert!(web_help.contains("/web search <query>"));
-        assert!(web_help.contains("/search <query>"));
 
         let approval_help = CommandRouter::help_for(&["approval".to_string()]).unwrap();
         assert!(approval_help.contains("/approval list [--json] [--output path]"));

@@ -75,11 +75,11 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/recipes" | "/recipe" | "/playbook" | "/workflow" | "/workflows" => {
             SlashCommand::Recipes { args }
         }
-        "/scorecard" | "/sota" => SlashCommand::Scorecard { args },
-        "/opportunities" | "/opportunity" => SlashCommand::Opportunities { args },
-        "/benchmark" | "/bench" => SlashCommand::Benchmark { args },
+        "/scorecard" => SlashCommand::Scorecard { args },
+        "/opportunities" => SlashCommand::Opportunities { args },
+        "/benchmark" => SlashCommand::Benchmark { args },
         "/round" | "/iterate" | "/iteration" => SlashCommand::Round { args },
-        "/selftest" | "/self-test" => SlashCommand::Selftest { args },
+        "/selftest" => SlashCommand::Selftest { args },
         "/preflight" | "/release-check" => SlashCommand::Preflight { args },
         "/completion" | "/completions" => SlashCommand::Completion { args },
         "/init" => SlashCommand::Init { args },
@@ -109,7 +109,7 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         }
         "/doctor" => SlashCommand::Doctor { args },
         "/trace" => SlashCommand::Trace { args },
-        "/logs" | "/log" => SlashCommand::Logs { args },
+        "/logs" => SlashCommand::Logs { args },
         "/privacy" => SlashCommand::Privacy { args },
         "/context" => SlashCommand::Context,
         "/permissions" => SlashCommand::Permissions { args },
@@ -171,11 +171,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         },
         "/git" => SlashCommand::Git { args },
         "/web" => SlashCommand::Web { args },
-        "/search" => {
-            let mut web_args = vec!["search".to_string()];
-            web_args.extend(args);
-            SlashCommand::Web { args: web_args }
-        }
         "/prompt" => SlashCommand::Prompt { args },
         "/skill" => SlashCommand::Skill { args },
         "/agent" => SlashCommand::Agent { args },
