@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 
@@ -1411,7 +1412,7 @@ fn format_scorecard_text(workspace: &Path, input: ScorecardTextInput<'_>) -> Str
 
 fn format_scorecard_json(workspace: &Path, report: &ScorecardReport) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.scorecard.v1",
+        "schema": schema_ids::SCORECARD_V1,
         "status": report.status,
         "tier": report.tier,
         "score": report.score,
@@ -2150,7 +2151,7 @@ fn format_round_json(workspace: &Path, report: &RoundReport) -> Result<String> {
         .collect::<Vec<_>>();
     let checklist = scorecard_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.round.v1",
+        "schema": schema_ids::ROUND_V1,
         "status": report.status,
         "ready": report.status == "ready",
         "summary": round_summary_json(report, &gates, &checklist),
@@ -2236,7 +2237,7 @@ fn round_gate_checklist(gate: &RoundGate) -> Vec<Value> {
 
 fn round_goal_status_json(goal: &RoundGoalStatus) -> Value {
     json!({
-        "schema": "deepcli.goal.status.summary.v1",
+        "schema": schema_ids::GOAL_STATUS_SUMMARY_V1,
         "status": if goal.ready { "ready" } else { "blocked" },
         "ready": goal.ready,
         "sessionSource": goal.source.as_str(),
@@ -2319,9 +2320,9 @@ fn format_round_benchmark_freshness_suffix(report: &BenchmarkStatusReport) -> St
 const DEFAULT_BENCHMARK_SUITE: &str = "product";
 const DEFAULT_BENCHMARK_CASE: &str = "scorecard";
 const DEFAULT_BENCHMARK_RUN_CASE: &str = "command";
-pub(crate) const BENCHMARK_ARTIFACT_SCHEMA: &str = "deepcli.benchmark.record.v1";
-pub(crate) const BENCHMARK_SUITE_SCHEMA: &str = "deepcli.benchmark.suite.v1";
-pub(crate) const BENCHMARK_STATUS_SCHEMA: &str = "deepcli.benchmark.status.v1";
+pub(crate) const BENCHMARK_ARTIFACT_SCHEMA: &str = schema_ids::BENCHMARK_RECORD_V1;
+pub(crate) const BENCHMARK_SUITE_SCHEMA: &str = schema_ids::BENCHMARK_SUITE_V1;
+pub(crate) const BENCHMARK_STATUS_SCHEMA: &str = schema_ids::BENCHMARK_STATUS_V1;
 const DEFAULT_BENCHMARK_TIMEOUT_SECONDS: u64 = 120;
 const BENCHMARK_OUTPUT_SAMPLE_CHARS: usize = 8_000;
 const BENCHMARK_EVIDENCE_REFRESH_AFTER_DAYS: i64 = 1;
@@ -3764,7 +3765,7 @@ fn truncate_benchmark_output(value: &str) -> String {
 
 pub(crate) fn scorecard_summary_json(report: &ScorecardReport) -> Value {
     json!({
-        "schema": "deepcli.scorecard.summary.v1",
+        "schema": schema_ids::SCORECARD_SUMMARY_V1,
         "status": report.status,
         "tier": report.tier,
         "score": report.score,
@@ -5440,7 +5441,7 @@ fn format_benchmark_list_json(workspace: &Path, artifacts: &[BenchmarkArtifact])
     let next_actions = benchmark_list_next_actions(workspace);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.list.v1",
+        "schema": schema_ids::BENCHMARK_LIST_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "artifactCount": artifacts.len(),
@@ -5526,7 +5527,7 @@ fn format_benchmark_cleanup_json(
     let checklist = benchmark_action_checklist(&next_actions);
     let status = benchmark_cleanup_status(options, candidates, deleted);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.cleanup.v1",
+        "schema": schema_ids::BENCHMARK_CLEANUP_V1,
         "status": status,
         "workspace": workspace.display().to_string(),
         "dryRun": !options.force,
@@ -5628,7 +5629,7 @@ fn format_benchmark_presets_json(workspace: &Path) -> Result<String> {
     let next_actions = benchmark_presets_next_actions(workspace);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.presets.v1",
+        "schema": schema_ids::BENCHMARK_PRESETS_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "presetCount": BENCHMARK_PRESETS.len(),
@@ -6008,7 +6009,7 @@ fn benchmark_baseline_template_value(
         .collect::<Vec<_>>();
     let status = benchmark_baseline_template_status(captures);
     json!({
-        "schema": "deepcli.benchmark.baseline.v1",
+        "schema": schema_ids::BENCHMARK_BASELINE_V1,
         "status": status,
         "name": name,
         "source": if captures.is_some() {
@@ -6509,7 +6510,7 @@ fn format_benchmark_compare_json(
     let next_actions = benchmark_compare_next_actions(baseline, artifacts.is_empty());
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.compare.v1",
+        "schema": schema_ids::BENCHMARK_COMPARE_V1,
         "status": benchmark_compare_status(artifacts.len(), baseline, comparisons),
         "workspace": workspace.display().to_string(),
         "artifactCount": artifacts.len(),
@@ -6653,7 +6654,7 @@ fn format_benchmark_baselines_json(
     let next_actions = benchmark_baselines_next_actions(workspace, baselines);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.baselines.v1",
+        "schema": schema_ids::BENCHMARK_BASELINES_V1,
         "status": status,
         "workspace": workspace.display().to_string(),
         "summary": benchmark_baselines_summary_json(
@@ -6915,7 +6916,7 @@ fn format_benchmark_summary_json(
     let next_actions = benchmark_summary_next_actions(workspace);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.summary.v1",
+        "schema": schema_ids::BENCHMARK_SUMMARY_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "summary": benchmark_summary_summary_json(artifacts.len(), summaries, &checklist),
@@ -6999,7 +7000,7 @@ fn format_benchmark_trends_json(
     let next_actions = benchmark_trends_next_actions(workspace, status);
     let checklist = benchmark_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.benchmark.trends.v1",
+        "schema": schema_ids::BENCHMARK_TRENDS_V1,
         "status": status,
         "workspace": workspace.display().to_string(),
         "artifactCount": artifacts.len(),
