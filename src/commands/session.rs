@@ -2758,7 +2758,7 @@ fn format_session_inspect_json(
     let next_actions = session_inspect_next_actions(session);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.inspect.v1",
+        "schema": schema_ids::SESSION_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": kind,
@@ -3148,7 +3148,7 @@ fn format_session_next_json(
     let next_actions = session_next_action_items(session)?;
     let quick_links = session_quick_link_items(session);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.next.v1",
+        "schema": schema_ids::NEXT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "note": note,
@@ -3559,7 +3559,7 @@ fn format_session_diagnosis_json(
     let recommended_next_actions = session_next_action_items(session)?;
     let quick_links = session_quick_link_items(session);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.diagnose.v1",
+        "schema": schema_ids::SESSION_DIAGNOSE_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "note": note,
