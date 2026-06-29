@@ -3,6 +3,7 @@ use super::{
     write_command_output,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::fs;
@@ -91,7 +92,7 @@ fn format_permissions_show_json(
     let next_actions = permissions_next_actions(config);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.permissions.show.v1",
+        "schema": schema_ids::PERMISSIONS_SHOW_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "effectiveMode": normalized_permission_mode(&config.permissions.default_mode),

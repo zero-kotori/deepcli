@@ -1,5 +1,6 @@
 use super::{required_arg, set_command_output_path, write_command_output, CommandRouter};
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::tools::ToolExecutor;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -219,7 +220,7 @@ fn format_terminal_json(
     report: &str,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.terminal.v1",
+        "schema": schema_ids::TERMINAL_V1,
         "status": status,
         "workspace": workspace.display().to_string(),
         "platform": std::env::consts::OS,

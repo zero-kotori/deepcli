@@ -2,6 +2,7 @@ use super::{
     command_group_name, dedup_preserve_order, is_running_safe_command_name, local_action_checklist,
     required_arg, set_command_output_path, write_command_output, CommandGroup, CommandRouter,
 };
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs;
@@ -516,7 +517,7 @@ fn completion_install_next_actions(shell: CompletionFormat, dry_run: bool) -> Ve
 pub(super) fn format_completion_install_json(report: &CompletionInstallReport) -> Result<String> {
     let checklist = local_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.completion.install.v1",
+        "schema": schema_ids::COMPLETION_INSTALL_V1,
         "program": "deepcli",
         "version": env!("CARGO_PKG_VERSION"),
         "shell": completion_shell_name(report.shell),
@@ -541,7 +542,7 @@ pub(super) fn format_completion_status_json(report: &CompletionStatusReport) -> 
 pub(super) fn completion_status_json_value(report: &CompletionStatusReport) -> Value {
     let checklist = local_action_checklist(&report.next_actions);
     json!({
-        "schema": "deepcli.completion.status.v1",
+        "schema": schema_ids::COMPLETION_STATUS_V1,
         "program": "deepcli",
         "version": env!("CARGO_PKG_VERSION"),
         "shell": completion_shell_name(report.shell),
@@ -679,7 +680,7 @@ fn format_fish_completion(commands: &[CompletionCommand]) -> String {
 
 fn format_completion_json(commands: &[CompletionCommand]) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.completion.v1",
+        "schema": schema_ids::COMPLETION_V1,
         "program": "deepcli",
         "version": env!("CARGO_PKG_VERSION"),
         "shells": ["bash", "zsh", "fish"],

@@ -6,6 +6,7 @@ use super::{
     RoundReport, ScorecardOpportunity, DEFAULT_ROUND_SCORE_THRESHOLD,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use crate::tools::ToolRegistry;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -240,12 +241,12 @@ fn format_opportunities_json(
 ) -> Result<String> {
     let checklist = scorecard_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.opportunities.v1",
+        "schema": schema_ids::OPPORTUNITIES_V1,
         "status": round.status,
         "ready": round.status == "ready",
         "workspace": workspace.display().to_string(),
         "source": {
-            "schema": "deepcli.round.v1",
+            "schema": schema_ids::ROUND_V1,
             "command": "deepcli round --json",
         },
         "filter": opportunity_filter_json(options),

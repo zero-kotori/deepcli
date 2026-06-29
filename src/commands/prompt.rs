@@ -3,6 +3,7 @@ use super::{
     required_arg, set_command_output_path, write_command_output,
 };
 use crate::prompts::{Prompt, PromptStore};
+use crate::schema_ids;
 use crate::tools::ToolExecutor;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -174,7 +175,7 @@ fn format_prompt_list_json(workspace: &Path, prompts: &[Prompt], report: &str) -
     let next_actions = prompt_next_actions(prompts.first().map(|prompt| prompt.name.as_str()));
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.prompt.inspect.v1",
+        "schema": schema_ids::PROMPT_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "list",
@@ -194,7 +195,7 @@ fn format_prompt_get_json(workspace: &Path, prompt: &Prompt) -> Result<String> {
     let next_actions = prompt_next_actions(Some(&prompt.name));
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.prompt.inspect.v1",
+        "schema": schema_ids::PROMPT_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "get",
@@ -214,7 +215,7 @@ fn format_prompt_render_json(workspace: &Path, raw: &Value, rendered: &str) -> R
     let next_actions = prompt_next_actions(Some(name));
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.prompt.inspect.v1",
+        "schema": schema_ids::PROMPT_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "render",

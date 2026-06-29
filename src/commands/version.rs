@@ -3,6 +3,7 @@ use super::{
     set_command_output_path, write_command_output, CommandRouter,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::json;
 use std::path::Path;
@@ -107,7 +108,7 @@ fn format_version_json(workspace: &Path, config: &AppConfig, report: &str) -> Re
         .map(str::to_string)
         .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.version.v1",
+        "schema": schema_ids::VERSION_V1,
         "status": "ok",
         "package": "deepcli",
         "version": env!("CARGO_PKG_VERSION"),

@@ -10,6 +10,7 @@ use super::{
 use crate::config::AppConfig;
 use crate::privacy::{redact_sensitive_text, redact_sensitive_value};
 use crate::providers::{create_provider, ChatRequest, ProviderMessage};
+use crate::schema_ids;
 use crate::session::{SessionMetadata, SessionStore};
 use crate::tools::{DiscoveredTestCommand, EnvironmentReport, ToolExecutor};
 use crate::workspace::WorkspaceManager;
@@ -336,7 +337,7 @@ fn format_doctor_report_json(
         .map(|action| redact_sensitive_text(action))
         .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.doctor.v1",
+        "schema": schema_ids::DOCTOR_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "version": {

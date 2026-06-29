@@ -6,6 +6,7 @@ use super::{
     short_id, write_command_output, SessionFallbackKind,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::{ApprovalRequest, ApprovalStatus, Session, SessionStore};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -181,7 +182,7 @@ fn format_approval_list_json(
     let next_actions = approval_list_next_actions(session, include_all, requests);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.list.v1",
+        "schema": schema_ids::APPROVAL_LIST_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "note": note,
@@ -243,7 +244,7 @@ fn format_approval_action_json(
     let next_actions = approval_action_next_actions(session);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.action.v1",
+        "schema": schema_ids::APPROVAL_ACTION_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "action": action,
@@ -265,7 +266,7 @@ fn format_approval_clear_json(
     let next_actions = approval_action_next_actions(session);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.approval.action.v1",
+        "schema": schema_ids::APPROVAL_ACTION_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "action": "clear",

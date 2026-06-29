@@ -2,6 +2,7 @@ use super::{
     dedup_preserve_order, git_stdout, redact_sensitive_text, required_arg, set_command_output_path,
     status_u128_value, truncate_display, write_command_output, CommandExit,
 };
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
@@ -515,7 +516,7 @@ fn format_preflight_diagnostics_line(checks: &[PreflightCheckResult]) -> Option<
 
 pub(super) fn format_preflight_json(workspace: &Path, report: &PreflightReport) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.preflight.v1",
+        "schema": schema_ids::PREFLIGHT_V1,
         "status": report.status,
         "workspace": workspace.display().to_string(),
         "mode": if report.quick { "quick" } else { "full" },

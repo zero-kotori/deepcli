@@ -4,6 +4,7 @@ use super::{
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
 use crate::privacy::{redact_sensitive_text, redact_sensitive_value};
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::fs;
@@ -247,7 +248,7 @@ fn format_config_read_json(
     let next_actions = config_read_next_actions(&report.kind);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.config.inspect.v1",
+        "schema": schema_ids::CONFIG_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": report.kind.name(),

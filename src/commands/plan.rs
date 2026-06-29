@@ -1,5 +1,6 @@
 use super::{compact_text_line, required_arg, set_command_output_path, write_command_output};
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::SessionStore;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -352,7 +353,7 @@ fn format_plan_draft_json(
     markdown: &str,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.plan.requirements_draft.v1",
+        "schema": schema_ids::PLAN_REQUIREMENTS_DRAFT_V1,
         "status": "draft",
         "workspace": workspace.display().to_string(),
         "requirement": redact_sensitive_text(requirement),

@@ -4,6 +4,7 @@ use super::{
 };
 use crate::config::{absolutize_workspace_path, AppConfig, ProviderConfig};
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::fs;
@@ -201,7 +202,7 @@ fn format_model_show_json(
     let provider_json = model_provider_entry_json(workspace, config, selected_provider, provider);
     let next_actions = model_next_actions(config, &[selected_provider.to_string()]);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.model.inspect.v1",
+        "schema": schema_ids::MODEL_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "show",
@@ -232,7 +233,7 @@ fn format_model_list_json(workspace: &Path, config: &AppConfig, report: &str) ->
     let provider_names = config.providers.keys().cloned().collect::<Vec<_>>();
     let next_actions = model_next_actions(config, &provider_names);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.model.inspect.v1",
+        "schema": schema_ids::MODEL_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "list",

@@ -4,6 +4,7 @@ use super::{
     session_has_next_action_signals, session_storage_bytes, set_command_output_path, short_id,
     status_u128_value, write_command_output, CommandContext,
 };
+use crate::schema_ids;
 use crate::session::{PlanStepStatus, Session, SessionStore};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -143,7 +144,7 @@ fn format_status_report_json(context: &CommandContext<'_>, report: &str) -> Resu
         .cloned()
         .unwrap_or_else(|| json!([]));
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.status.v1",
+        "schema": schema_ids::STATUS_V1,
         "status": "ok",
         "workspace": context.workspace.display().to_string(),
         "activeSession": context.session_id.as_deref(),

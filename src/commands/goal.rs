@@ -2,6 +2,7 @@ use super::{
     required_arg, session_metadata_json, set_command_output_path, write_command_output, CommandExit,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::{
     GoalContract, GoalStatus, Plan, PlanStep, PlanStepStatus, Session, SessionStore,
 };
@@ -505,7 +506,7 @@ fn format_goal_json(
     report: &str,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.goal.v1",
+        "schema": schema_ids::GOAL_V1,
         "status": status,
         "workspace": workspace.display().to_string(),
         "sessionSource": source.as_str(),
@@ -752,7 +753,7 @@ fn format_goal_status_json(
     report: &GoalReadinessReport,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.goal.status.v1",
+        "schema": schema_ids::GOAL_STATUS_V1,
         "status": if report.ready { "ready" } else { "blocked" },
         "ready": report.ready,
         "workspace": workspace.display().to_string(),

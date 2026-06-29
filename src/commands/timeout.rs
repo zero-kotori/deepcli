@@ -3,6 +3,7 @@ use super::{
     update_project_config_value, write_command_output,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 use std::path::Path;
@@ -152,7 +153,7 @@ fn format_timeout_json(
     let next_actions = timeout_next_actions(action);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.timeout.v1",
+        "schema": schema_ids::TIMEOUT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "action": action,

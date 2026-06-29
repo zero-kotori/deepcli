@@ -2,6 +2,7 @@ use super::{
     dedup_preserve_order, local_action_checklist, required_arg, set_command_output_path,
     write_command_output,
 };
+use crate::schema_ids;
 use crate::skills::{LoadedSkill, SkillMetadata, SkillStore};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -137,7 +138,7 @@ fn format_skill_list_json(
     );
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.skill.inspect.v1",
+        "schema": schema_ids::SKILL_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "list",
@@ -157,7 +158,7 @@ fn format_skill_run_json(workspace: &Path, loaded: &LoadedSkill) -> Result<Strin
     let next_actions = skill_next_actions(Some(&loaded.metadata.name), false);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.skill.inspect.v1",
+        "schema": schema_ids::SKILL_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "run",

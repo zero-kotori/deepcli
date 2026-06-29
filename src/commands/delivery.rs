@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
@@ -2010,7 +2011,7 @@ pub(crate) fn format_handoff_report_json(
     let next_actions = handoff_report_next_actions(report);
     let checklist = delivery_action_checklist(&next_actions);
     let value = json!({
-        "schema": "deepcli.handoff.v1",
+        "schema": schema_ids::HANDOFF_V1,
         "status": if blockers.is_empty() { "ok" } else { "blocked" },
         "hasBlockers": !blockers.is_empty(),
         "blockers": blockers,
@@ -2113,7 +2114,7 @@ pub(crate) fn format_verification_report_json(
     let next_actions = verification_report_next_actions(report);
     let checklist = delivery_action_checklist(&next_actions);
     let value = json!({
-        "schema": "deepcli.verify.v1",
+        "schema": schema_ids::VERIFY_V1,
         "status": if blockers.is_empty() { "ok" } else { "blocked" },
         "hasBlockers": !blockers.is_empty(),
         "blockers": blockers,

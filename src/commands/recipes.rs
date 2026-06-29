@@ -8,6 +8,7 @@ use super::{
     DEFAULT_ROUND_SCORE_THRESHOLD,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use crate::tools::ToolRegistry;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -407,7 +408,7 @@ fn format_recipes_json(
     let summary = recipes_json_summary(topic, recipes);
     let checklist = recipes_checklist(workspace, topic, recipes, next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.recipes.v1",
+        "schema": schema_ids::RECIPES_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "topic": topic.unwrap_or("all"),

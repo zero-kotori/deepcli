@@ -4,6 +4,7 @@ use super::{
     CommandRouter,
 };
 use crate::config::{absolutize_workspace_path, AppConfig};
+use crate::schema_ids;
 use crate::session::SessionStore;
 use crate::tools::{DiscoveredTestCommand, ToolExecutor};
 use crate::workspace::WorkspaceManager;
@@ -345,7 +346,7 @@ fn format_quickstart_check_json(
     report: &QuickstartCheckReport,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.quickstart.v1",
+        "schema": schema_ids::QUICKSTART_V1,
         "status": "ok",
         "version": {
             "package": "deepcli",

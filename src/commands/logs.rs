@@ -3,6 +3,7 @@ use super::{
     truncate_display, workspace_relative_display, write_command_output,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
@@ -341,7 +342,7 @@ fn format_logs_report_json(workspace: &Path, report: &LogsReport) -> Result<Stri
         .map(|tail| tail.total_lines)
         .unwrap_or_default();
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.logs.v1",
+        "schema": schema_ids::LOGS_V1,
         "status": if report.selected.is_some() { "ok" } else { "no_logs" },
         "workspace": workspace.display().to_string(),
         "logsDir": workspace_relative_display(workspace, &report.logs_dir),

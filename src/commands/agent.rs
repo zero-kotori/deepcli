@@ -3,6 +3,7 @@ use super::{
     write_command_output,
 };
 use crate::agents::{AgentStore, SubagentStatus, SubagentTask};
+use crate::schema_ids;
 use crate::tools::ToolExecutor;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -136,7 +137,7 @@ fn format_agent_list_json(
     let next_actions = agent_list_next_actions(tasks);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.agent.inspect.v1",
+        "schema": schema_ids::AGENT_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "list",
@@ -156,7 +157,7 @@ fn format_agent_show_json(workspace: &Path, task: &SubagentTask, report: &str) -
     let next_actions = agent_next_actions(Some(task), false);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.agent.inspect.v1",
+        "schema": schema_ids::AGENT_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "show",

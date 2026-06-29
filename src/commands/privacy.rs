@@ -4,6 +4,7 @@ use super::{
 };
 use crate::config::{AppConfig, PrivacyConfig};
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -1206,7 +1207,7 @@ fn format_privacy_finding_line(finding: &PrivacyFinding) -> String {
 
 fn format_privacy_scan_json(workspace: &Path, report: &PrivacyScanReport) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.privacy.scan.v1",
+        "schema": schema_ids::PRIVACY_SCAN_V1,
         "status": report.status(),
         "workspace": workspace.display().to_string(),
         "git": {

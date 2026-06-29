@@ -6,6 +6,7 @@ use super::{
     write_command_output, SessionFallbackKind,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::{Session, SessionStore, SideQuestion, SideQuestionStatus};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -231,7 +232,7 @@ fn format_btw_list_json(
     let next_actions = btw_list_next_actions(session, include_all);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.btw.list.v1",
+        "schema": schema_ids::BTW_LIST_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "note": note,
@@ -280,7 +281,7 @@ fn format_btw_action_json(
     let next_actions = btw_action_next_actions(session);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.btw.action.v1",
+        "schema": schema_ids::BTW_ACTION_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "action": action,
@@ -302,7 +303,7 @@ fn format_btw_clear_json(
     let next_actions = btw_action_next_actions(session);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.btw.action.v1",
+        "schema": schema_ids::BTW_ACTION_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "action": "clear",

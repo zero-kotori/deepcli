@@ -6,6 +6,7 @@ use super::{
     GitIdentityReport,
 };
 use crate::config::AppConfig;
+use crate::schema_ids;
 use crate::session::SessionStore;
 use crate::tools::{discover_tests_in, DiscoveredTestCommand, ToolRegistry};
 use anyhow::{bail, Result};
@@ -356,7 +357,7 @@ fn git_identity_executable_next_actions(identity: &GitIdentityReport) -> Vec<Str
 
 fn format_selftest_json(workspace: &Path, report: &SelftestReport) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.selftest.v1",
+        "schema": schema_ids::SELFTEST_V1,
         "status": if report.ready { "ok" } else { "needs_attention" },
         "ready": report.ready,
         "workspace": workspace.display().to_string(),

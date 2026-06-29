@@ -4,6 +4,7 @@ use super::{
     session_has_no_recorded_activity, session_storage_bytes, set_command_output_path, short_id,
     status_u128_value, truncate_display, write_command_output,
 };
+use crate::schema_ids;
 use crate::session::{AuditEvent, Session, SessionActivitySummary, SessionStore};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -262,7 +263,7 @@ fn format_usage_report_json(workspace: &Path, usage: &UsageReport) -> Result<Str
         .cloned()
         .unwrap_or_else(|| json!([]));
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.usage.v1",
+        "schema": schema_ids::USAGE_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "sessionSource": usage.session_source,

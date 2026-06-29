@@ -8,6 +8,7 @@ use super::{
     write_command_output, CommandExit, SessionFallbackKind,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::{Session, SessionActivitySummary, SessionMetadata, SessionStore};
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -417,7 +418,7 @@ fn format_resume_candidates_json(
     let counts = resume_candidate_reason_counts(candidates);
     let next_actions = resume_candidates_next_actions(candidates);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.resume.candidates.v1",
+        "schema": schema_ids::RESUME_CANDIDATES_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "limit": options.limit,
@@ -589,7 +590,7 @@ fn format_resume_preview_json(
     let recent_messages = session.load_recent_messages(5)?;
     let next_actions = resume_preview_next_actions(session);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.resume.preview.v1",
+        "schema": schema_ids::RESUME_PREVIEW_V1,
         "status": "preview",
         "dryRun": true,
         "workspace": workspace.display().to_string(),
@@ -670,7 +671,7 @@ fn format_resume_error_json(
     report: &str,
 ) -> Result<String> {
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.resume.preview.v1",
+        "schema": schema_ids::RESUME_PREVIEW_V1,
         "status": "error",
         "dryRun": options.dry_run,
         "workspace": workspace.display().to_string(),

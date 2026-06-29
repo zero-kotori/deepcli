@@ -1,4 +1,5 @@
 use super::*;
+use crate::schema_ids;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
@@ -240,7 +241,7 @@ pub(crate) fn format_environment_check_json(
     let next_actions = environment_check_next_actions(report);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.env.inspect.v1",
+        "schema": schema_ids::ENV_INSPECT_V1,
         "status": environment_status(report.ready),
         "workspace": workspace.display().to_string(),
         "kind": "check",
@@ -278,7 +279,7 @@ pub(crate) fn format_environment_plan_json(
         environment_plan_next_actions(report, effective_target, smoke_test, compiler_test);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.env.inspect.v1",
+        "schema": schema_ids::ENV_INSPECT_V1,
         "status": environment_status(report.ready),
         "workspace": workspace.display().to_string(),
         "kind": "plan",
@@ -317,7 +318,7 @@ pub(crate) fn format_environment_setup_result_json(
     let next_actions = environment_setup_next_actions(kind, setup);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.env.inspect.v1",
+        "schema": schema_ids::ENV_INSPECT_V1,
         "status": if setup.ready { "ready" } else { "failed" },
         "workspace": workspace.display().to_string(),
         "kind": kind,
@@ -358,7 +359,7 @@ pub(crate) fn format_environment_test_run_json(
     let next_actions = environment_test_next_actions(target, passed);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.env.inspect.v1",
+        "schema": schema_ids::ENV_INSPECT_V1,
         "status": if passed { "ready" } else { "failed" },
         "workspace": workspace.display().to_string(),
         "kind": "test",

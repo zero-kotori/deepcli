@@ -2,6 +2,7 @@ use super::{
     compact_json, compact_text_line, display_json_value, redact_sensitive_value, required_arg,
     set_command_output_path, short_id, write_command_output,
 };
+use crate::schema_ids;
 use crate::session::{AuditEvent, Session, SessionStore};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -196,7 +197,7 @@ fn format_trace_report_json(workspace: &Path, trace: &TraceReport) -> Result<Str
         .map(format_trace_event_json)
         .collect::<Vec<_>>();
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.trace.v1",
+        "schema": schema_ids::TRACE_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "sessionSource": trace.session_source,

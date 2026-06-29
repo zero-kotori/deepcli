@@ -3,6 +3,7 @@ use super::{
     write_command_output,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::tools::ToolExecutor;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -259,7 +260,7 @@ fn format_git_action_output(
     let report = format_git_action_report(action, &options.subject, command, &next_actions);
     let output = if options.json_output {
         serde_json::to_string_pretty(&json!({
-            "schema": "deepcli.git.action.v1",
+            "schema": schema_ids::GIT_ACTION_V1,
             "status": "dry_run",
             "dryRun": true,
             "workspace": workspace.display().to_string(),
@@ -396,7 +397,7 @@ fn format_git_read_output(
     let next_actions = git_read_next_actions(&options.action);
     let checklist = local_action_checklist(&next_actions);
     let output = serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.git.inspect.v1",
+        "schema": schema_ids::GIT_INSPECT_V1,
         "status": if git_raw_exit_code(&raw) == Some(0) { "ok" } else { "failed" },
         "kind": options.action,
         "command": command,

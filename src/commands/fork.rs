@@ -7,6 +7,7 @@ use super::{
     SessionFallbackKind,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::{Session, SessionMetadata, SessionState, SessionStore};
 use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
@@ -787,7 +788,7 @@ fn format_fork_dry_run_report(
 fn format_fork_json(workspace: &Path, report: &ForkReport) -> Result<String> {
     let checklist = local_action_checklist(&report.next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.fork.v1",
+        "schema": schema_ids::SESSION_FORK_V1,
         "status": "ok",
         "dryRun": false,
         "workspace": workspace.display().to_string(),
@@ -830,7 +831,7 @@ fn format_fork_dry_run_json(
 ) -> Result<String> {
     let checklist = local_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.fork.v1",
+        "schema": schema_ids::SESSION_FORK_V1,
         "status": "dry_run",
         "dryRun": true,
         "workspace": workspace.display().to_string(),
@@ -888,7 +889,7 @@ fn format_fork_error_json(
 ) -> Result<String> {
     let checklist = local_action_checklist(next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.session.fork.v1",
+        "schema": schema_ids::SESSION_FORK_V1,
         "status": "error",
         "dryRun": options.dry_run,
         "workspace": workspace.display().to_string(),

@@ -2,6 +2,7 @@ use super::{
     dedup_preserve_order, local_action_checklist, set_command_output_path, write_command_output,
 };
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::tools::ToolExecutor;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
@@ -163,7 +164,7 @@ fn format_test_discover_json(workspace: &Path, raw: &Value, report: &str) -> Res
     let next_actions = test_discover_next_actions(raw);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.test.inspect.v1",
+        "schema": schema_ids::TEST_INSPECT_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "kind": "discover",
@@ -199,7 +200,7 @@ fn format_test_run_json(workspace: &Path, raw: &Value, report: &str) -> Result<S
     let next_actions = test_run_next_actions(passed, command);
     let checklist = local_action_checklist(&next_actions);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.test.inspect.v1",
+        "schema": schema_ids::TEST_INSPECT_V1,
         "status": if passed { "passed" } else { "failed" },
         "workspace": workspace.display().to_string(),
         "kind": "run",

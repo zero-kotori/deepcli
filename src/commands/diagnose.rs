@@ -7,6 +7,7 @@ use super::{
 };
 use crate::config::AppConfig;
 use crate::privacy::redact_sensitive_text;
+use crate::schema_ids;
 use crate::session::SessionStore;
 use crate::tools::{resolve_workspace_path, ToolExecutor, ToolRegistry};
 use anyhow::{bail, Context, Result};
@@ -251,7 +252,7 @@ fn format_diagnose_report_json(
 ) -> Result<String> {
     let next_actions = diagnose_next_actions(options);
     Ok(serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.diagnose.v1",
+        "schema": schema_ids::DIAGNOSE_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "mode": {
@@ -458,7 +459,7 @@ fn write_diagnose_support_bundle(
     let manifest_path = directory.join("manifest.json");
     let next_actions = diagnose_support_bundle_next_actions(workspace, &directory);
     let manifest = serde_json::to_string_pretty(&json!({
-        "schema": "deepcli.support_bundle.v1",
+        "schema": schema_ids::SUPPORT_BUNDLE_V1,
         "status": "ok",
         "workspace": workspace.display().to_string(),
         "createdAt": Utc::now(),
@@ -503,7 +504,7 @@ fn write_diagnose_bundle_artifact(
         Err(error) => {
             let error = compact_text_line(&redact_sensitive_text(&error.to_string()), 500);
             let content = serde_json::to_string_pretty(&json!({
-                "schema": "deepcli.support_bundle.artifact.v1",
+                "schema": schema_ids::SUPPORT_BUNDLE_ARTIFACT_V1,
                 "status": "error",
                 "name": name,
                 "error": error,
