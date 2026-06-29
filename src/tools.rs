@@ -1292,14 +1292,14 @@ mod tests {
             target: "compiler".to_string(),
             ready: false,
             checks,
-            recommended_action: Some("/env setup compiler".to_string()),
+            recommended_action: Some("/install compiler --smoke".to_string()),
         };
         let text = format_environment_report(&report);
         assert!(text.contains("compiler_dev_image: missing"));
-        assert!(text.contains("recommended: /setup compiler --smoke"));
+        assert!(text.contains("recommended: /install compiler --smoke"));
         assert!(text.contains("next:"));
-        assert!(text.contains("run `/setup compiler --smoke` to continue environment setup"));
-        assert!(text.contains("preview setup first with `/env plan compiler --smoke --json`"));
+        assert!(text.contains("run `/install compiler --smoke` to continue environment setup"));
+        assert!(text.contains("re-check environment with `/doctor compiler --json`"));
         assert!(compiler_image_pull_command().contains("docker.1ms.run/maxxing/compiler-dev"));
         assert!(compiler_image_pull_command().contains("docker.m.daocloud.io/maxxing/compiler-dev"));
     }

@@ -426,13 +426,14 @@ run_provider_command() {
       ;;
     check )
       shift
-      run_deepcli --provider "$provider" --model "$model" /check "$@"
+      run_deepcli --provider "$provider" --model "$model" /doctor "$@"
       ;;
     test )
       shift
       case "${1:-}" in
-        docker|compiler )
-          run_deepcli --provider "$provider" --model "$model" /env test "$@"
+        compiler )
+          shift
+          run_deepcli --provider "$provider" --model "$model" /compiler test "$@"
           ;;
         * )
           run_deepcli --provider "$provider" --model "$model" /test "$@"
@@ -537,13 +538,14 @@ case "${1:-}" in
     ;;
   check )
     shift
-    run_deepcli /check "$@"
+    run_deepcli /doctor "$@"
     ;;
   test )
     shift
     case "${1:-}" in
-      docker|compiler )
-        run_deepcli /env test "$@"
+      compiler )
+        shift
+        run_deepcli /compiler test "$@"
         ;;
       * )
         run_deepcli /test "$@"

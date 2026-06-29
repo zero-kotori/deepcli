@@ -124,8 +124,8 @@ use doctor::{
 };
 pub(crate) use doctor::{handle_doctor, handle_init};
 pub(crate) use env::{
-    environment_checks_json, environment_status, first_line, handle_env, slash_to_deepcli_command,
-    validate_env_target, with_smoke,
+    env_inspect_slash, environment_checks_json, environment_status, first_line, handle_env,
+    slash_to_deepcli_command, validate_env_target, with_smoke,
 };
 #[cfg(test)]
 use env::{
@@ -729,7 +729,7 @@ fn environment_next_actions(
     match environment {
         Some(report) if report.ready => {
             if compiler_docker_test {
-                actions.push("deepcli env test compiler".to_string());
+                actions.push("deepcli compiler test --json".to_string());
             }
         }
         Some(report) => {
@@ -738,7 +738,7 @@ fn environment_next_actions(
                 actions.push(shell_command_from_slash_command(&action));
             }
             if compiler_docker_test {
-                actions.push("deepcli env test compiler".to_string());
+                actions.push("deepcli compiler test --json".to_string());
             }
         }
         None => actions.extend(default_environment_next_actions()),
@@ -751,8 +751,8 @@ fn environment_next_actions(
 
 fn default_environment_next_actions() -> Vec<String> {
     vec![
-        "deepcli env check docker --json".to_string(),
-        "deepcli setup docker --smoke".to_string(),
+        "deepcli doctor docker --json".to_string(),
+        "deepcli install docker --smoke".to_string(),
     ]
 }
 
@@ -3681,7 +3681,7 @@ mod tests {
         let diagnose_help = CommandRouter::help_for(&["diagnose".to_string()]).unwrap();
         assert!(diagnose_help.contains("/diagnose [docker|compiler]"));
         assert!(diagnose_help.contains("/diagnose docker --json"));
-        assert!(diagnose_help.contains("shortcuts for `/env check <target>`"));
+        assert!(diagnose_help.contains("run an environment check for `<target>`"));
         assert!(diagnose_help.contains("/diagnose --full-env"));
         assert!(diagnose_help.contains("/diagnose --json"));
         assert!(diagnose_help.contains("/diagnose --output"));
@@ -3705,7 +3705,7 @@ mod tests {
         assert!(doctor_help.contains("/doctor shell --json"));
         assert!(doctor_help.contains("/doctor [docker|compiler]"));
         assert!(doctor_help.contains("/doctor docker --json"));
-        assert!(doctor_help.contains("shortcuts for `/env check <target>`"));
+        assert!(doctor_help.contains("run an environment check for `<target>`"));
         assert!(doctor_help.contains("resolves to this workspace"));
         assert!(doctor_help.contains("shell completion state"));
         assert!(doctor_help.contains("/doctor --json"));
@@ -13816,7 +13816,7 @@ diff --git a/docs/b.md b/docs/b.md
             .any(|action| action == "deepcli credentials set missing-provider-2f7c1e"));
         assert!(actions
             .iter()
-            .any(|action| action == "deepcli setup docker --smoke"));
+            .any(|action| action == "deepcli install docker --smoke"));
     }
 
     #[tokio::test]
@@ -14357,7 +14357,7 @@ diff --git a/docs/b.md b/docs/b.md
             target: "compiler".to_string(),
             ready: false,
             checks: Vec::new(),
-            recommended_action: Some("/env setup compiler".to_string()),
+            recommended_action: Some("/install compiler --smoke".to_string()),
         };
         let actions = doctor_next_actions(
             dir.path(),
@@ -14368,22 +14368,22 @@ diff --git a/docs/b.md b/docs/b.md
         assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action == "deepcli setup compiler --smoke"));
+            .any(|action| action == "deepcli install compiler --smoke"));
         assert!(actions
             .iter()
-            .any(|action| action == "deepcli env test compiler"));
+            .any(|action| action == "deepcli compiler test --json"));
 
         let docker_missing = EnvironmentReport {
             target: "docker".to_string(),
             ready: false,
             checks: Vec::new(),
-            recommended_action: Some("/env setup docker".to_string()),
+            recommended_action: Some("/install docker --smoke".to_string()),
         };
         let actions = doctor_next_actions(dir.path(), &config, Some(&docker_missing), &[]);
         assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action == "deepcli setup docker --smoke"));
+            .any(|action| action == "deepcli install docker --smoke"));
 
         let compiler_ready = EnvironmentReport {
             target: "compiler".to_string(),
@@ -14400,7 +14400,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_executable_deepcli_actions(&actions);
         assert!(actions
             .iter()
-            .any(|action| action == "deepcli env test compiler"));
+            .any(|action| action == "deepcli compiler test --json"));
     }
 
     #[test]
@@ -14420,7 +14420,7 @@ diff --git a/docs/b.md b/docs/b.md
                 },
                 test_environment_check("compiler_dev_image", false),
             ],
-            recommended_action: Some("/env setup compiler".to_string()),
+            recommended_action: Some("/install compiler --smoke".to_string()),
         };
         let compiler_test = DiscoveredTestCommand {
             source: PathBuf::from("Makefile"),
@@ -14436,8 +14436,8 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(plan.contains("inspect or pull maxxing/compiler-dev"));
         assert!(plan.contains("run compiler-dev smoke container"));
         assert!(plan.contains("setup may install Docker/Colima"));
-        assert!(plan.contains("/setup compiler --smoke"));
-        assert!(plan.contains("/env test compiler"));
+        assert!(plan.contains("/install compiler --smoke"));
+        assert!(plan.contains("/compiler test --json"));
     }
 
     #[test]
@@ -14452,7 +14452,7 @@ diff --git a/docs/b.md b/docs/b.md
             "auto",
             true,
             true,
-            "/env plan",
+            "environment plan",
         )
         .unwrap();
         assert_eq!(parsed.target, "compiler");
@@ -14463,7 +14463,7 @@ diff --git a/docs/b.md b/docs/b.md
             Some(".deepcli/exports/env-plan.json")
         );
 
-        let error = parse_env_options(&["auto".into()], "docker", false, false, "/env test")
+        let error = parse_env_options(&["auto".into()], "docker", false, false, "environment test")
             .unwrap_err()
             .to_string();
         assert!(error.contains("target `auto` is not supported"));
@@ -14473,7 +14473,7 @@ diff --git a/docs/b.md b/docs/b.md
             "auto",
             true,
             false,
-            "/env check",
+            "environment check",
         )
         .unwrap_err()
         .to_string();
@@ -14495,7 +14495,7 @@ diff --git a/docs/b.md b/docs/b.md
                     detail: Some("daemon is not running".to_string()),
                 },
             ],
-            recommended_action: Some("/env setup docker".to_string()),
+            recommended_action: Some("/install docker --smoke".to_string()),
         };
 
         let output =
@@ -14509,14 +14509,14 @@ diff --git a/docs/b.md b/docs/b.md
         assert_eq!(value["ready"], false);
         assert_eq!(value["checks"][0]["name"], "docker_cli");
         assert_eq!(value["checks"][1]["detail"], "daemon is not running");
-        assert_eq!(value["recommendedAction"], "/setup docker --smoke");
+        assert_eq!(value["recommendedAction"], "/install docker --smoke");
         let next_actions = value["nextActions"].as_array().unwrap();
         assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap() == "deepcli setup docker --smoke"));
-        assert!(next_actions.iter().any(|action| {
-            action.as_str().unwrap() == "deepcli env plan docker --smoke --json"
-        }));
+            .any(|action| action.as_str().unwrap() == "deepcli install docker --smoke"));
+        assert!(next_actions
+            .iter()
+            .any(|action| { action.as_str().unwrap() == "deepcli doctor docker --json" }));
         assert!(
             next_actions
                 .iter()
@@ -14527,7 +14527,7 @@ diff --git a/docs/b.md b/docs/b.md
         assert_checklist_matches_executable_actions(&value, &next_action_strings);
         let checklist_labels = json_checklist_labels(&value);
         assert!(checklist_labels.contains(&"Set up local environment".to_string()));
-        assert!(checklist_labels.contains(&"Inspect environment plan".to_string()));
+        assert!(checklist_labels.contains(&"Check Docker environment".to_string()));
     }
 
     #[test]
@@ -14548,7 +14548,7 @@ diff --git a/docs/b.md b/docs/b.md
                 },
                 test_environment_check("compiler_dev_image", false),
             ],
-            recommended_action: Some("/env setup compiler".to_string()),
+            recommended_action: Some("/install compiler --smoke".to_string()),
         };
         let compiler_test = DiscoveredTestCommand {
             source: dir.path().join("online-doc/docs/lv1-main/testing.md"),
@@ -14581,14 +14581,14 @@ diff --git a/docs/b.md b/docs/b.md
             .as_array()
             .unwrap()
             .iter()
-            .any(|command| command.as_str().unwrap() == "/setup compiler --smoke"));
+            .any(|command| command.as_str().unwrap() == "/install compiler --smoke"));
         let next_actions = value["nextActions"].as_array().unwrap();
         assert!(next_actions
             .iter()
-            .any(|action| { action.as_str().unwrap() == "deepcli setup compiler --smoke" }));
+            .any(|action| { action.as_str().unwrap() == "deepcli install compiler --smoke" }));
         assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap() == "deepcli env test compiler"));
+            .any(|action| action.as_str().unwrap() == "deepcli compiler test --json"));
         assert!(
             next_actions
                 .iter()
@@ -14613,7 +14613,7 @@ diff --git a/docs/b.md b/docs/b.md
             target: "docker".to_string(),
             ready: false,
             checks: vec![test_environment_check("docker_daemon", false)],
-            recommended_action: Some("/env setup docker".to_string()),
+            recommended_action: Some("/install docker --smoke".to_string()),
         };
         let after = EnvironmentReport {
             target: "docker".to_string(),
@@ -14653,7 +14653,7 @@ diff --git a/docs/b.md b/docs/b.md
         let next_actions = value["nextActions"].as_array().unwrap();
         assert!(next_actions
             .iter()
-            .any(|action| action.as_str().unwrap() == "deepcli env test docker --json"));
+            .any(|action| action.as_str().unwrap() == "deepcli test discover --json"));
         assert!(
             next_actions
                 .iter()
@@ -14663,7 +14663,6 @@ diff --git a/docs/b.md b/docs/b.md
         let next_action_strings = json_string_array(&value["nextActions"]);
         assert_checklist_matches_executable_actions(&value, &next_action_strings);
         let checklist_labels = json_checklist_labels(&value);
-        assert!(checklist_labels.contains(&"Run environment test".to_string()));
         assert!(checklist_labels.contains(&"Discover test commands".to_string()));
 
         let output = format_environment_setup_result_json(
@@ -15598,7 +15597,7 @@ diff --git a/docs/skip.md b/docs/skip.md
                         detail: Some("daemon is not running".to_string()),
                     },
                 ],
-                recommended_action: Some("/env setup docker".to_string()),
+                recommended_action: Some("/install docker --smoke".to_string()),
             },
             text: "environment target: docker\nready: false".to_string(),
         }];
@@ -15626,7 +15625,7 @@ diff --git a/docs/skip.md b/docs/skip.md
         assert!(report.contains("docker: [needs_setup] ready=false"));
         assert!(report.contains("missing checks: docker_daemon"));
         assert!(report.contains("environment `docker` is not ready"));
-        assert!(report.contains("repair environment `docker`: `/setup docker --smoke`"));
+        assert!(report.contains("repair environment `docker`: `/install docker --smoke`"));
 
         let pr = format_handoff_report_pr_description(&report);
         assert!(pr.contains("## Environment"));
@@ -16104,7 +16103,7 @@ diff --git a/docs/skip.md b/docs/skip.md
                         detail: Some("daemon is not running".to_string()),
                     },
                 ],
-                recommended_action: Some("/env setup docker".to_string()),
+                recommended_action: Some("/install docker --smoke".to_string()),
             },
             text: "environment target: docker\nready: false".to_string(),
         }];
@@ -16139,7 +16138,7 @@ diff --git a/docs/skip.md b/docs/skip.md
         assert!(report.contains("docker: [needs_setup] ready=false"));
         assert!(report.contains("missing checks: docker_daemon"));
         assert!(report.contains("environment `docker` is not ready"));
-        assert!(report.contains("repair environment `docker`: `/setup docker --smoke`"));
+        assert!(report.contains("repair environment `docker`: `/install docker --smoke`"));
         assert!(!report.contains("- no session context found"));
 
         let output = format_verification_report_json(&report, &environment_checks).unwrap();

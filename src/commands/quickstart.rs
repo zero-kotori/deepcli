@@ -305,7 +305,7 @@ fn quickstart_steps() -> Vec<String> {
             .to_string(),
         "ask for a concrete coding task, for example `deepcli deepseek ask '阅读项目结构并说明如何运行测试'`"
             .to_string(),
-        "run `/env plan compiler --smoke` before installing Docker/compiler dependencies"
+        "run `/compiler plan --smoke` before installing Docker/compiler dependencies"
             .to_string(),
         "run `/accept --json` for a human acceptance report and `/gate --json` for a strict gate"
             .to_string(),
@@ -335,7 +335,7 @@ fn quickstart_next_actions(
     } else {
         actions.push("deepcli accept --json".to_string());
     }
-    actions.push("deepcli env plan compiler --smoke".to_string());
+    actions.push("deepcli compiler plan --smoke".to_string());
     actions.push("deepcli gate --json".to_string());
     actions.push("deepcli handoff --pr".to_string());
     dedup_preserve_order(actions)

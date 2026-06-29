@@ -15,7 +15,7 @@ pub(crate) async fn handle_env(
             } else {
                 args.as_slice()
             };
-            let options = parse_env_options(option_args, "auto", true, false, "/env check")?;
+            let options = parse_env_options(option_args, "auto", true, false, "environment check")?;
             let output = executor
                 .execute("check_environment", json!({ "target": options.target }))
                 .await?;
@@ -33,7 +33,7 @@ pub(crate) async fn handle_env(
             Ok(output)
         }
         Some(value) if value.starts_with("--") => {
-            let options = parse_env_options(&args, "auto", true, false, "/env check")?;
+            let options = parse_env_options(&args, "auto", true, false, "environment check")?;
             let output = executor
                 .execute("check_environment", json!({ "target": options.target }))
                 .await?;
@@ -51,7 +51,7 @@ pub(crate) async fn handle_env(
             Ok(output)
         }
         Some("plan") => {
-            let options = parse_env_options(&args[1..], "auto", true, true, "/env plan")?;
+            let options = parse_env_options(&args[1..], "auto", true, true, "environment plan")?;
             let output = executor
                 .execute("check_environment", json!({ "target": options.target }))
                 .await?;
@@ -71,9 +71,9 @@ pub(crate) async fn handle_env(
         }
         Some("setup") | Some("install") => {
             let command_name = if args.first().map(String::as_str) == Some("install") {
-                "/env install"
+                "environment install"
             } else {
-                "/env setup"
+                "environment setup"
             };
             let options = parse_env_options(&args[1..], "docker", false, true, command_name)?;
             let output = executor
@@ -101,7 +101,8 @@ pub(crate) async fn handle_env(
             Ok(output)
         }
         Some("test") => {
-            let options = parse_env_options(&args[1..], "docker", false, false, "/env test")?;
+            let options =
+                parse_env_options(&args[1..], "docker", false, false, "environment test")?;
             if options.target == "compiler" {
                 let command = executor
                     .discover_tests()?
@@ -158,7 +159,7 @@ pub(crate) async fn handle_env(
                 Ok(output)
             }
         }
-        Some(other) => bail!("unsupported /env action `{other}`"),
+        Some(other) => bail!("unsupported environment action `{other}`"),
     }
 }
 
@@ -228,7 +229,7 @@ pub(crate) fn validate_env_target(target: &str, allow_auto: bool) -> Result<()> 
     match target {
         "docker" | "compiler" => Ok(()),
         "auto" if allow_auto => Ok(()),
-        "auto" => bail!("target `auto` is not supported for this /env action"),
+        "auto" => bail!("target `auto` is not supported for this environment action"),
         other => bail!("unsupported environment target `{other}`"),
     }
 }
@@ -424,6 +425,24 @@ fn environment_action_json(action: &crate::tools::CommandOutput) -> Value {
     })
 }
 
+// Smoke-test command that still reaches the env test action. Docker's
+// smoke-only test was dropped together with `/env`, so only the compiler
+// target keeps a slash entry (`/compiler test`).
+fn env_smoke_test_slash(target: &str) -> Option<String> {
+    (target == "compiler").then(|| "/compiler test --json".to_string())
+}
+
+// Closest surviving "inspect environment" command per target. `/env plan`
+// only survives for compiler via `/compiler plan`; docker falls back to a
+// re-check via `/doctor`.
+pub(crate) fn env_inspect_slash(target: &str) -> String {
+    if target == "compiler" {
+        "/compiler plan --smoke --json".to_string()
+    } else {
+        "/doctor docker --json".to_string()
+    }
+}
+
 fn environment_check_next_actions(report: &EnvironmentReport) -> Vec<String> {
     if report.ready {
         let target = if report.target == "compiler" {
@@ -431,23 +450,23 @@ fn environment_check_next_actions(report: &EnvironmentReport) -> Vec<String> {
         } else {
             "docker"
         };
-        return vec![
-            slash_to_deepcli_command(&format!("/env test {target} --json")),
-            slash_to_deepcli_command("/test discover --json"),
-        ];
+        let mut actions = Vec::new();
+        if let Some(test) = env_smoke_test_slash(target) {
+            actions.push(slash_to_deepcli_command(&test));
+        }
+        actions.push(slash_to_deepcli_command("/test discover --json"));
+        return actions;
     }
     let mut actions = Vec::new();
     if let Some(action) = &report.recommended_action {
         actions.push(slash_to_deepcli_command(&with_smoke(action)));
     }
-    actions.push(format!(
-        "deepcli env plan {} --smoke --json",
-        if report.target == "auto" {
-            "docker"
-        } else {
-            report.target.as_str()
-        }
-    ));
+    let target = if report.target == "auto" {
+        "docker"
+    } else {
+        report.target.as_str()
+    };
+    actions.push(slash_to_deepcli_command(&env_inspect_slash(target)));
     dedup_preserve_order(actions)
 }
 
@@ -464,33 +483,29 @@ fn environment_plan_next_actions(
 }
 
 fn environment_setup_next_actions(kind: &str, setup: &EnvironmentSetupResult) -> Vec<String> {
-    if setup.ready {
-        let target = if setup.target == "compiler" {
-            "compiler"
-        } else {
-            "docker"
-        };
-        let mut actions = vec![
-            slash_to_deepcli_command(&format!("/env test {target} --json")),
-            slash_to_deepcli_command("/test discover --json"),
-        ];
-        if kind == "test" {
-            actions = vec![
-                slash_to_deepcli_command(&format!("/accept --env-check {target} --json")),
-                slash_to_deepcli_command(&format!("/gate --env-check {target} --json")),
-                slash_to_deepcli_command("/test run --json"),
-            ];
-        }
-        return actions;
-    }
     let target = if setup.target == "compiler" {
         "compiler"
     } else {
         "docker"
     };
+    if setup.ready {
+        if kind == "test" {
+            return vec![
+                slash_to_deepcli_command(&format!("/accept --env-check {target} --json")),
+                slash_to_deepcli_command(&format!("/gate --env-check {target} --json")),
+                slash_to_deepcli_command("/test run --json"),
+            ];
+        }
+        let mut actions = Vec::new();
+        if let Some(test) = env_smoke_test_slash(target) {
+            actions.push(slash_to_deepcli_command(&test));
+        }
+        actions.push(slash_to_deepcli_command("/test discover --json"));
+        return actions;
+    }
     vec![
         "inspect failed action stdout/stderr before retrying setup".to_string(),
-        slash_to_deepcli_command(&format!("/env plan {target} --smoke --json")),
+        slash_to_deepcli_command(&env_inspect_slash(target)),
     ]
 }
 
@@ -504,7 +519,7 @@ fn environment_test_next_actions(target: &str, passed: bool) -> Vec<String> {
     } else {
         vec![
             "inspect stdout/stderr and repair the environment before project tests".to_string(),
-            slash_to_deepcli_command(&format!("/env plan {target} --smoke --json")),
+            slash_to_deepcli_command(&env_inspect_slash(target)),
         ]
     }
 }
@@ -526,14 +541,13 @@ pub(crate) fn with_smoke(command: &str) -> String {
 fn setup_shortcut(command: &str) -> Option<String> {
     let parts = command.split_whitespace().collect::<Vec<_>>();
     let target = match parts.as_slice() {
-        ["/env", "setup", target, ..] => *target,
-        ["/setup", target, ..] => *target,
+        ["/install", target, ..] => *target,
         _ => return None,
     };
     if !matches!(target, "docker" | "compiler") {
         return None;
     }
-    Some(format!("/setup {target} --smoke"))
+    Some(format!("/install {target} --smoke"))
 }
 
 pub(crate) fn format_environment_plan(
@@ -637,17 +651,19 @@ fn environment_plan_commands(
     };
     if !report.ready {
         commands.push(format!(
-            "/setup {setup_target}{}",
+            "/install {setup_target}{}",
             if smoke_test { " --smoke" } else { "" }
         ));
     } else if smoke_test {
-        commands.push(format!("/env test {setup_target}"));
+        if let Some(test) = env_smoke_test_slash(setup_target) {
+            commands.push(test);
+        }
     }
     if effective_target == "compiler" && compiler_test.is_some() {
-        commands.push("/env test compiler".to_string());
+        commands.push("/compiler test --json".to_string());
     }
     if commands.is_empty() {
-        commands.push(format!("/env check {setup_target}"));
+        commands.push(format!("/doctor {setup_target} --json"));
     }
     dedup_preserve_order(commands)
 }

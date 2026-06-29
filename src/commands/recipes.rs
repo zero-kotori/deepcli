@@ -237,14 +237,14 @@ fn recipes_catalog() -> Vec<Recipe> {
             title: "Prepare Local Environment",
             summary: "Check, plan, install, and smoke-test Docker or compiler task environments.",
             commands: &[
-                "deepcli env check docker --json",
-                "deepcli env plan compiler --smoke --json",
-                "deepcli setup docker --smoke",
+                "deepcli doctor docker --json",
+                "deepcli compiler plan --smoke --json",
+                "deepcli install docker --smoke",
                 "deepcli install compiler --smoke",
-                "deepcli env test compiler --json",
+                "deepcli compiler test --json",
             ],
             notes: &[
-                "Always preview with `env plan` before install/setup if the task may touch Docker, Colima, or compiler tools.",
+                "Always preview with `compiler plan` before install if the task may touch Docker, Colima, or compiler tools.",
                 "Environment setup runs through the permission engine; read-only check/plan commands do not need a provider call.",
             ],
         },
@@ -304,8 +304,8 @@ fn recipes_state(
             "deepcli diagnose --bundle .deepcli/support/latest",
         ],
         Some("environment") => vec![
-            "deepcli env plan compiler --smoke --json",
-            "deepcli env test compiler --json",
+            "deepcli compiler plan --smoke --json",
+            "deepcli compiler test --json",
         ],
         Some("shell") => vec![
             "deepcli doctor shell --json",

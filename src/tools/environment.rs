@@ -319,12 +319,15 @@ fn environment_recommendation(
         return Some("install Homebrew or configure Docker manually".to_string());
     }
     if !available("docker_cli") || !available("colima") || !available("docker_daemon") {
-        return Some("/setup docker --smoke".to_string());
+        return Some("/install docker --smoke".to_string());
     }
     if target == "compiler" && !available("compiler_dev_image") {
-        return Some("/setup compiler --smoke".to_string());
+        return Some("/install compiler --smoke".to_string());
     }
-    Some("/env check".to_string())
+    Some(format!(
+        "/doctor {} --json",
+        environment_followup_target(target)
+    ))
 }
 
 pub(super) fn format_environment_report(report: &EnvironmentReport) -> String {
@@ -394,10 +397,12 @@ fn append_environment_next_actions(lines: &mut Vec<String>, report: &Environment
 fn environment_report_next_actions(report: &EnvironmentReport) -> Vec<String> {
     if report.ready {
         let target = environment_followup_target(&report.target);
-        return vec![
-            format!("run `/env test {target} --json` to capture smoke-test evidence"),
-            "run `/test discover --json` to inspect project test commands".to_string(),
-        ];
+        let mut actions = Vec::new();
+        if let Some(test) = environment_smoke_test_action(target) {
+            actions.push(format!("run `{test}` to capture smoke-test evidence"));
+        }
+        actions.push("run `/test discover --json` to inspect project test commands".to_string());
+        return actions;
     }
 
     let mut actions = Vec::new();
@@ -411,9 +416,15 @@ fn environment_report_next_actions(report: &EnvironmentReport) -> Vec<String> {
     }
     let target = environment_followup_target(&report.target);
     actions.push(format!(
-        "preview setup first with `/env plan {target} --smoke --json`"
+        "re-check environment with `/doctor {target} --json`"
     ));
     dedup_environment_actions(actions)
+}
+
+fn environment_smoke_test_action(target: &str) -> Option<String> {
+    // Only the compiler target keeps a slash entry for a smoke test
+    // (`/compiler test`); docker's smoke-only test was dropped with `/env`.
+    (target == "compiler").then(|| "/compiler test --json".to_string())
 }
 
 fn environment_followup_target(target: &str) -> &str {
@@ -437,12 +448,11 @@ fn dedup_environment_actions(actions: Vec<String>) -> Vec<String> {
 fn environment_action_shortcut(command: &str) -> String {
     let parts = command.split_whitespace().collect::<Vec<_>>();
     let target = match parts.as_slice() {
-        ["/env", "setup", target, ..] => *target,
-        ["/setup", target, ..] => *target,
+        ["/install", target, ..] => *target,
         _ => return command.to_string(),
     };
     if matches!(target, "docker" | "compiler") {
-        format!("/setup {target} --smoke")
+        format!("/install {target} --smoke")
     } else {
         command.to_string()
     }

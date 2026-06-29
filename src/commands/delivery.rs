@@ -2405,7 +2405,7 @@ fn append_verification_environment(
                         .recommended_action
                         .as_deref()
                         .map(with_smoke)
-                        .unwrap_or_else(|| format!("/env plan {target} --smoke"));
+                        .unwrap_or_else(|| env_inspect_slash(target));
                     blockers.push(format!(
                         "environment `{target}` is not ready; run `{}`",
                         action
@@ -2621,12 +2621,14 @@ fn verification_next_actions(
                         ));
                     } else {
                         actions.push(format!(
-                            "- inspect environment `{target}`: `/env plan {target} --smoke --json`"
+                            "- inspect environment `{target}`: `{}`",
+                            env_inspect_slash(target)
                         ));
                     }
                 }
                 VerificationEnvironmentCheck::Error { target, .. } => actions.push(format!(
-                    "- inspect environment `{target}`: `/env plan {target} --smoke --json`"
+                    "- inspect environment `{target}`: `{}`",
+                    env_inspect_slash(target)
                 )),
                 _ => {}
             }
@@ -2661,13 +2663,15 @@ fn append_handoff_environment_next_actions(
                     ));
                 } else {
                     lines.push(format!(
-                        "  - inspect environment `{target}`: `/env plan {target} --smoke --json`"
+                        "  - inspect environment `{target}`: `{}`",
+                        env_inspect_slash(target)
                     ));
                 }
             }
             VerificationEnvironmentCheck::Error { target, .. } => {
                 lines.push(format!(
-                    "  - inspect environment `{target}`: `/env plan {target} --smoke --json`"
+                    "  - inspect environment `{target}`: `{}`",
+                    env_inspect_slash(target)
                 ));
             }
             _ => {}

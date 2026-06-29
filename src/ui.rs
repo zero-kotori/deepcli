@@ -4909,17 +4909,19 @@ fn provider_needs_credentials_for_ui(
 
 fn environment_quick_actions(monitor: Option<&SessionMonitor>) -> Vec<MonitorQuickAction> {
     let target = environment_action_target(monitor);
-    let mut actions = vec![
-        MonitorQuickAction::run(format!("/env check {target} --json")),
-        MonitorQuickAction::run(format!("/env plan {target} --smoke --json")),
-    ];
+    let mut actions = vec![MonitorQuickAction::run(format!("/doctor {target} --json"))];
+    if target == "compiler" {
+        actions.push(MonitorQuickAction::run("/compiler plan --smoke --json"));
+    }
     if environment_needs_setup(monitor) {
         actions.push(MonitorQuickAction::edit(format!(
-            "/env setup {target} --smoke"
+            "/install {target} --smoke"
         )));
     }
+    if target == "compiler" {
+        actions.push(MonitorQuickAction::run("/compiler test --json"));
+    }
     actions.extend([
-        MonitorQuickAction::run(format!("/env test {target} --json")),
         MonitorQuickAction::run(format!("/accept --env-check {target} --json")),
         MonitorQuickAction::run(format!("/gate --env-check {target} --json")),
         MonitorQuickAction::run(format!("/handoff --env-check {target} --format pr")),
@@ -4963,7 +4965,7 @@ fn environment_needs_setup(monitor: Option<&SessionMonitor>) -> bool {
             environment.ready == Some(false)
                 || environment.status.contains("needs")
                 || environment.status.contains("missing")
-                || environment.detail.contains("/env setup")
+                || environment.detail.contains("/install")
         })
         .unwrap_or(true)
 }
@@ -5534,7 +5536,7 @@ fn selected_monitor_quick_action_line(lines: &[String]) -> Option<usize> {
 }
 
 fn more_panel_lines_marker() -> String {
-    "[more: use /session, /approval, /btw, /env, or /trace for full detail]".to_string()
+    "[more: use /session, /approval, /btw, /doctor, or /trace for full detail]".to_string()
 }
 
 fn format_latest_test(test: &SessionObservationTest) -> String {
@@ -7160,7 +7162,7 @@ mod tests {
             last_event: "ready".to_string(),
             worker: None,
         };
-        state.input.set_buffer("/env".to_string());
+        state.input.set_buffer("/doctor".to_string());
 
         terminal
             .draw(|frame| render_chat_ui(frame, &state))
@@ -7312,7 +7314,7 @@ mod tests {
                 target: "docker".to_string(),
                 status: "needs_setup".to_string(),
                 ready: Some(false),
-                detail: "recommended: /env setup docker --smoke".to_string(),
+                detail: "recommended: /install docker --smoke".to_string(),
             }],
             pending_approvals: vec![SessionObservationApproval {
                 id: "12345678-aaaa-bbbb-cccc-123456789abc".to_string(),
@@ -7368,9 +7370,10 @@ mod tests {
         let environment = format_task_monitor_text(&state, Some(&monitor), 14);
         assert!(environment.contains("[Environment]"));
         assert!(environment.contains("check_environment target=docker status=needs_setup"));
-        assert!(environment.contains("/env plan docker --smoke --json"));
-        assert!(environment.contains("/env setup docker --smoke (edit)"));
-        assert!(environment.contains("/env test docker --json"));
+        assert!(environment.contains("/doctor docker --json"));
+        assert!(environment.contains("/install docker --smoke (edit)"));
+        assert!(!environment.contains("/env plan docker"));
+        assert!(!environment.contains("/env test docker"));
         assert!(environment.contains("/accept --env-check docker --json"));
         assert!(environment.contains("/gate --env-check docker --json"));
 
@@ -8254,7 +8257,7 @@ mod tests {
         let rendered = format_task_monitor_text(&state, None, layout.tools.height);
         let action_row = rendered
             .lines()
-            .position(|line| line.contains("/env check docker --json"))
+            .position(|line| line.contains("/doctor docker --json"))
             .expect("environment check quick action should be visible");
         let (progress_tx, _progress_rx) = mpsc::channel();
         let (done_tx, _done_rx) = mpsc::channel();
@@ -8275,7 +8278,7 @@ mod tests {
         assert_eq!(state.selected_command, 0);
         assert!(state
             .last_event
-            .contains("quick action submitted: /env check docker --json"));
+            .contains("quick action submitted: /doctor docker --json"));
     }
 
     #[test]
@@ -9664,7 +9667,7 @@ mod tests {
                 output: json!({
                     "target": "compiler",
                     "ready": false,
-                    "recommended_action": "/env setup compiler --smoke"
+                    "recommended_action": "/install compiler --smoke"
                 }),
                 decision: None,
                 status: ToolCallStatus::Succeeded,
@@ -9740,14 +9743,14 @@ mod tests {
         state.monitor_tab = MonitorTab::Environment;
         let environment = format_task_monitor_text(&state, Some(&monitor), 10);
         assert!(environment.contains("check_environment target=compiler status=needs_setup"));
-        assert!(environment.contains("recommended: /env setup compiler --smoke"));
+        assert!(environment.contains("recommended: /install compiler --smoke"));
         let actions = environment_quick_actions(Some(&monitor));
-        assert!(actions.iter().any(
-            |action| action.command == "/env setup compiler --smoke" && action.edit_before_run
-        ));
         assert!(actions
             .iter()
-            .any(|action| action.command == "/env test compiler --json"));
+            .any(|action| action.command == "/install compiler --smoke" && action.edit_before_run));
+        assert!(actions
+            .iter()
+            .any(|action| action.command == "/compiler test --json"));
 
         state.monitor_tab = MonitorTab::Usage;
         let usage = format_task_monitor_text(&state, Some(&monitor), 10);
@@ -9779,7 +9782,7 @@ mod tests {
                 target: "compiler".to_string(),
                 status: "needs_setup".to_string(),
                 ready: Some(false),
-                detail: "recommended: /env setup compiler --smoke".to_string(),
+                detail: "recommended: /install compiler --smoke".to_string(),
             }],
             pending_approvals: Vec::new(),
             open_questions: Vec::new(),
@@ -9812,7 +9815,7 @@ mod tests {
         let actions = environment_quick_actions(Some(&monitor));
         let setup_index = actions
             .iter()
-            .position(|action| action.command == "/env setup compiler --smoke")
+            .position(|action| action.command == "/install compiler --smoke")
             .unwrap();
         assert!(actions[setup_index].edit_before_run);
         state.selected_command = setup_index;
@@ -9821,10 +9824,10 @@ mod tests {
 
         activate_selected_monitor_quick_action(&mut state, &actions, &progress_tx, &done_tx);
 
-        assert_eq!(state.input.buffer(), "/env setup compiler --smoke");
+        assert_eq!(state.input.buffer(), "/install compiler --smoke");
         assert_eq!(
             state.last_event,
-            "quick action ready for edit: /env setup compiler --smoke"
+            "quick action ready for edit: /install compiler --smoke"
         );
         assert!(state.running);
     }
