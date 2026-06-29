@@ -13616,70 +13616,6 @@ diff --git a/docs/b.md b/docs/b.md
     }
 
     #[test]
-    fn credentials_template_creates_example_without_runtime_secret() {
-        let dir = tempdir().unwrap();
-        let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
-        let config = test_provider_config(&provider);
-
-        let output = handle_credentials(
-            dir.path(),
-            &config,
-            vec!["template".to_string(), provider.clone()],
-        )
-        .unwrap();
-        assert!(output.contains("created credentials template"));
-        assert!(output.contains(&format!("/credentials set {provider}")));
-        assert!(output.contains(&format!("/credentials import-env {provider}")));
-
-        let template = dir.path().join(format!(
-            ".deepcli/credentials/{provider}-credentials.example.json"
-        ));
-        assert!(template.exists());
-        let runtime_credentials = dir
-            .path()
-            .join(format!(".deepcli/credentials/{provider}-credentials.json"));
-        assert!(!runtime_credentials.exists());
-
-        let status = handle_credentials(
-            dir.path(),
-            &config,
-            vec!["status".to_string(), provider.clone()],
-        )
-        .unwrap();
-        assert!(status.contains("api_key=missing"));
-        assert!(status.contains(&format!("deepcli credentials set {provider}")));
-    }
-
-    #[test]
-    fn credentials_setup_actions_default_to_configured_provider() {
-        let dir = tempdir().unwrap();
-        let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
-        let config = test_provider_config(&provider);
-        let env_key = provider_env_key(&provider);
-
-        let template =
-            handle_credentials(dir.path(), &config, vec!["template".to_string()]).unwrap();
-        assert!(template.contains(&format!("/credentials set {provider}")));
-        assert!(dir
-            .path()
-            .join(format!(
-                ".deepcli/credentials/{provider}-credentials.example.json"
-            ))
-            .exists());
-
-        std::env::set_var(&env_key, "default-provider-secret");
-        let imported =
-            handle_credentials(dir.path(), &config, vec!["import-env".to_string()]).unwrap();
-        std::env::remove_var(&env_key);
-        assert!(imported.contains("apiKey redacted"));
-        assert!(!imported.contains("default-provider-secret"));
-        assert!(dir
-            .path()
-            .join(format!(".deepcli/credentials/{provider}-credentials.json"))
-            .exists());
-    }
-
-    #[test]
     fn credentials_remove_clears_api_key_and_preserves_metadata() {
         let dir = tempdir().unwrap();
         let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
@@ -13756,42 +13692,6 @@ diff --git a/docs/b.md b/docs/b.md
     }
 
     #[test]
-    fn credentials_import_env_writes_file_without_printing_secret() {
-        let dir = tempdir().unwrap();
-        let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
-        let config = test_provider_config(&provider);
-        let env_key = provider_env_key(&provider);
-        let secret = "test-secret-value";
-        std::env::set_var(&env_key, secret);
-
-        let output = handle_credentials(
-            dir.path(),
-            &config,
-            vec!["import-env".to_string(), provider.clone()],
-        )
-        .unwrap();
-        std::env::remove_var(&env_key);
-
-        assert!(output.contains("apiKey redacted"));
-        assert!(!output.contains(secret));
-
-        let path = dir
-            .path()
-            .join(format!(".deepcli/credentials/{provider}-credentials.json"));
-        let raw = fs::read_to_string(&path).unwrap();
-        assert!(raw.contains(secret));
-
-        let status = handle_credentials(
-            dir.path(),
-            &config,
-            vec!["status".to_string(), provider.clone()],
-        )
-        .unwrap();
-        assert!(status.contains("api_key=configured"));
-        assert!(!status.contains(secret));
-    }
-
-    #[test]
     fn credentials_status_json_output_is_structured_redacted_and_written() {
         let dir = tempdir().unwrap();
         let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
@@ -13860,16 +13760,8 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(missing_next_actions
             .iter()
             .any(|action| action == &format!("deepcli credentials set {missing_provider}")));
-        assert!(missing_next_actions
-            .iter()
-            .any(|action| action == &format!("deepcli credentials import-env {missing_provider}")));
-        assert!(missing_next_actions
-            .iter()
-            .any(|action| action == &format!("deepcli credentials template {missing_provider}")));
         let missing_labels = json_checklist_labels(&missing_value);
         assert!(missing_labels.contains(&"Configure provider credentials".to_string()));
-        assert!(missing_labels.contains(&"Import credentials from environment".to_string()));
-        assert!(missing_labels.contains(&"Create credentials template".to_string()));
     }
 
     #[test]
@@ -13893,48 +13785,6 @@ diff --git a/docs/b.md b/docs/b.md
 
         assert!(error.contains("path traversal is not allowed"));
         assert!(!dir.path().join("../credentials.json").exists());
-    }
-
-    #[test]
-    fn credentials_import_env_requires_force_to_overwrite_api_key() {
-        let dir = tempdir().unwrap();
-        let provider = format!("credtest{}", uuid::Uuid::new_v4().simple());
-        let config = test_provider_config(&provider);
-        let env_key = provider_env_key(&provider);
-        std::env::set_var(&env_key, "first-secret");
-        handle_credentials(
-            dir.path(),
-            &config,
-            vec!["import-env".to_string(), provider.clone()],
-        )
-        .unwrap();
-
-        std::env::set_var(&env_key, "second-secret");
-        let rejected = handle_credentials(
-            dir.path(),
-            &config,
-            vec!["import-env".to_string(), provider.clone()],
-        );
-        assert!(rejected.is_err());
-
-        let output = handle_credentials(
-            dir.path(),
-            &config,
-            vec![
-                "import-env".to_string(),
-                provider.clone(),
-                "--force".to_string(),
-            ],
-        )
-        .unwrap();
-        std::env::remove_var(&env_key);
-        assert!(output.contains("apiKey redacted"));
-        let raw = fs::read_to_string(
-            dir.path()
-                .join(format!(".deepcli/credentials/{provider}-credentials.json")),
-        )
-        .unwrap();
-        assert!(raw.contains("second-secret"));
     }
 
     #[test]
@@ -14178,12 +14028,6 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(actions
             .iter()
             .any(|action| action == "deepcli credentials set missing-provider-2f7c1e"));
-        assert!(actions
-            .iter()
-            .any(|action| action == "deepcli credentials import-env missing-provider-2f7c1e"));
-        assert!(actions
-            .iter()
-            .any(|action| action == "deepcli credentials template missing-provider-2f7c1e"));
         assert!(actions
             .iter()
             .any(|action| action == "deepcli setup docker --smoke"));

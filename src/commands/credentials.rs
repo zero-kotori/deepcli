@@ -14,7 +14,7 @@ use crossterm::{
 use serde_json::{json, Value};
 use std::fs;
 use std::io::{self, IsTerminal, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[cfg(test)]
 pub(crate) fn handle_credentials(
@@ -49,24 +49,6 @@ pub(crate) fn handle_credentials_with_default(
                 write_command_output(workspace, output_path, &output)?;
             }
             Ok(output)
-        }
-        Some("template") => {
-            let default_provider = default_credentials_provider(config, provider_override);
-            let (provider, option_start) = credentials_provider_or_default(&args, default_provider);
-            reject_credentials_options("template", &args[option_start..])?;
-            create_credentials_template(workspace, config, &provider)
-        }
-        Some("import-env") => {
-            let default_provider = default_credentials_provider(config, provider_override);
-            let (provider, option_start) = credentials_provider_or_default(&args, default_provider);
-            let mut force = false;
-            for arg in args.iter().skip(option_start) {
-                match arg.as_str() {
-                    "--force" => force = true,
-                    other => bail!("unsupported /credentials import-env option `{other}`"),
-                }
-            }
-            import_credentials_from_env(workspace, config, &provider, force)
         }
         Some("set") => {
             let default_provider = default_credentials_provider(config, provider_override);
@@ -355,12 +337,9 @@ fn credentials_status_next_actions(entries: &[CredentialsStatusEntry]) -> Vec<St
         }
         if entry.parse_error.is_some() {
             actions.push(format!("deepcli credentials set {provider} --force"));
-            actions.push(format!("deepcli credentials template {provider}"));
         }
         if entry.api_key_status() == "missing" {
             actions.push(format!("deepcli credentials set {provider}"));
-            actions.push(format!("deepcli credentials import-env {provider}"));
-            actions.push(format!("deepcli credentials template {provider}"));
         }
     }
     actions.push("deepcli model show --json".to_string());
@@ -426,56 +405,6 @@ fn credential_status_entry_json(entry: &CredentialsStatusEntry) -> Value {
         "endpoint": redact_sensitive_text(&entry.endpoint),
         "error": entry.error.as_deref().map(redact_sensitive_text),
     })
-}
-
-fn create_credentials_template(
-    workspace: &Path,
-    config: &AppConfig,
-    provider_name: &str,
-) -> Result<String> {
-    let (_, provider) = config.provider(Some(provider_name))?;
-    let path = credentials_template_path(workspace, &provider.credentials_file);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    if path.exists() {
-        return Ok(format!(
-            "credentials template already exists: {}",
-            path.display()
-        ));
-    }
-    let template = ProviderCredentials {
-        provider: Some(provider_name.to_string()),
-        name: Some(provider_name.to_string()),
-        endpoint: None,
-        model: provider.acceptance_model.clone(),
-        api_key: Some(format!(
-            "<replace locally or run /credentials import-env {provider_name}>"
-        )),
-        api_id: None,
-        updated_at: None,
-    };
-    fs::write(&path, serde_json::to_vec_pretty(&template)?)?;
-    Ok(format!(
-        "created credentials template: {}\ncopy it to {}, run `/credentials set {provider_name}`, or run `/credentials import-env {provider_name}` after exporting {}",
-        path.display(),
-        absolutize_workspace_path(workspace, &provider.credentials_file).display(),
-        provider_env_key(provider_name)
-    ))
-}
-
-fn import_credentials_from_env(
-    workspace: &Path,
-    config: &AppConfig,
-    provider_name: &str,
-    force: bool,
-) -> Result<String> {
-    let env_key = provider_env_key(provider_name);
-    let api_key = std::env::var(&env_key)
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow::anyhow!("{env_key} is not set"))?;
-    set_credentials_api_key(workspace, config, provider_name, api_key, force, &env_key)
 }
 
 pub(crate) fn set_credentials_api_key(
@@ -606,7 +535,9 @@ fn read_api_key_from_stdin(provider_name: &str) -> Result<String> {
 
 fn read_api_key_from_hidden_prompt(provider_name: &str) -> Result<String> {
     if !io::stdin().is_terminal() {
-        bail!("stdin is not a terminal; pipe the key into `/credentials set {provider_name} --stdin` or use `/credentials import-env {provider_name}`");
+        bail!(
+            "stdin is not a terminal; pipe the key into `/credentials set {provider_name} --stdin`"
+        );
     }
 
     eprint!("Enter API key for `{provider_name}`: ");
@@ -655,27 +586,6 @@ impl Drop for RawModeGuard {
     fn drop(&mut self) {
         let _ = disable_raw_mode();
     }
-}
-
-fn credentials_template_path(workspace: &Path, credentials_file: &Path) -> PathBuf {
-    let credentials_path = absolutize_workspace_path(workspace, credentials_file);
-    let file_name = credentials_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("credentials.json");
-    let template_name = file_name
-        .strip_suffix(".json")
-        .map(|stem| format!("{stem}.example.json"))
-        .unwrap_or_else(|| format!("{file_name}.example"));
-    credentials_path
-        .parent()
-        .map(|parent| parent.join(&template_name))
-        .unwrap_or_else(|| {
-            workspace
-                .join(".deepcli")
-                .join("credentials")
-                .join(template_name)
-        })
 }
 
 fn read_provider_credentials(path: &Path) -> Result<ProviderCredentials> {

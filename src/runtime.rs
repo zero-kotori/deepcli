@@ -786,7 +786,7 @@ impl AgentRuntime {
             Some(self.provider_name()),
         )?;
         match action.as_deref() {
-            Some("set" | "import-env") => {
+            Some("set") => {
                 self.session.append_audit_event(
                     "credentials_updated",
                     json!({

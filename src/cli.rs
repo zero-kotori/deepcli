@@ -714,7 +714,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         SlashCommand::Credentials { args } => {
             matches!(
                 args.first().map(String::as_str),
-                None | Some("status" | "template" | "import-env" | "set" | "remove")
+                None | Some("status" | "set" | "remove")
             )
         }
         SlashCommand::Config { args } => {
@@ -1094,8 +1094,6 @@ mod tests {
         for args in [
             vec!["set".to_string(), "deepseek".to_string()],
             vec!["set".to_string(), "--stdin".to_string()],
-            vec!["import-env".to_string()],
-            vec!["template".to_string()],
             vec!["remove".to_string(), "deepseek".to_string()],
         ] {
             assert!(command_can_run_without_session(

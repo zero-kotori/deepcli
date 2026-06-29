@@ -1017,8 +1017,6 @@ pub(crate) fn doctor_next_actions(
             .is_some_and(|value| !value.trim().is_empty());
         if !credentials_path.exists() && !env_present {
             actions.push(format!("deepcli credentials set {provider_name}"));
-            actions.push(format!("deepcli credentials import-env {provider_name}"));
-            actions.push(format!("deepcli credentials template {provider_name}"));
         }
     }
     actions.push("deepcli config validate".to_string());

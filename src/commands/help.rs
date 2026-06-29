@@ -593,12 +593,10 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/credentials",
-            listing: "/credentials status [provider] [--json] [--output path]|template <provider>|import-env <provider> [--force]|set <provider> [--stdin] [--force]|remove [provider]",
-            summary: "Inspect, template, import, store, or remove provider API keys.",
+            listing: "/credentials status [provider] [--json] [--output path]|set <provider> [--stdin] [--force]|remove [provider]",
+            summary: "Inspect, store, or remove provider API keys.",
             usage: &[
                 "/credentials status [provider] [--json] [--output path]",
-                "/credentials template <provider>",
-                "/credentials import-env <provider> [--force]",
                 "/credentials set <provider> [--stdin] [--force]",
                 "/credentials remove [provider]",
             ],

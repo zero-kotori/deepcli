@@ -1199,12 +1199,6 @@ fn scorecard_checklist_label(command: &str) -> &'static str {
         command if command.starts_with("deepcli credentials set ") => {
             "Configure provider credentials"
         }
-        command if command.starts_with("deepcli credentials import-env ") => {
-            "Import credentials from environment"
-        }
-        command if command.starts_with("deepcli credentials template ") => {
-            "Create credentials template"
-        }
         "deepcli help credentials" => "Open credentials help",
         "deepcli model list" => "List configured models",
         "deepcli model list --json" => "List configured models",
