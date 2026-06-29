@@ -345,7 +345,6 @@ fn top_level_entries() -> &'static [&'static str] {
         "cleanup",
         "help",
         "version",
-        "about",
         "quickstart",
         "recipes",
         "recipe",
@@ -369,8 +368,6 @@ fn top_level_entries() -> &'static [&'static str] {
         "init",
         "status",
         "usage",
-        "health",
-        "next",
         "diagnose",
         "support",
         "doctor",
@@ -411,7 +408,6 @@ fn top_level_entries() -> &'static [&'static str] {
         "agent",
         "btw",
         "approval",
-        "history",
         "rename",
         "stop",
         "quit",
@@ -503,12 +499,7 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             }
             Some(parts)
         }
-        "history" => {
-            let mut parts = vec!["/session".to_string(), "list".to_string()];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
-        "version" | "about" => {
+        "version" => {
             let mut parts = vec![format!("/{first}")];
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
@@ -525,16 +516,6 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
         }
         "timeout" => {
             let mut parts = vec!["/timeout".to_string()];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
-        "health" if task.get(1).is_some_and(|target| is_env_target(target)) => {
-            let mut parts = vec!["/health".to_string()];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
-        "health" => {
-            let mut parts = vec!["/health".to_string()];
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
         }
@@ -558,7 +539,7 @@ fn is_cli_help_flag(value: &str) -> bool {
 
 fn top_level_help_topic(value: &str) -> Option<String> {
     match value {
-        "sessions" | "history" => Some("session".to_string()),
+        "sessions" => Some("session".to_string()),
         alias if is_top_level_slash_alias(alias) => Some(alias.to_string()),
         _ => None,
     }
@@ -569,7 +550,6 @@ fn is_top_level_slash_alias(value: &str) -> bool {
         value,
         "help"
             | "version"
-            | "about"
             | "quickstart"
             | "recipes"
             | "recipe"
@@ -593,10 +573,8 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "init"
             | "status"
             | "usage"
-            | "health"
             | "diagnose"
             | "support"
-            | "next"
             | "doctor"
             | "trace"
             | "logs"
@@ -635,7 +613,6 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "agent"
             | "btw"
             | "approval"
-            | "history"
             | "cleanup"
             | "rename"
             | "stop"
@@ -1245,32 +1222,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["health".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Doctor {
-                args: vec!["--quick".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["health".into(), "shell".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Doctor {
-                args: vec![
-                    "--quick".to_string(),
-                    "shell".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["health".into(), "docker".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["doctor".into(), "docker".into(), "--json".into()]).unwrap(),
             Some(SlashCommand::Env {
                 args: vec![
@@ -1486,12 +1437,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["about".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Version {
-                args: vec!["--json".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["login".into(), "deepseek".into(), "--stdin".into()]).unwrap(),
             Some(SlashCommand::Credentials {
                 args: vec![
@@ -1579,12 +1524,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["history".into(), "--limit".into(), "5".into()]).unwrap(),
-            Some(SlashCommand::Session {
-                args: vec!["list".to_string(), "--limit".to_string(), "5".to_string()]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["cleanup".into(), "sessions".into(), "--json".into()])
                 .unwrap(),
             Some(SlashCommand::Session {
@@ -1605,12 +1544,6 @@ mod tests {
                     "--run-tests".to_string(),
                     "--fail-on-blockers".to_string()
                 ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["next".into()]).unwrap(),
-            Some(SlashCommand::Session {
-                args: vec!["next".to_string()]
             })
         );
         assert_eq!(
@@ -1968,8 +1901,6 @@ mod tests {
             vec!["/plan", "--json"],
             vec!["/plan", "show"],
             vec!["/plan", "做一个功能", "--json"],
-            vec!["/health", "--json"],
-            vec!["/history", "--limit", "5"],
             vec!["/docker", "--json"],
             vec!["/compiler", "--json"],
             vec!["/prompt", "list"],
@@ -2132,9 +2063,6 @@ mod tests {
     async fn one_shot_product_aliases_run_locally_without_provider_or_empty_session() {
         for command in [
             vec!["version", "--json"],
-            vec!["about", "--json"],
-            vec!["history", "--limit", "5"],
-            vec!["health", "--json"],
             vec!["privacy", "--json"],
             vec!["timeout", "--json"],
             vec!["docker", "--json"],

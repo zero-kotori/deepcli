@@ -6,7 +6,6 @@
 |---|---|---|---|---|
 | /help | support | commands | stable | 命令发现与主题帮助。 |
 | /version | support | commands | stable | 本地元数据与 support 报告。 |
-| /about | legacy | commands | stable alias | `/version` 的别名。 |
 | /quickstart | support | commands | stable | 首次运行引导与 setup 检查。 |
 | /recipes | support | commands | stable | 工作流目录；SOTA recipe 作为导航辅助。 |
 | /scorecard | core | commands | stable | 产品能力评分。 |
@@ -19,7 +18,6 @@
 | /init | support | commands | stable | 项目初始化助手。 |
 | /status | core | commands | stable | 活动会话与工作区状态。 |
 | /usage | core | commands | stable | Provider 与会话用量诊断。 |
-| /health | support | commands | stable alias | doctor 与环境检查的快捷方式。 |
 | /diagnose | support | commands | stable | 工作区与会话诊断。 |
 | /support | support | commands | stable | 生成脱敏 support bundle。 |
 | /doctor | support | commands | stable | 本地 setup 与环境诊断。 |
@@ -59,9 +57,7 @@
 | /btw | core | session | stable | 旁路问题队列。 |
 | /approval | core | session | stable | 审批队列检查与处理。 |
 | /session | core | session | stable | 持久化会话检查与维护。 |
-| /history | legacy | session | stable alias | `/session list` 的别名。 |
 | /cleanup | legacy | session | stable alias | `/session prune-empty` 的别名。 |
-| /next | support | session | stable | 可能的下一步动作报告。 |
 | /resume | core | session | stable | 会话恢复与候选预览。 |
 | /rename | legacy | session | stable alias | 运行时会话标题重命名。 |
 | /stop | core | runtime | stable | 停止活动 TUI 任务并保持会话可恢复。 |

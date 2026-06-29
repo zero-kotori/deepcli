@@ -12,7 +12,6 @@ fn mvp_slash_commands_are_registered() {
     for command in [
         "/help",
         "/version",
-        "/about",
         "/quickstart",
         "/recipes",
         "/scorecard",
@@ -24,7 +23,6 @@ fn mvp_slash_commands_are_registered() {
         "/init",
         "/status",
         "/usage",
-        "/health",
         "/diagnose",
         "/support",
         "/doctor",
@@ -62,8 +60,6 @@ fn mvp_slash_commands_are_registered() {
         "/btw",
         "/approval",
         "/session",
-        "/history",
-        "/next",
         "/resume",
         "/rename",
         "/stop",
@@ -103,7 +99,6 @@ fn command_registry_exposes_groups_and_drives_help_metadata() {
         ("/fork", CommandGroup::Core),
         ("/round", CommandGroup::Core),
         ("/benchmark", CommandGroup::Support),
-        ("/about", CommandGroup::Legacy),
         ("/opportunities", CommandGroup::Experimental),
     ] {
         let summary = summaries

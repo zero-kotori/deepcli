@@ -124,7 +124,7 @@ fn wrapper_usage_lists_terminal_where_it_is_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli status|usage|next|goal|plan|fork|terminal|accept|gate|verify"),
+            .contains("deepcli status|usage|goal|plan|fork|terminal|accept|gate|verify"),
         "top-level routable command list should include terminal: {}",
         run.stdout
     );
@@ -278,21 +278,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &["/doctor", "shell", "--json"]
     ));
 
-    let health_shell = run_wrapper(&["health", "shell", "--json"]);
-    assert!(ends_with_args(
-        &health_shell.args,
-        &["/health", "shell", "--json"]
-    ));
-
-    let next = run_wrapper(&["next"]);
-    assert!(ends_with_args(&next.args, &["/next"]));
-
-    let next_json = run_wrapper(&["next", "--json", "--output", ".deepcli/exports/next.json"]);
-    assert!(ends_with_args(
-        &next_json.args,
-        &["/next", "--json", "--output", ".deepcli/exports/next.json",]
-    ));
-
     let status = run_wrapper(&[
         "status",
         "--json",
@@ -331,9 +316,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         &git_commit.args,
         &["/git", "commit", "safe", "checkpoint"]
     ));
-
-    let health = run_wrapper(&["health", "--json"]);
-    assert!(ends_with_args(&health.args, &["/health", "--json"]));
 
     let login = run_wrapper(&["login", "deepseek", "--stdin"]);
     assert!(ends_with_args(
@@ -726,9 +708,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         ]
     ));
 
-    let about = run_wrapper(&["about", "--json"]);
-    assert!(ends_with_args(&about.args, &["/about", "--json"]));
-
     let timeout = run_wrapper(&["timeout", "900"]);
     assert!(ends_with_args(&timeout.args, &["/timeout", "900"]));
 
@@ -1080,12 +1059,6 @@ fn wrapper_session_aliases_distinguish_list_and_actions() {
     assert!(ends_with_args(
         &limited.args,
         &["/session", "list", "--limit", "5"]
-    ));
-
-    let history_alias = run_wrapper(&["history", "--limit", "5"]);
-    assert!(ends_with_args(
-        &history_alias.args,
-        &["/history", "--limit", "5"]
     ));
 
     let list_json = run_wrapper(&[
@@ -1444,23 +1417,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
         &["/setup", "docker", "--smoke"]
     ));
 
-    let health = run_wrapper(&["deepseek", "health"]);
-    assert!(has_adjacent(&health.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&health.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&health.args, &["/health"]));
-
-    let health_shell = run_wrapper(&["deepseek", "health", "shell", "--json"]);
-    assert!(has_adjacent(&health_shell.args, "--provider", "deepseek"));
-    assert!(has_adjacent(
-        &health_shell.args,
-        "--model",
-        "deepseek-v4-pro"
-    ));
-    assert!(ends_with_args(
-        &health_shell.args,
-        &["/health", "shell", "--json"]
-    ));
-
     let version = run_wrapper(&["deepseek", "version", "--json"]);
     assert!(has_adjacent(&version.args, "--provider", "deepseek"));
     assert!(has_adjacent(&version.args, "--model", "deepseek-v4-pro"));
@@ -1470,11 +1426,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
     assert!(has_adjacent(&timeout.args, "--provider", "deepseek"));
     assert!(has_adjacent(&timeout.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(&timeout.args, &["/timeout", "900"]));
-
-    let history = run_wrapper(&["deepseek", "history"]);
-    assert!(has_adjacent(&history.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&history.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&history.args, &["/history"]));
 
     let login = run_wrapper(&["deepseek", "login", "--stdin"]);
     assert!(has_adjacent(&login.args, "--provider", "deepseek"));

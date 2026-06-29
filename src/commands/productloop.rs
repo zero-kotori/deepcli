@@ -239,7 +239,6 @@ pub(crate) fn build_scorecard_report(
                 "/scorecard",
                 "/completion",
                 "/version",
-                "/about",
             ],
             &["deepcli quickstart --json", "deepcli recipes", "deepcli completion json"],
         ),
@@ -260,10 +259,13 @@ pub(crate) fn build_scorecard_report(
             "Long tasks can be named, inspected, resumed, and cleaned up.",
             &command_names,
             &[
-                "/resume", "/session", "/history", "/cleanup", "/next", "/rename", "/stop",
-                "/quit",
+                "/resume", "/session", "/cleanup", "/rename", "/stop", "/quit",
             ],
-            &["deepcli resume", "deepcli sessions --all --limit 20", "deepcli next --json"],
+            &[
+                "deepcli resume",
+                "deepcli sessions --all --limit 20",
+                "deepcli session next --json",
+            ],
         ),
         scorecard_command_category(
             "verification_delivery",
@@ -320,7 +322,6 @@ pub(crate) fn build_scorecard_report(
             &[
                 "/diagnose",
                 "/support",
-                "/health",
                 "/logs",
                 "/trace",
                 "/version",

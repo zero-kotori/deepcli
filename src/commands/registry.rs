@@ -49,7 +49,6 @@ pub(super) fn is_running_safe_command_name(name: &str) -> bool {
             | "/fork"
             | "/approval"
             | "/session"
-            | "/history"
             | "/cleanup"
             | "/btw"
             | "/git"
@@ -66,8 +65,8 @@ pub(super) fn command_group_name(name: &str) -> CommandGroup {
         | "/diff" | "/review" | "/accept" | "/gate" | "/verify" | "/handoff" | "/test" | "/env"
         | "/git" | "/btw" | "/approval" | "/session" | "/resume" | "/stop" | "/quit"
         | "/terminal" => CommandGroup::Core,
-        "/about" | "/apikey" | "/check" | "/docker" | "/compiler" | "/setup" | "/install"
-        | "/history" | "/cleanup" | "/rename" => CommandGroup::Legacy,
+        "/apikey" | "/check" | "/docker" | "/compiler" | "/setup" | "/install" | "/cleanup"
+        | "/rename" => CommandGroup::Legacy,
         "/opportunities" => CommandGroup::Experimental,
         _ => CommandGroup::Support,
     }

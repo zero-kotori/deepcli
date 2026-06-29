@@ -92,14 +92,6 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &["`/version` is a local support and acceptance shortcut. It is richer than `deepcli --version`: it includes the current workspace, project config presence, default provider, provider turn timeout, provider count, command count, next diagnostic actions, and a JSON checklist without creating a session or calling a provider. Use `--json` for the stable `deepcli.version.v1` schema, and use `/about` as an alias."],
         },
         CommandHelp {
-            name: "/about",
-            listing: "/about [--json] [--output path]",
-            summary: "Alias for /version with the same local support metadata.",
-            usage: &["/about", "/about --json", "/version [--json] [--output path]"],
-            examples: &["/about", "deepcli about --json"],
-            notes: &["Alias for `/version`; no provider call is made and no session should be created."],
-        },
-        CommandHelp {
             name: "/init",
             listing: "/init [--quick|--no-env] [--probe-provider] [--provider <name>]",
             summary: "Bootstrap deepcli project state and show the next setup actions.",
@@ -429,28 +421,6 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &["`/diagnose` is designed for first-aid checks and defaults to quick mode so it does not block on Docker or environment setup. `/diagnose docker` and `/diagnose compiler` are shortcuts for `/env check <target>` when the user is diagnosing a local task environment. Use `/session diagnose` when you only want a persisted session report. Use `--json` for automation; JSON nextActions are directly executable `deepcli ...` commands and top-level checklist items mirror the executable actions, while explanatory slash quick links stay in the text report. Use `--output` to write the selected format to a workspace-contained file, and `--bundle` to write a redacted support bundle with an issue template plus version, diagnose, quickstart, status, usage, trace, logs, and session-list artifacts."],
         },
         CommandHelp {
-            name: "/health",
-            listing: "/health [--json] [--output path]|shell|[docker|compiler] [--json] [--output path]",
-            summary: "Run a quick local health check without remembering doctor flags.",
-            usage: &[
-                "/health",
-                "/health --json",
-                "/health shell --json",
-                "/health --output <workspace-relative-path>",
-                "/health [docker|compiler] [--json] [--output path]",
-                "/doctor --quick",
-                "/env check [docker|compiler]",
-            ],
-            examples: &[
-                "/health",
-                "/health --json --output .deepcli/exports/health.json",
-                "/health shell --json",
-                "/health docker --json",
-                "deepcli health",
-            ],
-            notes: &["Plain `/health` maps to `/doctor --quick`, so it checks config, credentials, sessions, and tests without slower environment probing or provider calls. `/health shell` maps to `/doctor --quick shell` and checks PATH, whether the `deepcli` command resolves to this workspace, legacy command residue, and shell completion status. JSON output follows the doctor schema, including executable nextActions and matching checklist items. `/health docker` and `/health compiler` map to `/env check <target>` for read-only environment readiness."],
-        },
-        CommandHelp {
             name: "/support",
             listing: "/support [bundle-dir] [diagnose options]",
             summary: "Create a redacted support bundle and issue template without remembering diagnose flags.",
@@ -471,24 +441,6 @@ fn help_topics() -> &'static [CommandHelp] {
                 "deepcli support .deepcli/support/slow-run",
             ],
             notes: &["`/support` is a shortcut for `/diagnose --bundle`; by default it writes `.deepcli/support/latest` and includes `issue.md`, `manifest.json`, `version.json`, `logs.json`, and redacted diagnostic JSON artifacts. JSON nextActions are directly executable `deepcli ...` commands, and top-level checklist items mirror those actions so support UIs and scripts do not need to parse report quick links; the bundle manifest exposes the same checklist contract. The first non-option argument is treated as the bundle directory; use `/diagnose --bundle <dir> <session_id>` when you need an explicit positional session id. Add `--full-env` only when Docker/compiler readiness matters, and `--probe-provider` only when an online provider check is needed."],
-        },
-        CommandHelp {
-            name: "/next",
-            listing: "/next [--json] [--output path] [session_id|--current]",
-            summary: "Show the most likely next actions for the current or latest actionable session.",
-            usage: &[
-                "/next [session_id|--current]",
-                "/next --json",
-                "/next --output <workspace-relative-path>",
-                "/session next [--json] [--output path] [session_id|--current]",
-            ],
-            examples: &[
-                "/next",
-                "/next --current",
-                "/next --json --output .deepcli/exports/next.json",
-                "/session next",
-            ],
-            notes: &["`/next` is a shortcut for `/session next`. It aggregates pending approvals, by-the-way questions, failed tools, failed tests, incomplete plan steps, and resume links. Use `--json` for the stable `deepcli.next.v1` schema in TUI panels, external UIs, scripts, or handoff automation; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands, `checklist[]` labels the main action queue, and `quickLinkChecklist[]` labels auxiliary links while explanatory context remains in `signals` and `report`. Use `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/doctor",
@@ -1163,22 +1115,6 @@ fn help_topics() -> &'static [CommandHelp] {
             ],
             examples: &["/session list", "/session list --limit 5", "/session list --json --output .deepcli/exports/sessions.json", "/session search compiler --limit 5", "/session search compiler --json --output .deepcli/exports/session-search.json", "/session next", "/session next --json --output .deepcli/exports/next.json", "/session diagnose --limit 5", "/session diagnose --json --output .deepcli/exports/session-diagnose.json", "/session history --json --output .deepcli/exports/session-history.json", "/session tools --failed --json --output .deepcli/exports/session-tools.json", "/session tests --json", "/session rename a1b2c3d4 compiler lv9 repair", "/session prune-empty --dry-run", "/session prune-empty --json --output .deepcli/exports/prune-empty.json", "/session prune-empty --force", "/session list --all", "/session history --limit 20", "/session tools --failed --limit 5", "/session diffs --limit 5", "/session backups --limit 5", "/session restore-backup latest --path src/lib.rs --dry-run --json", "/session restore-backup latest --dry-run --json --output .deepcli/exports/restore-preview.json", "/session export"],
             notes: &["`/session list` hides empty one-shot sessions by default; use `--all` to include them and `--limit`/`-n` to cap long lists. `/session list` supports `--json`/`--output` through `deepcli.session.list.v1`; `/session search` supports the same through `deepcli.session.search.v1`, so resume pickers and external history UIs do not need to parse text. Search JSON also includes next actions and a matching `checklist[]`: resume preview, history, next, and diagnose for the top hit, or list/resume actions when nothing matches. `/session next` aggregates the likely recovery or continuation actions and supports `--json`/`--output` through the stable `deepcli.next.v1` schema; JSON `nextActions` and `quickLinks` are directly executable `deepcli ...` commands, with `checklist[]` for main actions and `quickLinkChecklist[]` for auxiliary links. `/session diagnose` adds signal counts, latest failures, recent tests, and quick diagnostic commands; use `--json` for the stable `deepcli.session.diagnose.v1` schema, where `recommendedNextActions` and `quickLinks` also use executable `deepcli ...` commands and expose matching checklists, and `--output` to write the selected format to a workspace-contained file. `/session prune-empty` defaults to dry-run and supports `--json`/`--output` through `deepcli.session.prune_empty.v1`, so cleanup previews can be reviewed before `--force`; JSON next actions stay in the JSON workflow with `deepcli session prune-empty --force --json`, list/history follow-ups, and matching `checklist[]`. `/session show|history|summary|tools|tests|diffs|backups` support `--json`/`--output` through the stable `deepcli.session.inspect.v1` schema for external UIs and automation. `/session restore-backup --dry-run --json` emits `deepcli.session.restore_backup.v1` with a redacted diff, target path, selected backup, and next actions; real restore can also use `--json`/`--output` while still writing through the tool executor. While the agent is running, `/session` is limited to read-only inspection and restore-backup dry-run preview without `--output`; rename, export, forced cleanup, real restore, and preview artifact writes must wait or use `/stop`. `/session tools --failed` jumps to the latest failed or denied tool calls. Session ids accept a unique prefix. Without an explicit session, content-specific commands fall back to the latest session that has that content."],
-        },
-        CommandHelp {
-            name: "/history",
-            listing: "/history [--all] [--limit n] [--json] [--output path]",
-            summary: "Shortcut for listing saved conversation history.",
-            usage: &[
-                "/history [--all] [--limit n] [--json] [--output path]",
-                "/session list [--all] [--limit n] [--json] [--output path]",
-            ],
-            examples: &[
-                "/history",
-                "/history --limit 10",
-                "/history --json --output .deepcli/exports/history.json",
-                "deepcli history",
-            ],
-            notes: &["`/history` maps to `/session list`, so it shows resumable conversations and hides empty one-shot sessions by default. Use `/session history <session_id>` when you need the message transcript for one session."],
         },
         CommandHelp {
             name: "/cleanup",

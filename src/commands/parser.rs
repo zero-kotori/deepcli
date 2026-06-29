@@ -70,7 +70,7 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
     let args = parts.into_iter().skip(1).collect::<Vec<_>>();
     Ok(Some(match command.as_str() {
         "/help" => SlashCommand::Help { args },
-        "/version" | "/about" => SlashCommand::Version { args },
+        "/version" => SlashCommand::Version { args },
         "/quickstart" => SlashCommand::Quickstart { args },
         "/recipes" | "/recipe" | "/playbook" | "/workflow" | "/workflows" => {
             SlashCommand::Recipes { args }
@@ -85,14 +85,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/init" => SlashCommand::Init { args },
         "/status" => SlashCommand::Status { args },
         "/usage" => SlashCommand::Usage { args },
-        "/health" if args.first().is_some_and(|arg| is_environment_target(arg)) => {
-            SlashCommand::Env {
-                args: prefixed_command_args("check", args),
-            }
-        }
-        "/health" => SlashCommand::Doctor {
-            args: prefixed_command_args("--quick", args),
-        },
         "/diagnose" if args.first().is_some_and(|arg| is_environment_target(arg)) => {
             SlashCommand::Env {
                 args: prefixed_command_args("check", args),
@@ -162,18 +154,10 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/agent" => SlashCommand::Agent { args },
         "/btw" => SlashCommand::Btw { args },
         "/approval" => SlashCommand::Approval { args },
-        "/history" => SlashCommand::Session {
-            args: prefixed_command_args("list", args),
-        },
         "/cleanup" => SlashCommand::Session {
             args: normalize_cleanup_args(args),
         },
         "/session" => SlashCommand::Session { args },
-        "/next" => {
-            let mut session_args = vec!["next".to_string()];
-            session_args.extend(args);
-            SlashCommand::Session { args: session_args }
-        }
         "/resume" => SlashCommand::Resume { args },
         "/rename" => SlashCommand::Rename { args },
         "/stop" | "/cancel" | "/abort" => SlashCommand::Stop,

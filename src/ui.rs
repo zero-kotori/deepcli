@@ -6802,7 +6802,6 @@ mod tests {
         for command in [
             "/version",
             "/quickstart",
-            "/health",
             "/check",
             "/docker",
             "/compiler",
@@ -6841,7 +6840,6 @@ mod tests {
             "/fork",
             "/approval",
             "/session",
-            "/history",
             "/cleanup",
             "/btw",
             "/git",
@@ -6948,8 +6946,6 @@ mod tests {
         assert!(model_suggestions
             .iter()
             .any(|summary| summary.name == "/model"));
-        let history_suggestions = slash_command_suggestions_for_state("/hi", false).unwrap();
-        assert_eq!(history_suggestions[0].name, "/history");
         let session_suggestions = slash_command_suggestions_for_state("/se", true).unwrap();
         assert!(session_suggestions
             .iter()

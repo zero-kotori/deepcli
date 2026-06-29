@@ -256,7 +256,6 @@ fn selftest_required_commands() -> Vec<&'static str> {
         "/preflight",
         "/completion",
         "/doctor",
-        "/health",
         "/status",
         "/usage",
         "/trace",

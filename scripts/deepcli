@@ -133,7 +133,7 @@ is_help_flag() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|history|cleanup|rename|stop|quit|terminal )
+    help|version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -144,7 +144,7 @@ is_top_level_slash_command() {
 
 help_topic_for_top_level_command() {
   case "${1:-}" in
-    sessions|history )
+    sessions )
       printf '%s\n' session
       return 0
       ;;
@@ -187,8 +187,6 @@ Usage:
                                    Generate, install, or inspect shell completion
   deepcli sessions [--all] [--limit n] [--json] [--output path]
                                    List resumable sessions for the current directory
-  deepcli history [--all] [--limit n] [--json] [--output path]
-                                   Shortcut for conversation history list
   deepcli cleanup [sessions] [--json] [--output path] [--force]
                                    Preview or delete empty one-shot sessions
   deepcli session <action> [...]  Run a /session action
@@ -211,9 +209,8 @@ Usage:
   deepcli doctor [--quick] [--json] [--output path]
                                    Run /doctor without typing the slash
   deepcli doctor shell [--json]    Check PATH, legacy commands, and completion install
-  deepcli version|about [--json] [--output path]
+  deepcli version [--json] [--output path]
                                    Show local version and support metadata
-  deepcli health [--json]          Run a quick local health check
   deepcli credentials status [provider] [--json] [--output path]
                                    Inspect provider credential readiness
   deepcli login|apikey [provider] [--stdin] [--force]
@@ -251,14 +248,14 @@ Usage:
                                    Run a fast workspace + session diagnosis
   deepcli support [bundle-dir]    Create a redacted support bundle and issue draft
   deepcli init [--quick]          Run /init without typing the slash
-  deepcli status|usage|next|goal|plan|fork|terminal|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion
+  deepcli status|usage|goal|plan|fork|terminal|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion
                                    Run common diagnostic slash commands
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|about|diagnose|support|health|timeout|model|goal|plan|fork|history|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
@@ -303,12 +300,8 @@ Examples:
   deepcli resume 6155c14e-85e5-4600-a081-29359cc232f2
   deepcli doctor --quick
   deepcli doctor shell --json
-  deepcli health --json
-  deepcli health shell --json
   deepcli doctor docker --json
   deepcli doctor --quick --json --output .deepcli/exports/doctor.json
-  deepcli next
-  deepcli next --json --output .deepcli/exports/next.json
   deepcli sessions --json --output .deepcli/exports/sessions.json
   deepcli session search compiler --json --output .deepcli/exports/session-search.json
   deepcli cleanup sessions --json --output .deepcli/exports/cleanup.json
@@ -330,9 +323,6 @@ Examples:
   deepcli use kimi
   deepcli switch deepseek deepseek-v4-pro
   deepcli provider --json
-  deepcli provider kimi
-  deepcli providers --json
-  deepcli history --limit 10
   deepcli git status --json
   deepcli git create-branch feature/my-work --dry-run --json
   deepcli git commit "Describe the change" --dry-run --json
@@ -598,7 +588,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|about|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|health|diagnose|support|next|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|history|cleanup|rename|stop|quit|terminal )
+  version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     if is_help_flag "${1:-}"; then

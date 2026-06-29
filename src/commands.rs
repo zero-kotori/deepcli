@@ -1060,15 +1060,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/about --output .deepcli/exports/about.txt").unwrap(),
-            Some(SlashCommand::Version {
-                args: vec![
-                    "--output".to_string(),
-                    ".deepcli/exports/about.txt".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/quickstart").unwrap(),
             Some(SlashCommand::Quickstart { args: Vec::new() })
         );
@@ -1285,22 +1276,6 @@ mod tests {
             CommandRouter::parse("/usage abc").unwrap(),
             Some(SlashCommand::Usage {
                 args: vec!["abc".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/health --json").unwrap(),
-            Some(SlashCommand::Doctor {
-                args: vec!["--quick".to_string(), "--json".to_string()]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/health docker --json").unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
             })
         );
         assert_eq!(
@@ -1852,12 +1827,6 @@ mod tests {
                     "--output".to_string(),
                     ".deepcli/exports/sessions.json".to_string()
                 ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/history --limit 5").unwrap(),
-            Some(SlashCommand::Session {
-                args: vec!["list".to_string(), "--limit".to_string(), "5".to_string()]
             })
         );
         assert_eq!(
@@ -3775,9 +3744,6 @@ mod tests {
         assert!(version_help.contains("deepcli.version.v1"));
         assert!(version_help.contains("project config presence"));
         assert!(version_help.contains("without creating a session or calling a provider"));
-        let about_help = CommandRouter::help_for(&["about".to_string()]).unwrap();
-        assert!(about_help.contains("Alias for `/version`"));
-
         let env_help = CommandRouter::help_for(&["env".to_string()]).unwrap();
         assert!(env_help.contains("/env - "));
         assert!(env_help.contains("running-safe: no"));
@@ -3827,16 +3793,6 @@ mod tests {
         assert!(usage_help.contains("/usage --json"));
         assert!(usage_help.contains("/usage --output"));
         assert!(usage_help.contains("deepcli.usage.v1"));
-
-        let health_help = CommandRouter::help_for(&["health".to_string()]).unwrap();
-        assert!(health_help.contains("/health - "));
-        assert!(health_help.contains("running-safe: no"));
-        assert!(health_help.contains("/doctor --quick"));
-        assert!(health_help.contains("/health shell --json"));
-        assert!(health_help.contains("/health docker --json"));
-        assert!(health_help.contains("resolves to this workspace"));
-        assert!(health_help.contains("shell completion status"));
-        assert!(health_help.contains("without slower environment probing or provider calls"));
 
         let status_help = CommandRouter::help_for(&["status".to_string()]).unwrap();
         assert!(status_help.contains("/status --json"));
@@ -4064,24 +4020,11 @@ mod tests {
         assert!(session_help.contains("/session diffs [--limit n]"));
         assert!(session_help.contains("/session backups [--limit n]"));
 
-        let history_help = CommandRouter::help_for(&["history".to_string()]).unwrap();
-        assert!(history_help.contains("/history - "));
-        assert!(history_help.contains("/session list"));
-        assert!(history_help.contains("resumable conversations"));
-        assert!(history_help.contains("/session history <session_id>"));
-
         let cleanup_help = CommandRouter::help_for(&["cleanup".to_string()]).unwrap();
         assert!(cleanup_help.contains("/cleanup - "));
         assert!(cleanup_help.contains("/session prune-empty"));
         assert!(cleanup_help.contains("deepcli.session.prune_empty.v1"));
         assert!(cleanup_help.contains("running-safe: yes"));
-
-        let next_help = CommandRouter::help_for(&["next".to_string()]).unwrap();
-        assert!(next_help.contains("/next - "));
-        assert!(next_help.contains("shortcut for `/session next`"));
-        assert!(next_help.contains("/next --json"));
-        assert!(next_help.contains("/next --output"));
-        assert!(next_help.contains("deepcli.next.v1"));
 
         let accept_help = CommandRouter::help_for(&["accept".to_string()]).unwrap();
         assert!(accept_help.contains("/accept - "));
@@ -8965,11 +8908,6 @@ mod tests {
             .unwrap()
             .iter()
             .any(|item| item["name"] == "benchmark" && item["group"] == "support"));
-        assert!(value["commands"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|item| item["name"] == "about" && item["group"] == "legacy"));
 
         let written =
             fs::read_to_string(dir.path().join(".deepcli/exports/commands.json")).unwrap();
@@ -12050,27 +11988,6 @@ diff --git a/docs/b.md b/docs/b.md
         assert!(value["report"].as_str().unwrap().contains("next actions:"));
         let written = fs::read_to_string(dir.path().join(".deepcli/exports/next.json")).unwrap();
         assert_eq!(written, json_output);
-
-        let alias = CommandRouter::parse("/next").unwrap();
-        assert_eq!(
-            alias,
-            Some(SlashCommand::Session {
-                args: vec!["next".to_string()]
-            })
-        );
-        let json_alias =
-            CommandRouter::parse("/next --json --output .deepcli/exports/next.json").unwrap();
-        assert_eq!(
-            json_alias,
-            Some(SlashCommand::Session {
-                args: vec![
-                    "next".to_string(),
-                    "--json".to_string(),
-                    "--output".to_string(),
-                    ".deepcli/exports/next.json".to_string()
-                ]
-            })
-        );
 
         let diagnosis = handle_session(
             dir.path(),
