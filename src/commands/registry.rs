@@ -62,11 +62,11 @@ pub(super) fn command_group_name(name: &str) -> CommandGroup {
     match name {
         "/scorecard" | "/round" | "/preflight" | "/status" | "/usage" | "/trace" | "/privacy"
         | "/permissions" | "/credentials" | "/config" | "/model" | "/goal" | "/plan" | "/fork"
-        | "/diff" | "/review" | "/accept" | "/gate" | "/verify" | "/handoff" | "/test" | "/env"
-        | "/git" | "/btw" | "/approval" | "/session" | "/resume" | "/stop" | "/quit"
-        | "/terminal" => CommandGroup::Core,
-        "/apikey" | "/check" | "/docker" | "/compiler" | "/setup" | "/install" | "/cleanup"
-        | "/rename" => CommandGroup::Legacy,
+        | "/diff" | "/review" | "/accept" | "/gate" | "/verify" | "/handoff" | "/test" | "/git"
+        | "/btw" | "/approval" | "/session" | "/resume" | "/stop" | "/quit" | "/terminal" => {
+            CommandGroup::Core
+        }
+        "/apikey" | "/compiler" | "/install" | "/cleanup" | "/rename" => CommandGroup::Legacy,
         "/opportunities" => CommandGroup::Experimental,
         _ => CommandGroup::Support,
     }

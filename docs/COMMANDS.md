@@ -43,11 +43,7 @@
 | /verify | core | commands | stable | 验收报告与阻断项汇总。 |
 | /handoff | core | commands | stable | 交接与可提 PR 的报告。 |
 | /test | core | tools | stable | 经工具层做测试发现与执行。 |
-| /env | core | tools | stable | 环境 check/plan/setup/test 工作流。 |
-| /check | legacy | tools | stable alias | `/env check` 的别名。 |
-| /docker | legacy | tools | stable alias | 目标优先的 `/env` 别名。 |
 | /compiler | legacy | tools | stable alias | 目标优先的 `/env` 别名。 |
-| /setup | legacy | tools | stable alias | `/env setup` 的别名。 |
 | /install | legacy | tools | stable alias | `/env install` 的别名。 |
 | /git | core | tools | stable | Git 检查与受控写操作。 |
 | /web | support | tools | stable | 经权限检查的 web 搜索。 |

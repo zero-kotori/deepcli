@@ -6802,8 +6802,6 @@ mod tests {
         for command in [
             "/version",
             "/quickstart",
-            "/check",
-            "/docker",
             "/compiler",
             "/accept",
             "/gate",
@@ -6862,17 +6860,6 @@ mod tests {
 
     #[test]
     fn slash_command_palette_filters_formats_and_completes() {
-        let suggestions = slash_command_suggestions_for_state("/en", false).unwrap();
-        assert_eq!(suggestions.len(), 1);
-        assert_eq!(suggestions[0].name, "/env");
-        assert!(!suggestions[0].running_safe);
-
-        let text = format_command_palette_text(&suggestions, 0, 20, false);
-        assert!(text.contains("selected: /env check"));
-        assert!(text.contains("/env plan [docker|compiler] [--smoke]"));
-        assert!(text.contains("/env setup docker --smoke"));
-        assert!(!text.contains("running-safe: yes"));
-
         let usage_suggestions = slash_command_suggestions_for_state("/us", false).unwrap();
         assert_eq!(usage_suggestions[0].name, "/usage");
         assert!(usage_suggestions[0].running_safe);
@@ -6925,19 +6912,11 @@ mod tests {
         assert!(approval_suggestions
             .iter()
             .any(|summary| summary.name == "/approval" && summary.running_safe));
-        let check_suggestions = slash_command_suggestions_for_state("/che", true).unwrap();
-        assert!(check_suggestions
-            .iter()
-            .any(|summary| summary.name == "/check" && !summary.running_safe));
         let handoff_suggestions = slash_command_suggestions_for_state("/han", true).unwrap();
         assert!(handoff_suggestions
             .iter()
             .any(|summary| summary.name == "/handoff" && !summary.running_safe));
 
-        let docker_suggestions = slash_command_suggestions_for_state("/do", true).unwrap();
-        assert!(docker_suggestions
-            .iter()
-            .any(|summary| summary.name == "/docker" && !summary.running_safe));
         let compiler_suggestions = slash_command_suggestions_for_state("/com", true).unwrap();
         assert!(compiler_suggestions
             .iter()
@@ -6994,10 +6973,11 @@ mod tests {
             last_event: "ready".to_string(),
             worker: None,
         };
-        state.input.set_buffer("/en".to_string());
+        let suggestions = slash_command_suggestions_for_state("/compi", false).unwrap();
+        state.input.set_buffer("/compi".to_string());
         complete_selected_command(&mut state, &suggestions);
-        assert_eq!(state.input.buffer(), "/env ");
-        assert_eq!(state.last_event, "completed /env");
+        assert_eq!(state.input.buffer(), "/compiler ");
+        assert_eq!(state.last_event, "completed /compiler");
     }
 
     #[test]

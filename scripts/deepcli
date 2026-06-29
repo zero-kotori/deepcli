@@ -133,7 +133,7 @@ is_help_flag() {
 
 is_top_level_slash_command() {
   case "$1" in
-    help|version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|env|check|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|session|cleanup|rename|stop|quit|terminal )
+    help|version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|test|compiler|install|git|web|prompt|skill|agent|btw|approval|session|cleanup|rename|stop|quit|terminal )
       return 0
       ;;
     * )
@@ -234,14 +234,8 @@ Usage:
                                    Inspect sub-agent task descriptors
   deepcli test [discover|run] [--json] [--output path]
                                    Discover or run project tests
-  deepcli env check|plan|setup|install|test [args] [--json] [--output path]
-                                   Check, plan, set up, or verify local task environments
-  deepcli check [docker|compiler] [--json]
-                                   Shortcut for environment readiness check
-  deepcli docker|compiler [check|plan|setup|install|test] [--json]
+  deepcli compiler [check|plan|setup|install|test] [--json]
                                    Target-first local environment workflow
-  deepcli setup [docker|compiler] [--smoke]
-                                   Shortcut for environment setup
   deepcli install [docker|compiler] [--smoke]
                                    Alias for environment install/setup
   deepcli diagnose [--limit n] [--bundle dir]
@@ -253,9 +247,9 @@ Usage:
   deepcli tui                     Start the terminal UI in the current directory
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|check|docker|compiler|setup|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
@@ -333,14 +327,8 @@ Examples:
   deepcli agent list --json --output .deepcli/exports/agents.json
   deepcli test discover --json --output .deepcli/exports/tests.json
   deepcli test run --json --output .deepcli/exports/test-run.json -- cargo test
-  deepcli check docker --json
-  deepcli docker --json
   deepcli compiler setup --smoke
-  deepcli env check docker --json --output .deepcli/exports/env-check.json
-  deepcli env plan compiler --smoke --json --output .deepcli/exports/env-plan.json
-  deepcli setup docker --smoke
   deepcli install compiler --smoke
-  deepcli env test compiler --json --output .deepcli/exports/env-test.json
   deepcli diagnose --limit 5
   deepcli diagnose docker --json
   deepcli diagnose --json --output .deepcli/exports/diagnose.json
@@ -588,7 +576,7 @@ case "${1:-}" in
     shift
     run_provider_command deepseek deepseek-v4-pro "$@"
     ;;
-  version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|env|docker|compiler|setup|install|git|web|prompt|skill|agent|btw|approval|cleanup|rename|stop|quit|terminal )
+  version|quickstart|recipes|recipe|playbook|workflow|workflows|scorecard|opportunities|benchmark|round|iterate|iteration|selftest|preflight|release-check|completion|completions|init|status|usage|diagnose|support|doctor|trace|logs|privacy|context|permissions|login|apikey|logout|credentials|config|timeout|model|goal|plan|fork|diff|review|accept|gate|verify|handoff|compiler|install|git|web|prompt|skill|agent|btw|approval|cleanup|rename|stop|quit|terminal )
     slash_command="$1"
     shift
     if is_help_flag "${1:-}"; then

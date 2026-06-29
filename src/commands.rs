@@ -1279,16 +1279,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/docker --json").unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/compiler setup --smoke").unwrap(),
             Some(SlashCommand::Env {
                 args: vec![
@@ -1627,36 +1617,6 @@ mod tests {
             })
         );
         assert_eq!(
-            CommandRouter::parse("/env setup compiler --smoke").unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "setup".to_string(),
-                    "compiler".to_string(),
-                    "--smoke".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/check docker --json").unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/setup docker --smoke").unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "setup".to_string(),
-                    "docker".to_string(),
-                    "--smoke".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             CommandRouter::parse("/install compiler --smoke --json").unwrap(),
             Some(SlashCommand::Env {
                 args: vec![
@@ -1664,35 +1624,6 @@ mod tests {
                     "compiler".to_string(),
                     "--smoke".to_string(),
                     "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse("/env check docker --json --output .deepcli/exports/env.json")
-                .unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string(),
-                    "--output".to_string(),
-                    ".deepcli/exports/env.json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            CommandRouter::parse(
-                "/env plan compiler --smoke --json --output .deepcli/exports/env-plan.json"
-            )
-            .unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "plan".to_string(),
-                    "compiler".to_string(),
-                    "--smoke".to_string(),
-                    "--json".to_string(),
-                    "--output".to_string(),
-                    ".deepcli/exports/env-plan.json".to_string()
                 ]
             })
         );
@@ -3744,44 +3675,11 @@ mod tests {
         assert!(version_help.contains("deepcli.version.v1"));
         assert!(version_help.contains("project config presence"));
         assert!(version_help.contains("without creating a session or calling a provider"));
-        let env_help = CommandRouter::help_for(&["env".to_string()]).unwrap();
-        assert!(env_help.contains("/env - "));
-        assert!(env_help.contains("running-safe: no"));
-        assert!(env_help.contains("/env check [docker|compiler] [--json] [--output path]"));
-        assert!(env_help.contains("/env plan [docker|compiler] [--smoke] [--json] [--output path]"));
-        assert!(env_help.contains("/env setup docker --smoke"));
-        assert!(env_help.contains("deepcli check docker --json"));
-        assert!(env_help.contains("deepcli setup docker --smoke"));
-        assert!(env_help.contains("deepcli.env.inspect.v1"));
-        assert!(env_help.contains("workspace-contained file"));
-        assert!(env_help.contains("local one-shot commands"));
-        assert!(env_help.contains("without installing or starting services"));
-
-        let check_help = CommandRouter::help_for(&["check".to_string()]).unwrap();
-        assert!(check_help.contains("/check - "));
-        assert!(check_help.contains("/env check"));
-        assert!(check_help.contains("deepcli check docker --json"));
-        assert!(check_help.contains("read-only"));
-        assert!(check_help.contains("should not create an empty session"));
-
-        let docker_help = CommandRouter::help_for(&["docker".to_string()]).unwrap();
-        assert!(docker_help.contains("/docker - "));
-        assert!(docker_help.contains("/env check docker"));
-        assert!(docker_help.contains("/docker setup --smoke"));
-        assert!(docker_help.contains("running-safe: no"));
-
         let compiler_help = CommandRouter::help_for(&["compiler".to_string()]).unwrap();
         assert!(compiler_help.contains("/compiler - "));
         assert!(compiler_help.contains("/env check compiler"));
         assert!(compiler_help.contains("/compiler setup --smoke"));
         assert!(compiler_help.contains("running-safe: no"));
-
-        let setup_help = CommandRouter::help_for(&["setup".to_string()]).unwrap();
-        assert!(setup_help.contains("/setup - "));
-        assert!(setup_help.contains("deepcli setup docker --smoke"));
-        assert!(setup_help.contains("/env setup"));
-        assert!(setup_help.contains("/env plan <target> --smoke"));
-        assert!(setup_help.contains("permission policy"));
 
         let install_help = CommandRouter::help_for(&["install".to_string()]).unwrap();
         assert!(install_help.contains("/install - "));
@@ -4070,7 +3968,7 @@ mod tests {
     fn help_all_and_unknown_topics_are_handled() {
         let all = CommandRouter::help_for(&["all".to_string()]).unwrap();
         assert!(all.contains("/quickstart - "));
-        assert!(all.contains("/env - "));
+        assert!(all.contains("/compiler - "));
         assert!(all.contains("/session - "));
         assert!(all.contains("/diagnose - "));
         assert!(all.contains("/doctor - "));

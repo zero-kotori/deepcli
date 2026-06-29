@@ -264,7 +264,6 @@ fn selftest_required_commands() -> Vec<&'static str> {
         "/support",
         "/credentials",
         "/model",
-        "/env",
         "/test",
         "/accept",
         "/gate",

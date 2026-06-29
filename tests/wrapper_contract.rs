@@ -326,9 +326,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
     let logout = run_wrapper(&["logout", "deepseek"]);
     assert!(ends_with_args(&logout.args, &["/logout", "deepseek"]));
 
-    let docker = run_wrapper(&["docker", "--json"]);
-    assert!(ends_with_args(&docker.args, &["/docker", "--json"]));
-
     let compiler = run_wrapper(&["compiler", "setup", "--smoke"]);
     assert!(ends_with_args(
         &compiler.args,
@@ -859,63 +856,6 @@ fn wrapper_maps_common_top_level_commands_to_slash_commands() {
         ]
     ));
 
-    let env_test = run_wrapper(&["test", "docker", "--json"]);
-    assert!(ends_with_args(
-        &env_test.args,
-        &["/env", "test", "docker", "--json"]
-    ));
-
-    let env_check = run_wrapper(&[
-        "env",
-        "check",
-        "docker",
-        "--json",
-        "--output",
-        ".deepcli/exports/env-check.json",
-    ]);
-    assert!(ends_with_args(
-        &env_check.args,
-        &[
-            "/env",
-            "check",
-            "docker",
-            "--json",
-            "--output",
-            ".deepcli/exports/env-check.json",
-        ]
-    ));
-
-    let check = run_wrapper(&["check", "docker", "--json"]);
-    assert!(ends_with_args(&check.args, &["/check", "docker", "--json"]));
-
-    let env_plan = run_wrapper(&[
-        "env",
-        "plan",
-        "compiler",
-        "--smoke",
-        "--json",
-        "--output",
-        ".deepcli/exports/env-plan.json",
-    ]);
-    assert!(ends_with_args(
-        &env_plan.args,
-        &[
-            "/env",
-            "plan",
-            "compiler",
-            "--smoke",
-            "--json",
-            "--output",
-            ".deepcli/exports/env-plan.json",
-        ]
-    ));
-
-    let setup = run_wrapper(&["setup", "docker", "--smoke"]);
-    assert!(ends_with_args(
-        &setup.args,
-        &["/setup", "docker", "--smoke"]
-    ));
-
     let install = run_wrapper(&["install", "compiler", "--smoke"]);
     assert!(ends_with_args(
         &install.args,
@@ -1409,14 +1349,6 @@ fn provider_aliases_accept_top_level_slash_commands() {
         &["/completion", "status", "zsh"]
     ));
 
-    let setup = run_wrapper(&["deepseek", "setup", "docker", "--smoke"]);
-    assert!(has_adjacent(&setup.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&setup.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(
-        &setup.args,
-        &["/setup", "docker", "--smoke"]
-    ));
-
     let version = run_wrapper(&["deepseek", "version", "--json"]);
     assert!(has_adjacent(&version.args, "--provider", "deepseek"));
     assert!(has_adjacent(&version.args, "--model", "deepseek-v4-pro"));
@@ -1457,30 +1389,12 @@ fn provider_aliases_accept_top_level_slash_commands() {
         &["/diagnose", "compiler"]
     ));
 
-    let check = run_wrapper(&["deepseek", "check", "docker"]);
-    assert!(has_adjacent(&check.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&check.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&check.args, &["/check", "docker"]));
-
-    let docker = run_wrapper(&["deepseek", "docker", "--json"]);
-    assert!(has_adjacent(&docker.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&docker.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(&docker.args, &["/docker", "--json"]));
-
     let compiler = run_wrapper(&["deepseek", "compiler", "setup", "--smoke"]);
     assert!(has_adjacent(&compiler.args, "--provider", "deepseek"));
     assert!(has_adjacent(&compiler.args, "--model", "deepseek-v4-pro"));
     assert!(ends_with_args(
         &compiler.args,
         &["/compiler", "setup", "--smoke"]
-    ));
-
-    let env_test = run_wrapper(&["deepseek", "test", "compiler"]);
-    assert!(has_adjacent(&env_test.args, "--provider", "deepseek"));
-    assert!(has_adjacent(&env_test.args, "--model", "deepseek-v4-pro"));
-    assert!(ends_with_args(
-        &env_test.args,
-        &["/env", "test", "compiler"]
     ));
 
     let project_test = run_wrapper(&["deepseek", "test", "run"]);

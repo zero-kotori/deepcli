@@ -274,7 +274,6 @@ pub(crate) fn build_scorecard_report(
             &command_names,
             &[
                 "/test",
-                "/env",
                 "/accept",
                 "/gate",
                 "/verify",

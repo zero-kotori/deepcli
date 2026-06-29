@@ -394,15 +394,10 @@ fn top_level_entries() -> &'static [&'static str] {
         "verify",
         "handoff",
         "test",
-        "env",
-        "check",
-        "docker",
         "compiler",
-        "setup",
         "install",
         "git",
         "web",
-        "search",
         "prompt",
         "skill",
         "agent",
@@ -504,11 +499,6 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
         }
-        target if is_env_target(target) => {
-            let mut parts = vec![format!("/{target}")];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
         "login" | "apikey" | "logout" => {
             let mut parts = vec![format!("/{first}")];
             parts.extend(task.iter().skip(1).cloned());
@@ -516,11 +506,6 @@ fn top_level_alias_to_slash_parts(task: &[String]) -> Option<Vec<String>> {
         }
         "timeout" => {
             let mut parts = vec!["/timeout".to_string()];
-            parts.extend(task.iter().skip(1).cloned());
-            Some(parts)
-        }
-        "test" if task.get(1).is_some_and(|target| is_env_target(target)) => {
-            let mut parts = vec!["/env".to_string(), "test".to_string()];
             parts.extend(task.iter().skip(1).cloned());
             Some(parts)
         }
@@ -599,15 +584,10 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "verify"
             | "handoff"
             | "test"
-            | "env"
-            | "check"
-            | "docker"
             | "compiler"
-            | "setup"
             | "install"
             | "git"
             | "web"
-            | "search"
             | "prompt"
             | "skill"
             | "agent"
@@ -619,10 +599,6 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "quit"
             | "terminal"
     )
-}
-
-fn is_env_target(value: &str) -> bool {
-    matches!(value, "docker" | "compiler")
 }
 
 fn shell_join(parts: &[String]) -> String {
@@ -1401,26 +1377,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["check".into(), "docker".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["docker".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "check".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["compiler".into(), "setup".into(), "--smoke".into()]).unwrap(),
             Some(SlashCommand::Env {
                 args: vec![
@@ -1471,16 +1427,6 @@ mod tests {
             })
         );
         assert_eq!(
-            parse_one_shot_command(&["setup".into(), "docker".into(), "--smoke".into()]).unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "setup".to_string(),
-                    "docker".to_string(),
-                    "--smoke".to_string()
-                ]
-            })
-        );
-        assert_eq!(
             parse_one_shot_command(&["install".into(), "compiler".into(), "--smoke".into()])
                 .unwrap(),
             Some(SlashCommand::Env {
@@ -1488,16 +1434,6 @@ mod tests {
                     "install".to_string(),
                     "compiler".to_string(),
                     "--smoke".to_string()
-                ]
-            })
-        );
-        assert_eq!(
-            parse_one_shot_command(&["test".into(), "docker".into(), "--json".into()]).unwrap(),
-            Some(SlashCommand::Env {
-                args: vec![
-                    "test".to_string(),
-                    "docker".to_string(),
-                    "--json".to_string()
                 ]
             })
         );
@@ -1901,7 +1837,6 @@ mod tests {
             vec!["/plan", "--json"],
             vec!["/plan", "show"],
             vec!["/plan", "做一个功能", "--json"],
-            vec!["/docker", "--json"],
             vec!["/compiler", "--json"],
             vec!["/prompt", "list"],
             vec!["/prompt", "list", "--json"],
@@ -2003,7 +1938,7 @@ mod tests {
 
     #[tokio::test]
     async fn one_shot_setup_aliases_run_locally_without_provider_or_empty_session() {
-        for command in [vec!["setup", "auto"], vec!["install", "auto"]] {
+        for command in [vec!["install", "auto"]] {
             let dir = tempdir().unwrap();
             let error = run_cli(Cli {
                 task: command.iter().map(|part| (*part).to_string()).collect(),
@@ -2035,37 +1970,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn one_shot_check_alias_runs_locally_without_provider_or_empty_session() {
-        let dir = tempdir().unwrap();
-        run_cli(Cli {
-            task: vec!["check".to_string(), "auto".to_string()],
-            cwd: Some(dir.path().to_path_buf()),
-            config: None,
-            provider: None,
-            model: None,
-            resume: None,
-            resume_picker: false,
-            stream: false,
-            tui: false,
-            repl: false,
-            yes: true,
-        })
-        .await
-        .unwrap();
-
-        assert!(
-            !dir.path().join(".deepcli/sessions").exists(),
-            "check alias should not create a session"
-        );
-    }
-
-    #[tokio::test]
     async fn one_shot_product_aliases_run_locally_without_provider_or_empty_session() {
         for command in [
             vec!["version", "--json"],
             vec!["privacy", "--json"],
             vec!["timeout", "--json"],
-            vec!["docker", "--json"],
             vec!["compiler", "--json"],
         ] {
             let dir = tempdir().unwrap();

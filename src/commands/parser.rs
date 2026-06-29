@@ -131,18 +131,8 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/verify" => SlashCommand::Verify { args },
         "/handoff" => SlashCommand::Handoff { args },
         "/test" => SlashCommand::Test { args },
-        "/env" => SlashCommand::Env { args },
-        "/check" => SlashCommand::Env {
-            args: prefixed_command_args("check", args),
-        },
-        "/docker" => SlashCommand::Env {
-            args: target_first_env_args("docker", args),
-        },
         "/compiler" => SlashCommand::Env {
             args: target_first_env_args("compiler", args),
-        },
-        "/setup" => SlashCommand::Env {
-            args: prefixed_command_args("setup", args),
         },
         "/install" => SlashCommand::Env {
             args: prefixed_command_args("install", args),
