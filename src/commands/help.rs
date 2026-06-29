@@ -872,22 +872,22 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/compiler setup --smoke",
                 "deepcli compiler --json",
             ],
-            notes: &["Plain `/compiler` maps to `/env check compiler`; action forms map to `/env <action> compiler`. Use this when the user thinks in terms of the target first instead of remembering `/env check compiler`."],
+            notes: &["Plain `/compiler` checks the compiler environment; action forms run the matching check, plan, setup, install, or test step for the compiler target. Use `/compiler plan --smoke` for a no-change preview before `/compiler setup`."],
         },
         CommandHelp {
             name: "/install",
             listing: "/install [docker|compiler] [--smoke] [--json] [--output path]",
-            summary: "Alias for /env install when the user thinks in terms of installing dependencies.",
+            summary: "Prepare or install a local docker or compiler environment.",
             usage: &[
                 "/install [docker|compiler] [--smoke] [--json] [--output path]",
-                "/setup [docker|compiler] [--smoke] [--json] [--output path]",
+                "/compiler install [--smoke] [--json] [--output path]",
                 "deepcli install docker --smoke",
             ],
             examples: &[
                 "/install docker --smoke",
                 "deepcli install compiler --smoke",
             ],
-            notes: &["`/install` is a convenience alias for `/env install`, which uses the same implementation path as `/env setup`. Use `/env plan <target> --smoke` first when you want a no-change preview."],
+            notes: &["`/install` prepares the selected docker or compiler environment; re-run with the same target to update it. Use `/compiler plan --smoke` first when you want a no-change preview."],
         },
         CommandHelp {
             name: "/git",

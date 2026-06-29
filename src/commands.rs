@@ -3650,14 +3650,14 @@ mod tests {
         assert!(version_help.contains("without creating a session or calling a provider"));
         let compiler_help = CommandRouter::help_for(&["compiler".to_string()]).unwrap();
         assert!(compiler_help.contains("/compiler - "));
-        assert!(compiler_help.contains("/env check compiler"));
+        assert!(compiler_help.contains("/compiler check"));
         assert!(compiler_help.contains("/compiler setup --smoke"));
         assert!(compiler_help.contains("running-safe: no"));
 
         let install_help = CommandRouter::help_for(&["install".to_string()]).unwrap();
         assert!(install_help.contains("/install - "));
         assert!(install_help.contains("deepcli install compiler --smoke"));
-        assert!(install_help.contains("/env install"));
+        assert!(install_help.contains("/compiler install"));
 
         let usage_help = CommandRouter::help_for(&["usage".to_string()]).unwrap();
         assert!(usage_help.contains("running-safe: yes"));
