@@ -16,6 +16,7 @@ Continue iterating deepcli toward a SOTA local-first AI coding CLI:
 - Default user-facing language is Chinese.
 - Keep changes scoped to the current product gap.
 - Use the current repository state as authoritative before editing.
+- Never ship demo-only, simulated, or fake implementations as product behavior; product changes must connect to the real runtime/provider/tool/session path, with fake fixtures limited to tests or harnesses.
 - Do not leave local benchmark/export artifacts in the worktree.
 - Keep credentials, logs, sessions, and generated local evidence out of commits.
 - Expected Git commit identity: `zero-kotori <kotorizero8@gmail.com>`.

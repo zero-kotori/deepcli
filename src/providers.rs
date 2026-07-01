@@ -113,9 +113,16 @@ pub struct ProviderMetadata {
     pub capabilities: Vec<String>,
 }
 
+pub type StreamEventCallback<'a> = &'a mut (dyn FnMut(StreamEvent) + Send);
+
 #[async_trait]
 pub trait ProviderClient: Send + Sync {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse>;
+    async fn chat_with_stream_events(
+        &self,
+        request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
+    ) -> Result<ChatResponse>;
     async fn stream(&self, request: ChatRequest) -> Result<Vec<StreamEvent>>;
     fn count_tokens(&self, messages: &[ProviderMessage]) -> usize;
     fn supports(&self, capability: ProviderCapability) -> bool;
@@ -204,7 +211,11 @@ impl DeepSeekClient {
         body
     }
 
-    async fn chat_streaming_response(&self, request: ChatRequest) -> Result<ChatResponse> {
+    async fn chat_streaming_response(
+        &self,
+        request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
+    ) -> Result<ChatResponse> {
         let body = self.request_body(&request, true);
         let max_attempts = provider_max_attempts();
         let mut last_error = None;
@@ -218,7 +229,7 @@ impl DeepSeekClient {
                 .await
             {
                 Ok(response) if response.status().is_success() => {
-                    return collect_streaming_chat_response(response).await;
+                    return collect_streaming_chat_response(response, on_event).await;
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -252,8 +263,16 @@ impl DeepSeekClient {
 #[async_trait]
 impl ProviderClient for DeepSeekClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+        self.chat_with_stream_events(request, None).await
+    }
+
+    async fn chat_with_stream_events(
+        &self,
+        request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
+    ) -> Result<ChatResponse> {
         if provider_streaming_chat_enabled() {
-            return self.chat_streaming_response(request).await;
+            return self.chat_streaming_response(request, on_event).await;
         }
         let body = self.request_body(&request, false);
         let max_attempts = provider_max_attempts();
@@ -459,6 +478,7 @@ impl KimiClient {
     async fn chat_anthropic_streaming_response(
         &self,
         request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
     ) -> Result<ChatResponse> {
         let body = kimi_anthropic_request_body(self.model(), &request, true);
         let max_attempts = provider_max_attempts();
@@ -475,7 +495,8 @@ impl KimiClient {
                 .await
             {
                 Ok(response) if response.status().is_success() => {
-                    return collect_kimi_anthropic_streaming_chat_response(response).await;
+                    return collect_kimi_anthropic_streaming_chat_response(response, on_event)
+                        .await;
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -504,9 +525,15 @@ impl KimiClient {
         ))
     }
 
-    async fn chat_anthropic_response(&self, request: ChatRequest) -> Result<ChatResponse> {
+    async fn chat_anthropic_response(
+        &self,
+        request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
+    ) -> Result<ChatResponse> {
         if provider_streaming_chat_enabled() {
-            return self.chat_anthropic_streaming_response(request).await;
+            return self
+                .chat_anthropic_streaming_response(request, on_event)
+                .await;
         }
 
         let body = kimi_anthropic_request_body(self.model(), &request, false);
@@ -557,7 +584,15 @@ impl KimiClient {
 #[async_trait]
 impl ProviderClient for KimiClient {
     async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
-        self.chat_anthropic_response(request).await
+        self.chat_with_stream_events(request, None).await
+    }
+
+    async fn chat_with_stream_events(
+        &self,
+        request: ChatRequest,
+        on_event: Option<StreamEventCallback<'_>>,
+    ) -> Result<ChatResponse> {
+        self.chat_anthropic_response(request, on_event).await
     }
 
     async fn stream(&self, request: ChatRequest) -> Result<Vec<StreamEvent>> {
@@ -903,6 +938,7 @@ impl KimiStreamingAccumulator {
 
 async fn collect_kimi_anthropic_streaming_chat_response(
     response: reqwest::Response,
+    mut on_event: Option<StreamEventCallback<'_>>,
 ) -> Result<ChatResponse> {
     let mut events = KimiStreamingAccumulator::default();
     let mut buffer = String::new();
@@ -913,7 +949,14 @@ async fn collect_kimi_anthropic_streaming_chat_response(
         while let Some(index) = buffer.find('\n') {
             let line = buffer[..index].trim().to_string();
             buffer = buffer[index + 1..].to_string();
-            if parse_kimi_anthropic_sse_line(&line, &mut events)? {
+            let mut emitted = Vec::new();
+            let done = parse_kimi_anthropic_sse_line(&line, &mut events, &mut emitted)?;
+            if let Some(callback) = on_event.as_mut() {
+                for event in emitted {
+                    callback(event);
+                }
+            }
+            if done {
                 return events.into_response();
             }
         }
@@ -924,6 +967,7 @@ async fn collect_kimi_anthropic_streaming_chat_response(
 fn parse_kimi_anthropic_sse_line(
     line: &str,
     events: &mut KimiStreamingAccumulator,
+    emitted: &mut Vec<StreamEvent>,
 ) -> Result<bool> {
     if !line.starts_with("data:") {
         return Ok(false);
@@ -972,6 +1016,7 @@ fn parse_kimi_anthropic_sse_line(
             block.input = content_block.get("input").cloned();
             if let Some(text) = content_block.get("text").and_then(Value::as_str) {
                 block.text.push_str(text);
+                emit_stream_event(emitted, Some(text.to_string()), None, false);
             }
             if let Some(thinking) = content_block.get("thinking").and_then(Value::as_str) {
                 block.thinking.push_str(thinking);
@@ -992,6 +1037,7 @@ fn parse_kimi_anthropic_sse_line(
                     }
                     if let Some(text) = delta.get("text").and_then(Value::as_str) {
                         block.text.push_str(text);
+                        emit_stream_event(emitted, Some(text.to_string()), None, false);
                     }
                 }
                 "thinking_delta" => {
@@ -1196,7 +1242,10 @@ impl StreamingChatAccumulator {
     }
 }
 
-async fn collect_streaming_chat_response(response: reqwest::Response) -> Result<ChatResponse> {
+async fn collect_streaming_chat_response(
+    response: reqwest::Response,
+    mut on_event: Option<StreamEventCallback<'_>>,
+) -> Result<ChatResponse> {
     let mut events = StreamingChatAccumulator::default();
     let mut buffer = String::new();
     let mut stream = response.bytes_stream();
@@ -1206,7 +1255,14 @@ async fn collect_streaming_chat_response(response: reqwest::Response) -> Result<
         while let Some(index) = buffer.find('\n') {
             let line = buffer[..index].trim().to_string();
             buffer = buffer[index + 1..].to_string();
-            if parse_sse_chat_line(&line, &mut events)? {
+            let mut emitted = Vec::new();
+            let done = parse_sse_chat_line(&line, &mut events, &mut emitted)?;
+            if let Some(callback) = on_event.as_mut() {
+                for event in emitted {
+                    callback(event);
+                }
+            }
+            if done {
                 return events.into_response();
             }
         }
@@ -1214,7 +1270,11 @@ async fn collect_streaming_chat_response(response: reqwest::Response) -> Result<
     events.into_response()
 }
 
-fn parse_sse_chat_line(line: &str, events: &mut StreamingChatAccumulator) -> Result<bool> {
+fn parse_sse_chat_line(
+    line: &str,
+    events: &mut StreamingChatAccumulator,
+    emitted: &mut Vec<StreamEvent>,
+) -> Result<bool> {
     if !line.starts_with("data:") {
         return Ok(false);
     }
@@ -1233,12 +1293,20 @@ fn parse_sse_chat_line(line: &str, events: &mut StreamingChatAccumulator) -> Res
     let Some(delta) = value.pointer("/choices/0/delta") else {
         return Ok(false);
     };
-    if let Some(content) = delta.get("content").and_then(Value::as_str) {
+    let content_delta = delta.get("content").and_then(Value::as_str);
+    let reasoning_delta = delta.get("reasoning_content").and_then(Value::as_str);
+    if let Some(content) = content_delta {
         events.content.push_str(content);
     }
-    if let Some(reasoning) = delta.get("reasoning_content").and_then(Value::as_str) {
+    if let Some(reasoning) = reasoning_delta {
         events.reasoning_content.push_str(reasoning);
     }
+    emit_stream_event(
+        emitted,
+        content_delta.map(ToString::to_string),
+        reasoning_delta.map(ToString::to_string),
+        false,
+    );
     if let Some(tool_calls) = delta.get("tool_calls").and_then(Value::as_array) {
         for call in tool_calls {
             let index = call.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1313,6 +1381,24 @@ fn parse_sse_line(line: &str) -> Result<Option<StreamEvent>> {
         reasoning_delta,
         done: false,
     }))
+}
+
+fn emit_stream_event(
+    emitted: &mut Vec<StreamEvent>,
+    content_delta: Option<String>,
+    reasoning_delta: Option<String>,
+    done: bool,
+) {
+    let content_delta = content_delta.filter(|delta| !delta.is_empty());
+    let reasoning_delta = reasoning_delta.filter(|delta| !delta.is_empty());
+    if content_delta.is_none() && reasoning_delta.is_none() && !done {
+        return;
+    }
+    emitted.push(StreamEvent {
+        content_delta,
+        reasoning_delta,
+        done,
+    });
 }
 
 fn redact_secret(value: &str) -> String {
@@ -1528,19 +1614,41 @@ mod tests {
     }
 
     #[test]
+    fn parses_streaming_chat_line_emits_content_delta() {
+        let mut acc = StreamingChatAccumulator::default();
+        let mut emitted = Vec::new();
+
+        parse_sse_chat_line(
+            r#"data: {"choices":[{"delta":{"content":"hello"}}]}"#,
+            &mut acc,
+            &mut emitted,
+        )
+        .unwrap();
+
+        assert_eq!(acc.content, "hello");
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].content_delta.as_deref(), Some("hello"));
+        assert!(!emitted[0].done);
+    }
+
+    #[test]
     fn parses_streamed_tool_call_chunks() {
         let mut acc = StreamingChatAccumulator::default();
+        let mut emitted = Vec::new();
         parse_sse_chat_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"pa"}}]}}]}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
         parse_sse_chat_line(
             r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"th\":\"Cargo.toml\"}"}}]}}]}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
-        assert!(parse_sse_chat_line("data: [DONE]", &mut acc).unwrap());
+        assert!(parse_sse_chat_line("data: [DONE]", &mut acc, &mut emitted).unwrap());
+        assert!(emitted.is_empty());
         let response = acc.into_response().unwrap();
         assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].function.name, "read_file");
@@ -1574,41 +1682,53 @@ mod tests {
     #[test]
     fn parses_kimi_anthropic_streamed_text() {
         let mut acc = KimiStreamingAccumulator::default();
+        let mut emitted = Vec::new();
         parse_kimi_anthropic_sse_line(
             r#"data: {"type":"message_start","message":{"usage":{"input_tokens":11,"output_tokens":0}}}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
         parse_kimi_anthropic_sse_line(
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
         parse_kimi_anthropic_sse_line(
             r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"OK"}}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
         parse_kimi_anthropic_sse_line(
             r#"data: {"type":"message_delta","usage":{"input_tokens":11,"output_tokens":4,"total_tokens":15}}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
-        assert!(
-            parse_kimi_anthropic_sse_line(r#"data: {"type":"message_stop"}"#, &mut acc).unwrap()
-        );
+        assert!(parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"message_stop"}"#,
+            &mut acc,
+            &mut emitted
+        )
+        .unwrap());
 
         let response = acc.into_response().unwrap();
         assert_eq!(response.content.as_deref(), Some("OK"));
         assert_eq!(response.usage.total_tokens, Some(15));
+        assert_eq!(emitted.len(), 1);
+        assert_eq!(emitted[0].content_delta.as_deref(), Some("OK"));
     }
 
     #[test]
     fn parses_kimi_anthropic_streamed_tool_use() {
         let mut acc = KimiStreamingAccumulator::default();
+        let mut emitted = Vec::new();
         parse_kimi_anthropic_sse_line(
             r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_1","name":"read_file","input":{}}}"#,
             &mut acc,
+            &mut emitted,
         )
         .unwrap();
         let first_delta = format!(
@@ -1622,7 +1742,7 @@ mod tests {
                 }
             })
         );
-        parse_kimi_anthropic_sse_line(&first_delta, &mut acc).unwrap();
+        parse_kimi_anthropic_sse_line(&first_delta, &mut acc, &mut emitted).unwrap();
         let second_delta = format!(
             "data: {}",
             json!({
@@ -1634,7 +1754,8 @@ mod tests {
                 }
             })
         );
-        parse_kimi_anthropic_sse_line(&second_delta, &mut acc).unwrap();
+        parse_kimi_anthropic_sse_line(&second_delta, &mut acc, &mut emitted).unwrap();
+        assert!(emitted.is_empty());
 
         let response = acc.into_response().unwrap();
         assert_eq!(response.tool_calls[0].id, "toolu_1");

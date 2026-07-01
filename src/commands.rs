@@ -237,6 +237,7 @@ pub struct CommandContext<'a> {
     pub executor: &'a ToolExecutor,
     pub session_id: Option<String>,
     pub provider_override: Option<&'a str>,
+    pub allow_interactive_prompts: bool,
 }
 
 impl CommandRouter {
@@ -323,6 +324,7 @@ impl CommandRouter {
                 context.config,
                 args,
                 context.provider_override,
+                context.allow_interactive_prompts,
             ),
             SlashCommand::Config { args } => handle_config(context.workspace, context.config, args),
             SlashCommand::Timeout { args } => {

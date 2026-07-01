@@ -38,6 +38,10 @@ pub(super) fn submit_tui_input(
     }
     if state.running {
         state.chat.push(ChatLine {
+            role: "你".to_string(),
+            content: input.clone(),
+        });
+        state.chat.push(ChatLine {
             role: "deepcli".to_string(),
             content: running_tui_deferred_input_hint(),
         });

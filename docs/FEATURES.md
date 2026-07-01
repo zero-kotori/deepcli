@@ -45,6 +45,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 TUI 面向实际编码任务，而不是简单聊天框：
 
 - message box 支持编辑、粘贴、多行输入和历史输入。
+- TUI 的 message box 和 BTW answer 对话框支持选中文本后用 `Ctrl-C` / `Cmd-C` 通过终端 OSC 52 clipboard 通道写入剪贴板；没有选区时 `Ctrl-C` 仍保持停止运行中任务或退出 TUI 的原语义。
 - slash command palette 支持过滤、选择和补全。
 - 会话消息会从持久化记录恢复。
 - Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark status|summary|trends|compare|baselines|list|show|presets`、`/git status|diff|branch|message`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。

@@ -7,7 +7,8 @@ use anyhow::Result;
 use crossterm::{
     event::{
         self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        Event, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent,
+        MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
     },
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
@@ -23,6 +24,7 @@ use tokio::task::JoinHandle;
 mod approvals;
 mod chat_history;
 mod chat_view;
+mod clipboard;
 mod command_palette;
 mod credential_prompt;
 mod dashboard;
@@ -54,9 +56,10 @@ use approvals::{
 #[cfg(test)]
 use chat_history::session_messages_to_chat_lines;
 use chat_history::{chat_lines_from_runtime, ChatLine};
-use chat_view::{chat_ui_layout, render_chat_ui};
+use chat_view::{chat_ui_layout, clamp_transcript_scroll_to_area, render_chat_ui};
 #[cfg(test)]
 use chat_view::{format_transcript_text, message_box_cursor_position};
+use clipboard::{handle_clipboard_key, handle_input_selection_mouse};
 use command_palette::{
     clamp_selected_command, handle_command_palette_key, handle_command_palette_mouse_for_state,
     render_command_palette, slash_command_suggestions_for_state,
@@ -142,6 +145,7 @@ use text::{
 use worker::{drain_done, drain_progress, WorkerDone};
 
 const RESUME_PICKER_MOUSE_SCROLL_STEP: usize = 3;
+const TUI_EVENT_BATCH_LIMIT: usize = 128;
 
 pub async fn run_basic_repl(runtime: &mut AgentRuntime) -> Result<()> {
     println!("deepcli session {}", runtime.session_id());
@@ -190,6 +194,7 @@ struct TuiState {
     running: bool,
     exit_requested: bool,
     last_event: String,
+    streaming_assistant: Option<usize>,
     worker: Option<JoinHandle<()>>,
 }
 
@@ -212,6 +217,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
         stdout,
         EnterAlternateScreen,
         EnableMouseCapture,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
         EnableBracketedPaste
     )?;
     let backend = CrosstermBackend::new(stdout);
@@ -241,6 +247,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
             running: false,
             exit_requested: false,
             last_event: "ready".to_string(),
+            streaming_assistant: None,
             worker: None,
         },
         progress_tx,
@@ -255,6 +262,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture,
+        PopKeyboardEnhancementFlags,
         DisableBracketedPaste
     )?;
     terminal.show_cursor()?;
@@ -277,25 +285,32 @@ async fn run_tui_loop(
         terminal.draw(|frame| render_chat_ui(frame, &state))?;
 
         if event::poll(Duration::from_millis(50))? {
-            match event::read()? {
-                Event::Key(key) => handle_tui_key(key, &mut state, &progress_tx, &done_tx)?,
-                Event::Paste(text) => handle_tui_paste(&mut state, &text),
-                Event::Mouse(mouse) => {
-                    let size = terminal.size()?;
-                    handle_tui_mouse(
-                        &mut state,
-                        mouse,
-                        &progress_tx,
-                        &done_tx,
-                        Rect {
-                            x: 0,
-                            y: 0,
-                            width: size.width,
-                            height: size.height,
-                        },
-                    );
+            let mut processed_events = 0usize;
+            while processed_events < TUI_EVENT_BATCH_LIMIT {
+                match event::read()? {
+                    Event::Key(key) => handle_tui_key(key, &mut state, &progress_tx, &done_tx)?,
+                    Event::Paste(text) => handle_tui_paste(&mut state, &text),
+                    Event::Mouse(mouse) => {
+                        let size = terminal.size()?;
+                        handle_tui_mouse(
+                            &mut state,
+                            mouse,
+                            &progress_tx,
+                            &done_tx,
+                            Rect {
+                                x: 0,
+                                y: 0,
+                                width: size.width,
+                                height: size.height,
+                            },
+                        );
+                    }
+                    _ => {}
                 }
-                _ => {}
+                processed_events += 1;
+                if state.exit_requested || !event::poll(Duration::ZERO)? {
+                    break;
+                }
             }
         }
     }
@@ -310,21 +325,31 @@ fn handle_tui_mouse(
     area: Rect,
 ) {
     let areas = chat_ui_layout(area);
+    if handle_input_selection_mouse(state, mouse, areas.input) {
+        return;
+    }
     match mouse.kind {
-        MouseEventKind::ScrollUp if rect_contains(areas.transcript, mouse.column, mouse.row) => {
+        MouseEventKind::ScrollUp => {
+            if rect_contains(areas.tools, mouse.column, mouse.row)
+                && handle_tools_scroll_mouse(state, mouse, areas.tools, true)
+            {
+                return;
+            }
             scroll_transcript(state, TRANSCRIPT_MOUSE_SCROLL_STEP);
+            clamp_transcript_scroll_to_area(state, areas.transcript);
+            state.last_event = transcript_scroll_event(state);
         }
-        MouseEventKind::ScrollDown if rect_contains(areas.transcript, mouse.column, mouse.row) => {
+        MouseEventKind::ScrollDown => {
+            if rect_contains(areas.tools, mouse.column, mouse.row)
+                && handle_tools_scroll_mouse(state, mouse, areas.tools, false)
+            {
+                return;
+            }
             state.transcript_scroll = state
                 .transcript_scroll
                 .saturating_sub(TRANSCRIPT_MOUSE_SCROLL_STEP);
+            clamp_transcript_scroll_to_area(state, areas.transcript);
             state.last_event = transcript_scroll_event(state);
-        }
-        MouseEventKind::ScrollUp if rect_contains(areas.tools, mouse.column, mouse.row) => {
-            handle_tools_scroll_mouse(state, mouse, areas.tools, true);
-        }
-        MouseEventKind::ScrollDown if rect_contains(areas.tools, mouse.column, mouse.row) => {
-            handle_tools_scroll_mouse(state, mouse, areas.tools, false);
         }
         MouseEventKind::Down(MouseButton::Left) => {
             if handle_resume_picker_mouse_for_state(state, mouse, areas.tools) {
@@ -362,15 +387,15 @@ fn handle_tools_scroll_mouse(
     mouse: MouseEvent,
     tools_area: Rect,
     upward: bool,
-) {
+) -> bool {
     if handle_resume_picker_mouse_for_state(state, mouse, tools_area) {
-        return;
+        return true;
     }
     if handle_command_palette_mouse_for_state(state, mouse, tools_area) {
-        return;
+        return true;
     }
     if handle_approvals_mouse_for_state(state, mouse, tools_area) {
-        return;
+        return true;
     }
     if state.monitor_tab == MonitorTab::Tools {
         if upward {
@@ -378,16 +403,23 @@ fn handle_tools_scroll_mouse(
         } else {
             move_selected_tool_by(state, true, TOOL_MOUSE_SCROLL_STEP);
         }
+        true
     } else if state.monitor_tab == MonitorTab::Changes {
         if upward {
             scroll_change_patch_up(state, CHANGE_PATCH_MOUSE_SCROLL_STEP);
         } else {
             scroll_change_patch_down(state, CHANGE_PATCH_MOUSE_SCROLL_STEP);
         }
-    } else if upward {
-        scroll_result_from_mouse(state, RESULT_MOUSE_SCROLL_STEP);
+        true
+    } else if state.monitor_tab == MonitorTab::Result && state.input.buffer().trim().is_empty() {
+        if upward {
+            scroll_result_from_mouse(state, RESULT_MOUSE_SCROLL_STEP);
+        } else {
+            scroll_result_down(state, RESULT_MOUSE_SCROLL_STEP);
+        }
+        true
     } else {
-        scroll_result_down(state, RESULT_MOUSE_SCROLL_STEP);
+        false
     }
 }
 
@@ -397,6 +429,20 @@ fn handle_tui_key(
     progress_tx: &Sender<RuntimeProgress>,
     done_tx: &Sender<WorkerDone>,
 ) -> Result<()> {
+    let mut stdout = io::stdout();
+    handle_tui_key_with_clipboard_writer(key, state, progress_tx, done_tx, &mut stdout)
+}
+
+fn handle_tui_key_with_clipboard_writer<W: Write>(
+    key: KeyEvent,
+    state: &mut TuiState,
+    progress_tx: &Sender<RuntimeProgress>,
+    done_tx: &Sender<WorkerDone>,
+    clipboard_writer: &mut W,
+) -> Result<()> {
+    if handle_clipboard_key(key, state, clipboard_writer)? {
+        return Ok(());
+    }
     if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
     {
         if state.credential_prompt.take().is_some() {

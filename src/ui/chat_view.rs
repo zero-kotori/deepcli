@@ -11,6 +11,7 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
+use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
 pub(super) struct ChatUiLayout {
@@ -42,6 +43,20 @@ fn transcript_visible_message_count(area: Rect) -> usize {
     area.height.saturating_sub(2).max(1) as usize
 }
 
+fn transcript_inner_width(area: Rect) -> usize {
+    area.width.saturating_sub(2).max(1) as usize
+}
+
+pub(super) fn clamp_transcript_scroll_to_area(state: &mut TuiState, area: Rect) {
+    let visible = transcript_visible_message_count(area);
+    let width = transcript_inner_width(area);
+    let transcript = format_full_transcript_text(&state.chat);
+    let visual_lines = wrap_transcript_lines(&transcript, width);
+    let max_scroll = visual_lines.len().saturating_sub(visible.max(1));
+    state.transcript_scroll = state.transcript_scroll.min(max_scroll);
+}
+
+#[cfg(test)]
 fn transcript_window(total: usize, scroll: usize, visible: usize) -> (usize, usize, usize) {
     if total == 0 {
         return (0, 0, 0);
@@ -54,6 +69,7 @@ fn transcript_window(total: usize, scroll: usize, visible: usize) -> (usize, usi
     (start, end, scroll)
 }
 
+#[cfg(test)]
 pub(super) fn format_transcript_text(chat: &[ChatLine], scroll: usize, visible: usize) -> String {
     let (start, end, _) = transcript_window(chat.len(), scroll, visible);
     chat[start..end]
@@ -63,8 +79,83 @@ pub(super) fn format_transcript_text(chat: &[ChatLine], scroll: usize, visible: 
         .join("\n\n")
 }
 
-fn format_messages_title(state: &TuiState, visible: usize) -> String {
-    let (_, _, scroll) = transcript_window(state.chat.len(), state.transcript_scroll, visible);
+fn format_visible_transcript_text(
+    chat: &[ChatLine],
+    scroll: usize,
+    visible: usize,
+    width: usize,
+) -> String {
+    let transcript = format_full_transcript_text(chat);
+    let visual_lines = wrap_transcript_lines(&transcript, width);
+    let visible = visible.max(1);
+    let (start, end, _) = transcript_visual_window(visual_lines.len(), scroll, visible);
+    visual_lines[start..end].join("\n")
+}
+
+fn format_full_transcript_text(chat: &[ChatLine]) -> String {
+    chat.iter()
+        .map(|line| format!("{}: {}", line.role, line.content))
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+fn transcript_visual_window(total: usize, scroll: usize, visible: usize) -> (usize, usize, usize) {
+    if total == 0 {
+        return (0, 0, 0);
+    }
+    let visible = visible.max(1);
+    let max_scroll = total.saturating_sub(visible);
+    let scroll = scroll.min(max_scroll);
+    let end = total.saturating_sub(scroll);
+    let start = end.saturating_sub(visible);
+    (start, end, scroll)
+}
+
+fn wrap_transcript_lines(text: &str, width: usize) -> Vec<String> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    for line in text.split('\n') {
+        append_wrapped_line(&mut lines, line, width);
+    }
+    lines
+}
+
+fn append_wrapped_line(lines: &mut Vec<String>, line: &str, width: usize) {
+    if line.is_empty() {
+        lines.push(String::new());
+        return;
+    }
+
+    let mut current = String::new();
+    let mut column = 0usize;
+    for ch in line.chars() {
+        let char_width = ch.width().unwrap_or(0).max(1);
+        if column > 0 && column.saturating_add(char_width) > width {
+            lines.push(current);
+            current = String::new();
+            column = 0;
+        }
+        current.push(ch);
+        column = column.saturating_add(char_width.min(width));
+        if column >= width {
+            lines.push(current);
+            current = String::new();
+            column = 0;
+        }
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+}
+
+fn format_messages_title(state: &TuiState, visible: usize, width: usize) -> String {
+    let transcript = format_full_transcript_text(&state.chat);
+    let visual_lines = wrap_transcript_lines(&transcript, width);
+    let (_, _, scroll) =
+        transcript_visual_window(visual_lines.len(), state.transcript_scroll, visible);
     if scroll == 0 {
         "Messages (PageUp history)".to_string()
     } else {
@@ -96,8 +187,14 @@ pub(super) fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
     frame.render_widget(header, areas.header);
 
     let visible_messages = transcript_visible_message_count(areas.transcript);
-    let transcript = format_transcript_text(&state.chat, state.transcript_scroll, visible_messages);
-    let messages_title = format_messages_title(state, visible_messages);
+    let transcript_width = transcript_inner_width(areas.transcript);
+    let transcript = format_visible_transcript_text(
+        &state.chat,
+        state.transcript_scroll,
+        visible_messages,
+        transcript_width,
+    );
+    let messages_title = format_messages_title(state, visible_messages, transcript_width);
     frame.render_widget(
         Paragraph::new(transcript)
             .wrap(Wrap { trim: false })
@@ -131,46 +228,82 @@ pub(super) fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
     } else {
         "Message Box (Enter send, Shift-Enter newline, Esc exit)".to_string()
     };
-    let input_body = if let Some(prompt) = &state.credential_prompt {
-        credential_prompt_hidden_body(prompt)
+    let (input_body, input_cursor, input_selection) = if let Some(prompt) = &state.credential_prompt
+    {
+        (
+            credential_prompt_hidden_body(prompt),
+            credential_prompt_hidden_cursor(prompt),
+            None,
+        )
     } else if let Some(prompt) = &state.side_question_prompt {
-        prompt.input.buffer().to_string()
+        (
+            prompt.input.buffer().to_string(),
+            prompt.input.cursor(),
+            prompt.input.selection_range(),
+        )
     } else {
-        state.input.buffer().to_string()
+        (
+            state.input.buffer().to_string(),
+            state.input.cursor(),
+            state.input.selection_range(),
+        )
+    };
+    let input_scroll = message_box_vertical_scroll(&input_body, input_cursor, areas.input);
+    let input_paragraph = if let Some(selection) = input_selection {
+        Paragraph::new(message_box_selection_lines(&input_body, selection))
+    } else {
+        Paragraph::new(input_body.as_str())
     };
     frame.render_widget(
-        Paragraph::new(input_body)
+        input_paragraph
             .wrap(Wrap { trim: false })
+            .scroll((input_scroll, 0))
             .block(Block::default().borders(Borders::ALL).title(input_title)),
         areas.input,
     );
-    if let Some(prompt) = &state.credential_prompt {
-        let hidden_body = credential_prompt_hidden_body(prompt);
-        frame.set_cursor_position(message_box_cursor_position(
-            &hidden_body,
-            credential_prompt_hidden_cursor(prompt),
-            areas.input,
-        ));
-    } else if let Some(prompt) = &state.side_question_prompt {
-        frame.set_cursor_position(message_box_cursor_position(
-            prompt.input.buffer(),
-            prompt.input.cursor(),
-            areas.input,
-        ));
-    } else {
-        frame.set_cursor_position(message_box_cursor_position(
-            state.input.buffer(),
-            state.input.cursor(),
-            areas.input,
-        ));
-    }
+    frame.set_cursor_position(message_box_cursor_position_with_scroll(
+        &input_body,
+        input_cursor,
+        areas.input,
+        input_scroll,
+    ));
 }
 
+#[cfg(test)]
 pub(super) fn message_box_cursor_position(buffer: &str, cursor: usize, area: Rect) -> Position {
+    let scroll = message_box_vertical_scroll(buffer, cursor, area);
+    message_box_cursor_position_with_scroll(buffer, cursor, area, scroll)
+}
+
+fn message_box_cursor_position_with_scroll(
+    buffer: &str,
+    cursor: usize,
+    area: Rect,
+    scroll: u16,
+) -> Position {
     let inner_x = area.x.saturating_add(1);
     let inner_y = area.y.saturating_add(1);
-    let inner_width = area.width.saturating_sub(2).max(1);
     let inner_height = area.height.saturating_sub(2).max(1);
+    let inner_width = area.width.saturating_sub(2).max(1);
+    let (row, column) = message_box_cursor_offset(buffer, cursor, area);
+
+    Position::new(
+        inner_x.saturating_add(column.min(inner_width.saturating_sub(1))),
+        inner_y.saturating_add(
+            row.saturating_sub(scroll)
+                .min(inner_height.saturating_sub(1)),
+        ),
+    )
+}
+
+fn message_box_vertical_scroll(buffer: &str, cursor: usize, area: Rect) -> u16 {
+    let inner_height = area.height.saturating_sub(2).max(1);
+    let (row, _) = message_box_cursor_offset(buffer, cursor, area);
+    row.saturating_sub(inner_height.saturating_sub(1))
+}
+
+fn message_box_cursor_offset(buffer: &str, cursor: usize, area: Rect) -> (u16, u16) {
+    let inner_width = area.width.saturating_sub(2).max(1);
     let cursor = cursor.min(buffer.len());
     let mut row = 0u16;
     let mut column = 0u16;
@@ -194,8 +327,57 @@ pub(super) fn message_box_cursor_position(buffer: &str, cursor: usize, area: Rec
         }
     }
 
-    Position::new(
-        inner_x.saturating_add(column.min(inner_width.saturating_sub(1))),
-        inner_y.saturating_add(row.min(inner_height.saturating_sub(1))),
-    )
+    (row, column.min(inner_width.saturating_sub(1)))
+}
+
+fn message_box_selection_lines(buffer: &str, selection: Range<usize>) -> Vec<Line<'static>> {
+    if buffer.is_empty() {
+        return vec![Line::from(String::new())];
+    }
+
+    let mut lines = Vec::new();
+    let mut line_start = 0usize;
+    for segment in buffer.split_inclusive('\n') {
+        let line = segment.strip_suffix('\n').unwrap_or(segment);
+        lines.push(Line::from(message_box_selection_spans(
+            line, line_start, &selection,
+        )));
+        line_start += segment.len();
+    }
+    if buffer.ends_with('\n') {
+        lines.push(Line::from(String::new()));
+    }
+    lines
+}
+
+fn message_box_selection_spans(
+    line: &str,
+    line_start: usize,
+    selection: &Range<usize>,
+) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    let mut current = String::new();
+    let mut current_selected: Option<bool> = None;
+
+    for (offset, ch) in line.char_indices() {
+        let selected = selection.contains(&(line_start + offset));
+        if current_selected.is_some_and(|value| value != selected) {
+            spans.push(selection_span(std::mem::take(&mut current), !selected));
+        }
+        current_selected = Some(selected);
+        current.push(ch);
+    }
+
+    if !current.is_empty() {
+        spans.push(selection_span(current, current_selected.unwrap_or(false)));
+    }
+    spans
+}
+
+fn selection_span(text: String, selected: bool) -> Span<'static> {
+    if selected {
+        Span::styled(text, Style::default().fg(Color::Black).bg(Color::White))
+    } else {
+        Span::raw(text)
+    }
 }

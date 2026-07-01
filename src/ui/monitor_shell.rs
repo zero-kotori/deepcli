@@ -280,6 +280,11 @@ pub(super) fn monitor_quick_actions_for_tab(
     state: &TuiState,
     monitor: Option<&SessionMonitor>,
 ) -> Vec<MonitorQuickAction> {
+    if state.running {
+        if let Some(projection) = state.monitor_tab.running_quick_actions() {
+            return projection.actions();
+        }
+    }
     if let Some(projection) = state.monitor_tab.static_quick_actions() {
         return projection.actions();
     }

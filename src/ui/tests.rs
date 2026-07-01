@@ -43,6 +43,7 @@ fn test_tui_state() -> TuiState {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     }
 }
@@ -150,6 +151,7 @@ fn tui_paste_inserts_into_message_box_and_normalizes_newlines() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     state
@@ -190,6 +192,7 @@ fn tui_paste_targets_active_prompt() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -224,6 +227,156 @@ fn tui_paste_targets_active_prompt() {
 }
 
 #[test]
+fn tui_ctrl_c_copies_selected_message_box_text_without_exiting() {
+    let mut state = test_tui_state();
+    state.input.set_buffer("hello world".to_string());
+    for _ in 0..5 {
+        state
+            .input
+            .handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+    }
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    let mut output = Vec::new();
+
+    handle_tui_key_with_clipboard_writer(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &mut state,
+        &progress_tx,
+        &done_tx,
+        &mut output,
+    )
+    .unwrap();
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "\u{1b}]52;c;d29ybGQ=\u{7}"
+    );
+    assert!(!state.exit_requested);
+    assert_eq!(
+        state.last_event,
+        "copied selected text to clipboard (5 chars)"
+    );
+}
+
+#[test]
+fn tui_ctrl_c_without_selection_keeps_interrupt_semantics() {
+    let mut state = test_tui_state();
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+
+    handle_tui_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &mut state,
+        &progress_tx,
+        &done_tx,
+    )
+    .unwrap();
+
+    assert!(state.exit_requested);
+}
+
+#[test]
+fn tui_clipboard_copies_side_question_selected_text() {
+    let mut state = test_tui_state();
+    state.side_question_prompt = Some(SideQuestionPrompt {
+        id: "q1".to_string(),
+        question: "Need detail?".to_string(),
+        input: MessageBox::new(),
+    });
+    let prompt = state.side_question_prompt.as_mut().unwrap();
+    prompt.input.set_buffer("answer draft".to_string());
+    for _ in 0..5 {
+        prompt
+            .input
+            .handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT));
+    }
+    let mut output = Vec::new();
+
+    assert!(clipboard::handle_clipboard_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &mut state,
+        &mut output,
+    )
+    .unwrap());
+
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "\u{1b}]52;c;ZHJhZnQ=\u{7}"
+    );
+    assert_eq!(
+        state.last_event,
+        "copied selected text to clipboard (5 chars)"
+    );
+}
+
+#[test]
+fn tui_mouse_drag_selects_message_box_text_for_clipboard() {
+    let mut state = test_tui_state();
+    state.input.set_buffer("hello world".to_string());
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 80,
+        height: 24,
+    };
+    let layout = chat_ui_layout(area);
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    let start_column = layout.input.x + 1;
+    let row = layout.input.y + 1;
+
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: start_column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column: start_column + 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::Up(MouseButton::Left),
+            column: start_column + 5,
+            row,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+    let mut output = Vec::new();
+
+    assert!(clipboard::handle_clipboard_key(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        &mut state,
+        &mut output,
+    )
+    .unwrap());
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "\u{1b}]52;c;aGVsbG8=\u{7}"
+    );
+}
+
+#[test]
 fn transcript_format_respects_scroll_offset() {
     let chat = (0..6)
         .map(|index| ChatLine {
@@ -241,6 +394,133 @@ fn transcript_format_respects_scroll_offset() {
     assert!(older.contains("message-1"));
     assert!(older.contains("message-3"));
     assert!(!older.contains("message-5"));
+}
+
+#[test]
+fn transcript_render_keeps_latest_message_visible_after_long_output() {
+    let backend = TestBackend::new(96, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    let long_output = (0..24)
+        .map(|index| format!("older-output-line-{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    state.chat = vec![
+        ChatLine {
+            role: "deepcli".to_string(),
+            content: long_output,
+        },
+        ChatLine {
+            role: "你".to_string(),
+            content: "LATEST_USER_PROMPT_VISIBLE".to_string(),
+        },
+    ];
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("LATEST_USER_PROMPT_VISIBLE"));
+}
+
+#[test]
+fn transcript_render_scrolls_within_long_single_message() {
+    let backend = TestBackend::new(96, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    state.chat = vec![ChatLine {
+        role: "deepcli".to_string(),
+        content: (0..12)
+            .map(|index| format!("long-message-line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }];
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let latest = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(latest.contains("long-message-line-11"));
+
+    state.transcript_scroll = 3;
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let scrolled = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(scrolled.contains("long-message-line-6"));
+    assert!(!scrolled.contains("long-message-line-11"));
+}
+
+#[test]
+fn running_prompt_submission_echoes_user_text_before_defer_notice() {
+    let mut state = test_tui_state();
+    state.running = true;
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+
+    submit_tui_input(
+        &mut state,
+        "为我检查一下当前项目有没有什么问题".to_string(),
+        progress_tx,
+        done_tx,
+    );
+
+    assert_eq!(state.chat[0].role, "你");
+    assert_eq!(state.chat[0].content, "为我检查一下当前项目有没有什么问题");
+    assert_eq!(state.chat[1].role, "deepcli");
+    assert_eq!(state.last_event, "input deferred while running");
+}
+
+#[test]
+fn worker_done_returns_transcript_to_latest_output() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let mut state = test_tui_state();
+    state.running = true;
+    state.transcript_scroll = TRANSCRIPT_SCROLL_STEP;
+    let (done_tx, done_rx) = mpsc::channel();
+    done_tx
+        .send(WorkerDone {
+            runtime,
+            result: Ok("latest output".to_string()),
+        })
+        .unwrap();
+
+    drain_done(&mut state, &done_rx);
+
+    assert_eq!(state.transcript_scroll, 0);
+    assert_eq!(state.chat.last().unwrap().content, "latest output");
 }
 
 #[test]
@@ -272,6 +552,7 @@ fn transcript_scroll_keys_move_history_window() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -302,7 +583,7 @@ fn transcript_scroll_keys_move_history_window() {
 }
 
 #[test]
-fn transcript_mouse_wheel_scrolls_messages_area_only() {
+fn transcript_mouse_wheel_scrolls_messages_and_unhandled_tool_area() {
     let mut state = TuiState {
         runtime: None,
         active_session: None,
@@ -330,6 +611,7 @@ fn transcript_mouse_wheel_scrolls_messages_area_only() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -382,7 +664,111 @@ fn transcript_mouse_wheel_scrolls_messages_area_only() {
         &done_tx,
         area,
     );
+    assert_eq!(state.transcript_scroll, TRANSCRIPT_MOUSE_SCROLL_STEP);
+}
+
+#[test]
+fn overview_mouse_wheel_falls_back_to_transcript_scroll() {
+    let mut state = test_tui_state();
+    state.chat = (0..12)
+        .map(|index| ChatLine {
+            role: "deepcli".to_string(),
+            content: format!("message-{index}"),
+        })
+        .collect();
+    state.monitor_tab = MonitorTab::Overview;
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 30,
+    };
+    let layout = chat_ui_layout(area);
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: layout.tools.x + 1,
+            row: layout.tools.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+
+    assert_eq!(state.transcript_scroll, TRANSCRIPT_MOUSE_SCROLL_STEP);
+
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: layout.tools.x + 1,
+            row: layout.tools.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+
     assert_eq!(state.transcript_scroll, 0);
+}
+
+#[test]
+fn transcript_mouse_wheel_clamps_to_renderable_history() {
+    let mut state = test_tui_state();
+    state.chat = vec![ChatLine {
+        role: "deepcli".to_string(),
+        content: (0..12)
+            .map(|index| format!("long-message-line-{index}"))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }];
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+    let layout = chat_ui_layout(area);
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+
+    for _ in 0..10 {
+        handle_tui_mouse(
+            &mut state,
+            MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: layout.transcript.x + 1,
+                row: layout.transcript.y + 1,
+                modifiers: KeyModifiers::NONE,
+            },
+            &progress_tx,
+            &done_tx,
+            area,
+        );
+    }
+
+    assert_eq!(state.transcript_scroll, 6);
+
+    handle_tui_mouse(
+        &mut state,
+        MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: layout.transcript.x + 1,
+            row: layout.transcript.y + 1,
+            modifiers: KeyModifiers::NONE,
+        },
+        &progress_tx,
+        &done_tx,
+        area,
+    );
+
+    assert_eq!(state.transcript_scroll, 3);
 }
 
 #[test]
@@ -416,6 +802,7 @@ fn result_scroll_keys_move_output_window() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -474,6 +861,7 @@ fn result_mouse_wheel_scrolls_result_tab_tools_area_only() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -556,6 +944,7 @@ fn changes_mouse_wheel_scrolls_selected_patch_in_tools_area() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -650,6 +1039,7 @@ fn changes_mouse_click_selects_patch_from_worktree_file_list() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -731,6 +1121,7 @@ fn message_box_render_places_terminal_cursor_at_input_cursor() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let input_area = chat_ui_layout(Rect {
@@ -747,6 +1138,40 @@ fn message_box_render_places_terminal_cursor_at_input_cursor() {
         .draw(|frame| render_chat_ui(frame, &state))
         .unwrap();
     terminal.backend_mut().assert_cursor_position(expected);
+}
+
+#[test]
+fn message_box_render_scrolls_to_cursor_for_long_input() {
+    let backend = TestBackend::new(80, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    state
+        .input
+        .insert_str("line-0\nline-1\nline-2\nTAIL_VISIBLE_AT_CURSOR");
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("TAIL_VISIBLE_AT_CURSOR"));
+}
+
+#[test]
+fn tui_loop_batches_pending_terminal_events_before_redraw() {
+    let source =
+        fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs"))
+            .unwrap();
+
+    assert!(source.contains("TUI_EVENT_BATCH_LIMIT"));
+    assert!(source.contains("processed_events < TUI_EVENT_BATCH_LIMIT"));
+    assert!(source.contains("event::poll(Duration::ZERO)"));
 }
 
 #[test]
@@ -970,6 +1395,7 @@ fn slash_command_palette_filters_formats_and_completes() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let suggestions = slash_command_suggestions_for_state("/compi", false).unwrap();
@@ -1011,6 +1437,7 @@ fn slash_command_palette_mouse_selects_and_completes_match() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     state.input.set_buffer("/".to_string());
@@ -1091,6 +1518,7 @@ fn slash_command_palette_can_be_rendered_in_tools_area() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     state.input.set_buffer("/doctor".to_string());
@@ -1147,6 +1575,7 @@ fn task_overview_formats_plan_tests_and_blockers() {
         running: true,
         exit_requested: false,
         last_event: "deepcli: tool run_tests failed".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let observation = SessionObservation {
@@ -1176,7 +1605,138 @@ fn task_overview_formats_plan_tests_and_blockers() {
     assert!(overview.contains("test=fail code=101 cargo test --all-targets"));
     assert!(overview.contains("tools=3 failed_tools=1"));
     assert!(overview.contains("last output: ok verify complete"));
-    assert!(overview.contains("> /status --json"));
+    assert!(overview.contains("> /status"));
+    assert!(!overview.contains("/status --json"));
+}
+
+#[test]
+fn tool_started_progress_surfaces_command_detail() {
+    let mut state = test_tui_state();
+    let (progress_tx, progress_rx) = mpsc::channel();
+
+    progress_tx
+        .send(RuntimeProgress::ToolStarted {
+            tool: "run_tests".to_string(),
+            detail: Some("cargo test 2>&1".to_string()),
+        })
+        .unwrap();
+    drain_progress(&mut state, &progress_rx);
+
+    assert!(state.last_event.contains("run_tests"));
+    assert!(state.last_event.contains("cargo test 2>&1"));
+    assert_eq!(state.tool_log.len(), 1);
+    assert_eq!(state.tool_log[0].title, "tool: run_tests");
+    assert!(state.tool_log[0].detail.contains("cargo test 2>&1"));
+    assert_eq!(state.chat.len(), 1);
+    assert_eq!(state.chat[0].role, "deepcli");
+    assert!(state.chat[0].content.contains("running tool run_tests"));
+    assert!(state.chat[0].content.contains("cargo test 2>&1"));
+}
+
+#[test]
+fn assistant_delta_progress_updates_messages_immediately() {
+    let mut state = test_tui_state();
+    let (progress_tx, progress_rx) = mpsc::channel();
+
+    progress_tx
+        .send(RuntimeProgress::AssistantDelta {
+            delta: "正在检查".to_string(),
+        })
+        .unwrap();
+    drain_progress(&mut state, &progress_rx);
+
+    assert_eq!(state.chat.len(), 1);
+    assert_eq!(state.chat[0].role, "deepcli");
+    assert_eq!(state.chat[0].content, "正在检查");
+    assert_eq!(state.transcript_scroll, 0);
+
+    progress_tx
+        .send(RuntimeProgress::AssistantDelta {
+            delta: "当前项目".to_string(),
+        })
+        .unwrap();
+    drain_progress(&mut state, &progress_rx);
+
+    assert_eq!(state.chat.len(), 1);
+    assert_eq!(state.chat[0].content, "正在检查当前项目");
+}
+
+#[test]
+fn worker_done_reuses_streamed_assistant_message() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let mut state = test_tui_state();
+    state.running = true;
+    let (progress_tx, progress_rx) = mpsc::channel();
+    progress_tx
+        .send(RuntimeProgress::AssistantDelta {
+            delta: "partial".to_string(),
+        })
+        .unwrap();
+    drain_progress(&mut state, &progress_rx);
+    let (done_tx, done_rx) = mpsc::channel();
+    done_tx
+        .send(WorkerDone {
+            runtime,
+            result: Ok("partial final usage".to_string()),
+        })
+        .unwrap();
+
+    drain_done(&mut state, &done_rx);
+
+    assert_eq!(state.chat.len(), 1);
+    assert_eq!(state.chat[0].role, "deepcli");
+    assert_eq!(state.chat[0].content, "partial final usage");
+}
+
+#[test]
+fn running_overview_quick_actions_use_running_safe_commands() {
+    let dir = tempdir().unwrap();
+    let session = SessionStore::new(dir.path())
+        .create(
+            dir.path(),
+            "deepseek".to_string(),
+            Some("model".to_string()),
+        )
+        .unwrap();
+    let mut state = test_tui_state();
+    state.active_session = Some(ActiveSessionRef {
+        workspace: dir.path().to_path_buf(),
+        session_id: session.id().to_string(),
+    });
+    state.running = true;
+    state.monitor_tab = MonitorTab::Overview;
+    let actions = monitor_quick_actions_for_tab(&state, None);
+    let commands = actions
+        .iter()
+        .map(|action| action.command.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(commands[0], "/status");
+    assert!(!commands.contains(&"/status --json"));
+    assert!(!commands.contains(&"/next --json"));
+
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    assert!(handle_monitor_quick_action_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+        &progress_tx,
+        &done_tx
+    ));
+    assert_eq!(state.chat.last().unwrap().role, "deepcli");
+    assert!(state.last_event.starts_with("running command ok"));
 }
 
 #[test]
@@ -1203,6 +1763,7 @@ fn task_monitor_tabs_format_usage_tests_environment_approvals_and_trace() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let monitor = SessionMonitor {
@@ -1437,6 +1998,7 @@ fn changes_tab_surfaces_session_diff_records_and_actions() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -1581,6 +2143,7 @@ fn changes_tab_keys_select_and_scroll_file_patch() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -1659,6 +2222,7 @@ fn monitor_tab_cycles_without_touching_message_input() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     state.input.set_buffer("hello".to_string());
@@ -1830,6 +2394,7 @@ fn monitor_advanced_toggle_enters_first_advanced_tab() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -1902,6 +2467,7 @@ fn monitor_tabs_can_be_clicked_from_task_monitor_header() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -2007,6 +2573,7 @@ fn health_tab_surfaces_model_credentials_and_config_actions() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2074,6 +2641,7 @@ fn health_tab_surfaces_missing_credentials_repair_action_and_opens_prompt() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2141,6 +2709,7 @@ fn library_tab_surfaces_prompt_skill_and_agent_inventory() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2192,6 +2761,7 @@ fn monitor_quick_actions_can_select_and_prefill_editable_commands() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let (progress_tx, _progress_rx) = mpsc::channel();
@@ -2246,6 +2816,7 @@ fn monitor_quick_actions_can_be_clicked_from_task_monitor() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -2306,6 +2877,7 @@ fn monitor_truncation_keeps_selected_quick_action_visible() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2367,6 +2939,7 @@ fn approvals_tab_can_approve_selected_request() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2431,6 +3004,7 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2528,6 +3102,7 @@ fn approvals_tab_mouse_selects_blockers_without_acting() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {
@@ -2636,6 +3211,7 @@ fn running_tui_handles_btw_commands_without_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2706,6 +3282,7 @@ fn running_tui_status_reads_active_session_without_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2765,6 +3342,7 @@ fn running_tui_stop_marks_session_paused_and_rebuilds_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2866,6 +3444,7 @@ fn running_tui_handles_trace_approval_and_session_commands_without_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -2972,6 +3551,7 @@ fn running_tui_allows_session_restore_backup_dry_run_only() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3064,6 +3644,7 @@ fn running_tui_blocks_session_write_actions() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3141,6 +3722,7 @@ fn running_tui_handles_product_loop_reports_without_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3256,6 +3838,7 @@ fn running_tui_blocks_artifact_output_for_local_side_commands() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3382,6 +3965,7 @@ fn running_tui_blocks_completion_force_install() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3461,6 +4045,7 @@ fn running_tui_can_fork_persisted_context_without_runtime() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3534,6 +4119,7 @@ fn running_tui_allows_read_only_git_inspection_only() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3627,6 +4213,7 @@ fn header_status_uses_active_session_metadata_while_running() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3726,6 +4313,7 @@ fn task_monitor_reads_active_session_while_runtime_is_running() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3810,6 +4398,7 @@ fn environment_setup_quick_action_prefills_instead_of_running() {
         running: true,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let actions = environment_quick_actions(Some(&monitor));
@@ -3878,6 +4467,7 @@ fn approvals_tab_can_approve_active_session_while_running() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3931,6 +4521,7 @@ fn approvals_tab_answers_active_btw_question_while_running() {
         running: true,
         exit_requested: false,
         last_event: "running".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -3987,6 +4578,7 @@ fn task_monitor_renders_overview_and_tool_calls() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -4035,6 +4627,7 @@ fn tools_tab_keys_and_mouse_keep_selected_tool_visible() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -4109,6 +4702,7 @@ fn tools_tab_mouse_click_maps_focused_window_to_actual_tool() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let tools_area = Rect {
@@ -4170,6 +4764,7 @@ fn tools_tab_expanded_selected_tool_shows_detail_preview_and_full_output_hint() 
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -4211,6 +4806,7 @@ fn tools_tab_ctrl_shortcuts_prefill_session_tool_commands() {
         running: true,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -4268,6 +4864,7 @@ fn tools_tab_shows_visible_session_tool_actions() {
         running: true,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
 
@@ -4306,6 +4903,7 @@ fn tools_tab_mouse_click_prefills_visible_tool_action_without_toggling_tool() {
         running: true,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let tools_area = Rect {
@@ -4482,6 +5080,7 @@ fn resume_picker_mouse_selects_and_scrolls_without_falling_through() {
         running: false,
         exit_requested: false,
         last_event: "ready".to_string(),
+        streaming_assistant: None,
         worker: None,
     };
     let area = Rect {

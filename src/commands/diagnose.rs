@@ -388,6 +388,7 @@ fn write_diagnose_support_bundle(
                     executor: input.executor,
                     session_id: input.options.session_id.clone(),
                     provider_override: None,
+                    allow_interactive_prompts: true,
                 },
                 vec!["--json".to_string()],
             )

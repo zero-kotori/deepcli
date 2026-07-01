@@ -96,6 +96,12 @@ impl MonitorTab {
             .find(|entry| entry.tab == self)
     }
 
+    pub(super) fn running_quick_actions(self) -> Option<&'static MonitorTabQuickActions> {
+        MONITOR_RUNNING_QUICK_ACTIONS
+            .iter()
+            .find(|entry| entry.tab == self)
+    }
+
     pub(super) fn tier(self) -> MonitorTier {
         self.metadata_for().tier
     }
@@ -207,6 +213,47 @@ const MONITOR_TRACE_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
     monitor_run_action("/session diagnose --json"),
 ];
 
+const MONITOR_OVERVIEW_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/status"),
+    monitor_run_action("/usage --json"),
+    monitor_run_action("/trace --limit 30"),
+];
+
+const MONITOR_RESULT_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/trace --limit 30"),
+    monitor_run_action("/status"),
+    monitor_run_action("/session history --limit 5"),
+];
+
+const MONITOR_CHANGES_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/git status --json"),
+    monitor_run_action("/git diff --stat"),
+];
+
+const MONITOR_TESTS_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/session tests --limit 5"),
+    monitor_run_action("/usage --json"),
+];
+
+const MONITOR_SESSION_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/session diagnose --json"),
+    monitor_run_action("/session history --limit 10"),
+    monitor_run_action("/fork --dry-run --json"),
+];
+
+const MONITOR_CONTEXT_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/usage --json"),
+    monitor_run_action("/status"),
+    monitor_run_action("/trace --limit 30"),
+];
+
+const MONITOR_TRACE_RUNNING_QUICK_ACTIONS: &[MonitorQuickActionTemplate] = &[
+    monitor_run_action("/trace --limit 30"),
+    monitor_run_action("/logs --limit 80"),
+    monitor_run_action("/usage --json"),
+    monitor_run_action("/session diagnose --json"),
+];
+
 const MONITOR_STATIC_QUICK_ACTIONS: &[MonitorTabQuickActions] = &[
     monitor_tab_quick_actions(MonitorTab::Overview, MONITOR_OVERVIEW_QUICK_ACTIONS),
     monitor_tab_quick_actions(MonitorTab::Result, MONITOR_RESULT_QUICK_ACTIONS),
@@ -217,6 +264,17 @@ const MONITOR_STATIC_QUICK_ACTIONS: &[MonitorTabQuickActions] = &[
     monitor_tab_quick_actions(MonitorTab::Approvals, MONITOR_APPROVALS_QUICK_ACTIONS),
     monitor_tab_quick_actions(MonitorTab::Context, MONITOR_CONTEXT_QUICK_ACTIONS),
     monitor_tab_quick_actions(MonitorTab::Trace, MONITOR_TRACE_QUICK_ACTIONS),
+];
+
+const MONITOR_RUNNING_QUICK_ACTIONS: &[MonitorTabQuickActions] = &[
+    monitor_tab_quick_actions(MonitorTab::Overview, MONITOR_OVERVIEW_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Result, MONITOR_RESULT_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Changes, MONITOR_CHANGES_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Usage, MONITOR_CONTEXT_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Tests, MONITOR_TESTS_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Session, MONITOR_SESSION_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Context, MONITOR_CONTEXT_RUNNING_QUICK_ACTIONS),
+    monitor_tab_quick_actions(MonitorTab::Trace, MONITOR_TRACE_RUNNING_QUICK_ACTIONS),
 ];
 
 const fn monitor_run_action(command: &'static str) -> MonitorQuickActionTemplate {

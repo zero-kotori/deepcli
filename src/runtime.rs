@@ -5,7 +5,9 @@ use crate::commands::{
 };
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
-use crate::providers::{create_provider, ChatRequest, ProviderMessage, ToolCall, Usage};
+use crate::providers::{
+    create_provider, ChatRequest, ProviderMessage, StreamEvent, ToolCall, Usage,
+};
 use crate::session::{
     ApprovalStatus, AuditEvent, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
     SessionMessage, SessionState, SessionStore, SideQuestionStatus, ToolCallRecord, ToolCallStatus,
@@ -311,6 +313,9 @@ fn add_optional_usage_value(total: &mut Option<u64>, value: Option<u64>) {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeProgress {
     ProviderStreamStarted,
+    AssistantDelta {
+        delta: String,
+    },
     ProviderTurnStarted {
         iteration: usize,
         max_iterations: usize,
@@ -325,6 +330,7 @@ pub enum RuntimeProgress {
     },
     ToolStarted {
         tool: String,
+        detail: Option<String>,
     },
     ToolCompleted {
         tool: String,
@@ -339,6 +345,7 @@ impl RuntimeProgress {
             RuntimeProgress::ProviderStreamStarted => {
                 "deepcli: provider stream started".to_string()
             }
+            RuntimeProgress::AssistantDelta { .. } => "deepcli: assistant streaming".to_string(),
             RuntimeProgress::ProviderTurnStarted {
                 iteration,
                 max_iterations,
@@ -357,9 +364,11 @@ impl RuntimeProgress {
                 "deepcli: provider response in {:.1}s (tool_calls={tool_calls})",
                 *elapsed_ms as f64 / 1000.0
             ),
-            RuntimeProgress::ToolStarted { tool } => {
-                format!("deepcli: running tool {tool}")
-            }
+            RuntimeProgress::ToolStarted { tool, detail } => detail
+                .as_ref()
+                .filter(|detail| !detail.is_empty())
+                .map(|detail| format!("deepcli: running tool {tool}: {detail}"))
+                .unwrap_or_else(|| format!("deepcli: running tool {tool}")),
             RuntimeProgress::ToolCompleted { tool, ok, .. } => {
                 let status = if *ok { "completed" } else { "failed" };
                 format!("deepcli: tool {tool} {status}")
@@ -480,6 +489,7 @@ impl AgentRuntime {
                     executor: &self.executor,
                     session_id: Some(self.session_id()),
                     provider_override: Some(self.provider_name()),
+                    allow_interactive_prompts: true,
                 },
             )
             .await;
@@ -784,6 +794,7 @@ impl AgentRuntime {
             &self.config,
             args,
             Some(self.provider_name()),
+            true,
         )?;
         match action.as_deref() {
             Some("set") => {
@@ -962,13 +973,24 @@ impl AgentRuntime {
                 }),
             )?;
             let started = Instant::now();
+            let progress_tx = self.progress_tx.clone();
+            let mut on_stream_event = move |event: StreamEvent| {
+                if let Some(delta) = event.content_delta.filter(|delta| !delta.is_empty()) {
+                    if let Some(tx) = &progress_tx {
+                        let _ = tx.send(RuntimeProgress::AssistantDelta { delta });
+                    }
+                }
+            };
             let response = match timeout(
                 provider_turn_timeout,
-                provider.chat(ChatRequest {
-                    messages: compacted_messages,
-                    tools: tool_specs,
-                    json_mode: false,
-                }),
+                provider.chat_with_stream_events(
+                    ChatRequest {
+                        messages: compacted_messages,
+                        tools: tool_specs,
+                        json_mode: false,
+                    },
+                    Some(&mut on_stream_event),
+                ),
             )
             .await
             {
@@ -1074,11 +1096,9 @@ impl AgentRuntime {
             if budget_skipped_this_turn > 0 {
                 consecutive_budget_skipped_turns += 1;
                 if consecutive_budget_skipped_turns >= budget_skip_turn_limit {
-                    self.session.set_state(SessionState::Failed)?;
-                    return Err(anyhow!(
-                        "agent repeated budget-skipped tool calls for {} consecutive turns",
-                        consecutive_budget_skipped_turns
-                    ));
+                    return self.finish_repeated_budget_skipped_tool_calls(
+                        consecutive_budget_skipped_turns,
+                    );
                 }
             } else {
                 consecutive_budget_skipped_turns = 0;
@@ -1091,6 +1111,19 @@ impl AgentRuntime {
 
     fn provider_turn_timeout(&self) -> Duration {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
+    }
+
+    fn finish_repeated_budget_skipped_tool_calls(&mut self, turns: usize) -> Result<String> {
+        let content = format!(
+            "已停止继续执行重复的工具调用预算请求：模型连续 {turns} 轮请求的工具调用都被预算护栏跳过。请基于当前已有上下文继续，或明确说明需要放宽预算后再重试。"
+        );
+        self.session.append_message("assistant", &content)?;
+        self.session
+            .update_plan_step("review", PlanStepStatus::Completed)?;
+        self.session.complete_pending_plan_steps()?;
+        self.session.set_state(SessionState::Completed)?;
+        self.session.write_summary(&content)?;
+        Ok(content)
     }
 
     fn build_session_context(&self) -> Result<Option<String>> {
@@ -1196,11 +1229,15 @@ impl AgentRuntime {
                 call.function.name
             ));
         }
+        let progress_detail = tool_call_progress_detail(call);
         self.emit_progress(RuntimeProgress::ToolStarted {
             tool: call.function.name.clone(),
+            detail: progress_detail.clone(),
         });
-        self.session
-            .append_audit_event("tool_started", json!({ "tool": call.function.name }))?;
+        self.session.append_audit_event(
+            "tool_started",
+            json!({ "tool": call.function.name, "detail": progress_detail }),
+        )?;
         let execution = match self
             .executor
             .execute(&call.function.name, call.function.arguments.clone())
@@ -1736,6 +1773,19 @@ fn truncate_progress_detail(output: &str) -> String {
 fn is_approval_error(error: &anyhow::Error) -> bool {
     let message = error.to_string();
     message.contains("requires approval") || message.contains("requires double confirmation")
+}
+
+fn tool_call_progress_detail(call: &ToolCall) -> Option<String> {
+    if !matches!(call.function.name.as_str(), "run_shell" | "run_tests") {
+        return None;
+    }
+    call.function
+        .arguments
+        .get("command")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|command| !command.is_empty())
+        .map(truncate_progress_detail)
 }
 
 fn is_complex_task(task: &str) -> bool {
@@ -2472,6 +2522,36 @@ mod tests {
     }
 
     #[test]
+    fn tool_call_progress_detail_uses_command_for_shell_and_tests() {
+        let tool_call = |name: &str, arguments: serde_json::Value| ToolCall {
+            id: format!("call_{name}"),
+            call_type: "function".to_string(),
+            function: crate::providers::ToolCallFunction {
+                name: name.to_string(),
+                arguments,
+            },
+        };
+
+        assert_eq!(
+            tool_call_progress_detail(&tool_call(
+                "run_tests",
+                json!({"command": "cargo test 2>&1"})
+            ))
+            .as_deref(),
+            Some("cargo test 2>&1")
+        );
+        assert_eq!(
+            tool_call_progress_detail(&tool_call("run_shell", json!({"command": "pwd && ls -la"})))
+                .as_deref(),
+            Some("pwd && ls -la")
+        );
+        assert_eq!(
+            tool_call_progress_detail(&tool_call("read_file", json!({"path": "src/runtime.rs"}))),
+            None
+        );
+    }
+
+    #[test]
     fn compacts_provider_history_at_group_boundaries() {
         let mut messages = vec![
             ProviderMessage {
@@ -2621,6 +2701,34 @@ mod tests {
         assert!(!tool_output_indicates_failure(
             "Finished dev profile successfully"
         ));
+    }
+
+    #[test]
+    fn budget_skipped_exhaustion_completes_with_user_facing_message() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let output = runtime
+            .finish_repeated_budget_skipped_tool_calls(3)
+            .unwrap();
+
+        assert!(!output.contains("agent repeated budget-skipped"));
+        assert!(output.contains("工具调用预算"));
+        assert_eq!(runtime.session.metadata.state, SessionState::Completed);
+        let messages = runtime.session.load_messages().unwrap();
+        assert_eq!(messages.last().unwrap().role, "assistant");
+        assert_eq!(messages.last().unwrap().content, output);
     }
 
     #[test]

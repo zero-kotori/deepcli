@@ -22,7 +22,7 @@ pub(crate) fn handle_credentials(
     config: &AppConfig,
     args: Vec<String>,
 ) -> Result<String> {
-    handle_credentials_with_default(workspace, config, args, None)
+    handle_credentials_with_default(workspace, config, args, None, true)
 }
 
 pub(crate) fn handle_credentials_with_default(
@@ -30,6 +30,7 @@ pub(crate) fn handle_credentials_with_default(
     config: &AppConfig,
     args: Vec<String>,
     provider_override: Option<&str>,
+    allow_interactive_prompt: bool,
 ) -> Result<String> {
     match args.first().map(String::as_str) {
         None | Some("status") => {
@@ -64,6 +65,10 @@ pub(crate) fn handle_credentials_with_default(
             }
             let api_key = if use_stdin {
                 read_api_key_from_stdin(&provider)?
+            } else if !allow_interactive_prompt {
+                bail!(
+                    "interactive credential input is disabled; pipe the key into `/credentials set {provider} --stdin`"
+                );
             } else {
                 read_api_key_from_hidden_prompt(&provider)?
             };

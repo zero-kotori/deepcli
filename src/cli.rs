@@ -122,6 +122,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                         executor: &executor,
                         session_id: None,
                         provider_override: cli.provider.as_deref(),
+                        allow_interactive_prompts: !cli.yes,
                     },
                 )
                 .await?;
@@ -1979,7 +1980,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-            assert!(error.contains("stdin is not a terminal"));
+            assert!(error.contains("interactive credential input is disabled"));
             assert!(
                 !error.contains("apiKey is missing"),
                 "credential alias should fail in local credential handling before any provider call"

@@ -1901,6 +1901,7 @@ async fn resume_dry_run_json_previews_session_without_starting_runtime() {
             executor: &executor,
             session_id: None,
             provider_override: None,
+            allow_interactive_prompts: true,
         },
     )
     .await
@@ -10073,6 +10074,7 @@ fn status_falls_back_to_latest_session_and_shows_usage_context() {
             executor: &executor,
             session_id: None,
             provider_override: None,
+            allow_interactive_prompts: true,
         },
         Vec::new(),
     )
@@ -10123,6 +10125,7 @@ fn status_json_output_is_structured_and_written() {
             executor: &executor,
             session_id: None,
             provider_override: None,
+            allow_interactive_prompts: true,
         },
         vec![
             "--json".into(),
@@ -10188,6 +10191,7 @@ fn status_json_session_actions_are_executable_for_next_action_signals() {
             executor: &executor,
             session_id: None,
             provider_override: None,
+            allow_interactive_prompts: true,
         },
         vec!["--json".into()],
     )
@@ -10229,6 +10233,7 @@ fn status_output_rejects_path_traversal() {
             executor: &executor,
             session_id: None,
             provider_override: None,
+            allow_interactive_prompts: true,
         },
         vec!["--output".into(), "../status.txt".into()],
     )
@@ -12581,6 +12586,23 @@ fn credential_aliases_parse_to_local_credential_actions() {
             args: vec!["remove".to_string(), "deepseek".to_string()]
         })
     );
+}
+
+#[test]
+fn credentials_set_rejects_hidden_prompt_when_interactive_prompts_disabled() {
+    let dir = tempdir().unwrap();
+    let config = AppConfig::default();
+    let error = handle_credentials_with_default(
+        dir.path(),
+        &config,
+        vec!["set".to_string(), "deepseek".to_string()],
+        None,
+        false,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("interactive credential input is disabled"));
 }
 
 #[test]

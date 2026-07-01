@@ -99,11 +99,10 @@ pub(super) fn result_output_line_count(state: &TuiState) -> usize {
 }
 
 pub(super) fn scroll_transcript(state: &mut TuiState, amount: usize) {
-    let max_scroll = state.chat.len().saturating_sub(1);
     state.transcript_scroll = state
         .transcript_scroll
         .saturating_add(amount)
-        .min(max_scroll);
+        .min(usize::MAX / 2);
     state.last_event = transcript_scroll_event(state);
 }
 
