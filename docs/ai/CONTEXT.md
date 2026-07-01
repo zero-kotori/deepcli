@@ -1041,8 +1041,363 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：`deepcli.opportunities.v1` 增加顶层 `summary`，包含 status、ready、priorityFilter、effortFilter、opportunityCount、totalOpportunityCount、filteredOutOpportunityCount、recommendedOpportunityId，以及从 checklist 派生的 `recommendedAction` 和 `recommendedActionLabel`。
    - 目的：机会页、TUI product opportunities 面板和脚本可以直接渲染筛选后的机会页头和主 CTA，不再复制机会筛选摘要与动作命名逻辑。
 
+176. Command Registry 显式元数据
+   - 产品缺口：harness 重构要求主要命令入口由 registry 驱动，但公开命令的分组、running-safe 标记与 completion-only 顶层别名仍由分散硬编码推导；新增 help topic 或 completion alias 时缺少“必须登记 metadata”的契约，后续容易让 help、completion、UI 和 docs 分类重新漂移。
+   - 结果：`src/commands/registry.rs` 增加显式 `CommandMetadata` 表、slash alias metadata 和 completion-only alias metadata，记录每个公开命令/兼容 alias/补全别名的 group、running-safe、canonical 或 summary；`CommandRouter::command_metadata()`、`CommandRouter::command_alias_metadata()` 和 `CommandRouter::completion_alias_metadata()` 暴露这些表，`parser`、`help_summaries`、help 详情和 completion catalog 从 registry 读取 metadata；新增 `command_registry_explicitly_owns_public_command_metadata`、`command_registry_owns_slash_alias_metadata` 与 `command_registry_owns_completion_alias_metadata` 契约测试，确保每个 help topic、parser 兼容 alias 和 completion-only alias 都有显式 metadata。
+   - 目的：推进 harness 阶段 2/5 的命令 registry 与 docsync 收敛，为后续继续拆 UI running-safe 投影提供单一元数据来源。
+
+177. TUI Running-Safe 提示消费 Command Registry
+   - 产品缺口：TUI 运行中 unsupported/deferred 提示仍维护一份手写可用命令列表，运行中 slash palette priority 也用手写 match，容易和 `CommandHelpSummary.running_safe`、slash palette 和 parser 支持范围漂移；例如 `/git`、legacy `/cleanup` 已在 registry 中标记为 running-safe，但提示列表或优先级表不会自动覆盖它们。
+   - 结果：`src/ui.rs` 新增 running-safe command hint projection，从 `CommandRouter::help_summaries()` 过滤 `running_safe=true` 生成运行中可用命令集合，只在 UI 层为 `/preflight`、`/git`、`/session`、`/cleanup`、`/btw` 补充 `--dry-run` 或 read-only 等交互限制标签；unsupported 与 deferred 两处提示共用该 projection；running palette priority 从 match 改为 `RUNNING_SAFE_PALETTE_PRIORITY` 显式 projection，覆盖 `/git` 与 `/cleanup`；新增 `running_tui_unsupported_hint_covers_registry_running_safe_commands` 和 `running_safe_palette_priority_covers_registry_running_safe_commands` 单测，约束提示集合与优先级 projection 覆盖 command registry metadata。
+   - 目的：推进 harness 阶段 7 的 UI projection 收束，减少 UI 自维护命令清单导致的漂移；完整 UI projection model、主视图收束和剩余大文件拆分仍未完成。
+
+178. Commands 入口测试模块外置
+   - 产品缺口：阶段 6 要求旧大文件迁移后只保留 registry、薄适配层或 re-export，但 `src/commands.rs` 仍内联 1.5 万行以上命令契约测试，导致入口文件难以阅读，也让后续 handler/helper 拆分时上下文噪声过大。
+   - 结果：将内联 `#[cfg(test)] mod tests { ... }` 机械迁移到 `src/commands/tests.rs`，并把测试专用 import 下沉到该外置测试模块，`src/commands.rs` 仅保留 `#[cfg(test)] mod tests;`；新增 `commands_entrypoint_uses_external_test_module` 契约测试，防止大型命令测试模块或测试专用 import 回流到入口文件；`docs/HARNESS.md` 与 `docs/MODULES/commands.md` 同步记录新的测试归属。
+   - 目的：推进 harness 阶段 6 的模块化和测试分层落地，让 `src/commands.rs` 更接近分发/re-export/shared-helper 入口；共享 helper 仍需后续继续收束。
+
+179. Git Identity Helper 拆分
+   - 产品缺口：`src/commands.rs` 在 handler 和测试模块拆出后仍直接拥有 Git identity 报告、summary/JSON 投影和只读 Git stdout helper；这些逻辑被 doctor、selftest、privacy、preflight 和 product loop 复用，不属于命令入口分发职责。
+   - 结果：新增 `src/commands/git_identity.rs`，迁移 `GitIdentityReport`、`build_git_identity_report`、`format_git_identity_summary`、`git_identity_json`、`git_stdout` 和 `git_stdout_bytes`；`src/commands.rs` 只通过 `pub(crate) use` 重新导出兼容现有 sibling module 调用；`commands_module_docs_cover_split_source_files` 增加该文件，确保 owner 文档继续覆盖 split source。
+   - 目的：继续推进 harness 阶段 6 的旧大文件收束，把可独立复用的 Git identity 领域 helper 从入口文件中移出；剩余共享 helper 仍需后续按真实调用链继续拆分。
+
+180. Delivery Diff Source 可见性 Warning 清理
+   - 产品缺口：每次 `cargo test`、`cargo check` 和 `deepcli round` 都输出 `SessionDiffSource` 比 `VerificationDiffSource::Session` 更私有的 `private_interfaces` warning，降低 gate 输出信噪比。
+   - 结果：将 `src/commands/delivery.rs` 中的 `SessionDiffSource` 提升为 `pub(crate)`，字段仍保持私有；`cargo check` 不再输出该 warning。
+   - 目的：清理阶段 6 重构后的编译噪声，让后续验证输出更适合作为产品 gate 证据。
+
+181. Commands 无状态共享 Helper 拆分
+   - 产品缺口：阶段 6 要求旧大文件迁移后只保留 registry、薄适配层或 re-export，但 `src/commands.rs` 仍直接拥有参数读取、正整数解析、nextActions 去重、路径展示、provider env key、配置路径、默认模型展示、JSON/text 截断与测试命令展示等无状态 helper，导致入口文件继续承担共享工具库职责。
+   - 结果：新增 `src/commands/shared.rs`，迁移 `active_default_model`、`project_config_path`、`workspace_relative_display`、`dedup_preserve_order`、`provider_env_key`、`required_arg`、`parse_positive_usize` 以及相关展示/截断 helper；`src/commands.rs` 只通过 `pub(crate) use` 重新导出兼容现有 sibling module 调用；新增 `commands_entrypoint_delegates_stateless_shared_helpers` 契约测试，防止这些 helper 回流到入口文件并要求 `docs/MODULES/commands.md` 记录 owner。
+   - 目的：继续推进 harness 阶段 6 的旧大文件收束，让 `src/commands.rs` 更接近 router/re-export 入口；剩余会话活动、会话存储、环境 nextActions 等 helper 仍需后续按真实调用链继续拆分。
+
+182. Commands 会话共享 Helper 拆分
+   - 产品缺口：无状态 helper 拆出后，`src/commands.rs` 仍直接拥有会话列表展示、会话活动回退选择、会话状态名和会话目录大小计算；这些逻辑被 runtime、session、status、usage、resume 和 fork 复用，不属于命令入口分发职责。
+   - 结果：新增 `src/commands/session_helpers.rs`，迁移 `format_session_list`、`session_has_no_recorded_activity`、`latest_session_with_recorded_activity`、`session_state_name` 和 `session_storage_bytes`；`src/commands.rs` 继续 re-export `format_session_list` 兼容 runtime 调用，并通过 `pub(crate) use` 兼容现有 sibling module 调用；新增 `commands_entrypoint_delegates_session_shared_helpers` 契约测试，防止会话 helper 回流到入口文件并要求 `docs/MODULES/commands.md` 记录 owner。
+   - 目的：继续推进 harness 阶段 6 的旧大文件收束；`src/commands.rs` 当前只剩环境 nextActions 相关 helper 仍需后续拆分。
+
+183. Commands 环境 Action Helper 拆分
+   - 产品缺口：会话 helper 拆出后，`src/commands.rs` 只剩环境报告 nextActions、默认环境修复动作和 slash action 到 shell command 转换这组三个 helper；它们被 doctor/env 链路复用，但不属于 router 分发职责。
+   - 结果：新增 `src/commands/environment_actions.rs`，迁移 `environment_next_actions`、`default_environment_next_actions` 和 `shell_command_from_slash_command`；`src/commands.rs` 只 re-export `environment_next_actions` 兼容现有 doctor 调用；新增 `commands_entrypoint_delegates_environment_action_helpers` 契约测试，防止环境 action helper 回流到入口文件并要求 `docs/MODULES/commands.md` 记录 owner。
+   - 目的：完成本轮针对 `src/commands.rs` 剩余共享 helper 的收束，使入口文件更接近 router/re-export/test-module 声明；阶段 6 仍需继续复查命令面删除/降级策略和部分大命令模块瘦身。
+
+184. TUI Core Session/Context 主视图
+   - 产品缺口：阶段 7 建议的主视图包含 Session 与 Context，但 monitor core tabs 只有 Overview/Changes/Tools/Tests/Approvals；会话状态、计划、队列和上下文 cache 仍主要散落在 Overview、Usage、Environment 等视图里，主标签条缺少直接入口。
+   - 结果：`MonitorTab` 增加 core `Session` 与 `Context`，core 顺序变为 Overview/Changes/Tools/Tests/Session/Approvals/Context；Session 视图消费 `SessionMonitor.observation` 与 recent events 展示会话状态、计划进度、审批/旁路队列、工具计数和最近事件；Context 视图消费 `SessionMonitor.usage` 与 recent environment 展示 cache hit/miss、请求大小、token 与最近环境摘要；新增/更新 `monitor_tabs_lead_with_core_views_then_advanced`、`monitor_tab_cycles_without_touching_message_input` 与 `task_monitor_tabs_format_usage_tests_environment_approvals_and_trace` 覆盖 tab projection、键盘循环和渲染内容。
+   - 目的：继续推进 harness 阶段 7 的主视图收束，让 UI 直接消费已有 `SessionMonitor` projection 展示核心状态；完整 UI projection model、真实终端观感验证和部分 formatter 拆分仍需后续推进。
+
+185. TUI Monitor Metadata 与静态 Quick Actions Projection
+   - 产品缺口：Session/Context 加入 core tabs 后，tab 顺序、label、tier 与静态快捷操作仍分散在 `MonitorTab::all()`、`tier()`、`label()` 和 `monitor_quick_actions_for_tab()` 的大 `match` 中；后续新增或降级 monitor tab 时，排序、折叠、渲染名称和快捷操作容易再次漂移。
+   - 结果：新增 `MonitorTabMetadata` / `MONITOR_TAB_METADATA`，让 `MonitorTab::all()`、`tier()` 和 `label()` 从同一 projection 派生；新增 `MonitorQuickActionTemplate`、`MonitorTabQuickActions` 与 `MONITOR_STATIC_QUICK_ACTIONS`，让 Overview/Result/Changes/Usage/Tests/Session/Approvals/Context/Trace 的静态快捷操作从 projection 派生，Tools/Health/Library/Deliver/Environment 继续保留动态函数；新增 `monitor_tab_metadata_is_projection_source` 和 `monitor_static_quick_actions_are_projection_source` 单测约束投影来源。
+   - 目的：继续推进 harness 阶段 7 的 UI projection model，把 monitor catalog 与静态操作从分散 match 收束为稳定投影；动态 quick actions、formatter 拆分和真实终端观感仍需后续推进。
+
+186. UI Monitor Projection Owner 拆分
+   - 产品缺口：`src/ui.rs` 仍直接拥有 monitor tab catalog、metadata、静态 quick-action projection 和 action 类型；即使逻辑已表格化，owner 仍在 1 万行以上的大 UI 文件里，后续继续迁移 formatter/动态 action 时缺少明确落点。
+   - 结果：新增 `src/ui/monitor.rs`，迁移 `MonitorTier`、`MonitorTab`、`MonitorTabMetadata`、`MonitorQuickAction`、静态 quick-action template/table 与对应 projection 方法；`src/ui.rs` 通过 `mod monitor;` 使用这些类型，动态 action 和渲染路径保持不变；新增 `ui_module_docs_cover_monitor_projection_owner` 契约测试，要求 owner 文件存在、入口声明子模块、`docs/MODULES/ui.md` 记录该 owner。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，为后续把 monitor formatter 与动态 quick actions 继续拆出建立明确模块边界。
+
+187. Commands Action Checklist Projection 拆分
+   - 产品缺口：`src/commands/productloop.rs` 除了 scorecard/round/benchmark 主流程外，还直接拥有 scorecard/local/benchmark checklist 过滤和命令 label 投影；这些 helper 被 doctor/env/session/config/git/prompt/skill/agent 等多个命令复用，不属于产品循环 handler 的主体职责，也让大命令模块继续膨胀。
+   - 结果：新增 `src/commands/action_checklist.rs`，迁移 `scorecard_action_checklist`、`local_action_checklist`、`benchmark_action_checklist` 以及 scorecard/local/benchmark label 投影；`src/commands.rs` 统一 re-export 这些 helper，`productloop.rs` 的 round gate checklist 改为复用 `scorecard_action_checklist`；`commands_module_docs_cover_split_source_files` 增加该 owner 文件，`docs/MODULES/commands.md`、`docs/HARNESS.md` 和 `docs/ARCHITECTURE.md` 同步记录职责变化。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和投影 owner 收束，让 action/checklist 输出契约从产品循环主文件中独立出来；命令面 support/legacy 降级策略和 productloop/session/delivery 进一步瘦身仍需后续推进。
+
+188. Legacy Command Successor Metadata
+   - 产品缺口：命令面已经有 `legacy` 分组，但 registry 只记录 group/running-safe，`docs/COMMANDS.md` 也只写“stable alias”或兼容说明；后续 agent 无法从机器可读入口判断 legacy 命令应该导向哪个 successor，容易继续把 legacy 入口当成新功能中心。
+   - 结果：新增 `LegacyCommandMetadata` 与 `CommandRouter::legacy_command_metadata()`，为 `/apikey`、`/compiler`、`/install`、`/cleanup`、`/rename` 记录 successor 和 policy；`docs/COMMANDS.md` 的 legacy 行内写明 `替代：...`；新增 `command_registry_owns_legacy_successor_metadata` 契约测试，确保每个 registry legacy 命令都有 successor/policy，且文档行包含对应替代入口。
+   - 目的：继续推进 harness 阶段 6 的删除/降级策略，把 legacy 兼容从“只有分组标签”升级为可验证的迁移约束；真正删除或进一步降级命令仍需后续逐项评估。
+
+189. UI Monitor SessionMonitor-only Formatter Owner
+   - 产品缺口：`src/ui/monitor.rs` 已拥有 monitor tab catalog、metadata 与静态 quick-action projection，但只消费 `SessionMonitor` 的 Usage/Deliver/Tests/Session/Context/Environment/Approvals formatter 仍留在 `src/ui.rs`，导致已收束的核心 monitor projection 仍要回到 1 万行以上的 UI 入口文件里维护。
+   - 结果：将 `format_usage_tab_lines`、`format_deliver_tab_lines`、`format_tests_tab_lines`、`format_session_tab_lines`、`format_context_tab_lines`、`format_environment_tab_lines`、`format_approvals_tab_lines` 与 quick-action 行追加 helper 迁入 `src/ui/monitor.rs`，`src/ui.rs` 只导入并调用这些 projection formatter；`ui_module_docs_cover_monitor_projection_owner` 契约测试新增 owner 断言，确保这些 formatter 不回流到 `src/ui.rs` 且 `docs/MODULES/ui.md` 同步记录。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，让只消费会话观测模型的 tab 状态投影与 monitor metadata/quick actions 位于同一 owner；剩余需要 `TuiState`、workspace、配置或库状态的 formatter 与动态 quick actions 仍需后续继续迁移。
+
+190. UI Monitor-only Dynamic Quick Actions Owner
+   - 产品缺口：静态 quick actions 已经由 `src/ui/monitor.rs` 拥有，但 Tools/Deliver/Environment 这三个不需要 `TuiState` 的动态 quick actions 仍留在 `src/ui.rs`，让 monitor action 投影继续分散在入口文件和 owner 模块之间。
+   - 结果：将 `tool_quick_actions`、`deliver_quick_actions`、`environment_quick_actions`、`environment_action_target`、`environment_needs_setup` 迁入 `src/ui/monitor.rs`，`src/ui.rs` 只在 tab 分发时调用这些 owner 函数；`ui_module_docs_cover_monitor_projection_owner` 契约测试新增 quick-action owner 断言，防止这些函数回流。
+   - 目的：继续推进 harness 阶段 7 的 quick-action projection 收束，把不依赖 workspace/config/store 的 monitor actions 放到同一 owner；Health/Library 动态操作仍因读取 workspace、配置和本地库状态留在 `src/ui.rs`，后续可再评估是否抽成更具体的领域 projection。
+
+191. UI Health Monitor Projection Owner
+   - 产品缺口：Health tab formatter 与 quick actions 需要读取 workspace 和 `AppConfig`，不适合放进纯 `src/ui/monitor.rs`，但继续留在 `src/ui.rs` 会让入口文件承担 provider credential 投影、env key 归一化和 presence label 格式化等 tab 专属逻辑。
+   - 结果：新增 `src/ui/monitor_health.rs`，迁移 `format_health_tab_lines`、`health_quick_actions_for_state`、`provider_needs_credentials_for_ui`、`provider_env_key_for_ui` 和 `presence_label`；`src/ui.rs` 只注册 `mod monitor_health;` 并调用 owner 函数；新增 `ui_module_docs_cover_monitor_health_owner` 契约测试，防止 Health projection 回流到入口文件。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，把读取 workspace/config 的 Health 状态投影与纯 monitor projection 分离；Library/Trace/Result/Changes/Tools 等仍需后续按依赖继续拆分。
+
+192. UI Library Monitor Projection Owner
+   - 产品缺口：Library tab formatter 与 quick actions 需要读取 workspace、prompt store、skill store 和 agent store；这类本地库投影继续留在 `src/ui.rs` 会让入口文件承担 prompt/skill/agent inventory 格式化和按钮决策，不符合 UI projection owner 收束方向。
+   - 结果：新增 `src/ui/monitor_library.rs`，迁移 `format_library_tab_lines`、`library_quick_actions_for_state` 和 `format_library_item`；`src/ui.rs` 只注册 `mod monitor_library;` 并调用 owner 函数；新增 `ui_module_docs_cover_monitor_library_owner` 契约测试，防止 Library projection 回流到入口文件。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，把读取本地库状态的 Library 投影从入口文件移出；Trace/Result/Changes/Tools 等仍需后续按依赖继续拆分。
+
+193. Benchmark Status Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 同时承担 benchmark status 判定、freshness 计算、required preset 覆盖、JSON/text 格式化和其它 benchmark 子命令分发，阶段 6 要求旧大文件继续向明确 owner 收束。
+   - 结果：新增 `src/commands/benchmark_status.rs`，迁移 `BenchmarkStatusReport`、required preset 状态、`build_benchmark_status_report`、`format_benchmark_status_json`、`format_benchmark_status_text`、freshness JSON/summary 和 benchmark artifact preset 匹配 helper；`src/commands.rs` 注册 `mod benchmark_status;` 并通过 crate 内 re-export 供 `/round`、`/scorecard`、`/benchmark status` 与 benchmark suite 输出复用；新增 `productloop_delegates_benchmark_status_projection` 契约测试防止该 projection 回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和状态投影 owner 收束；命令面真正删除/降级策略、`productloop.rs` 其它 benchmark 子域、`session.rs`、`delivery.rs` 和 UI 剩余 projection 仍需后续推进。
+
+194. Benchmark Baselines Projection Owner
+   - 产品缺口：SOTA baseline 下一步动作、baseline-template、baseline inventory 和 compare-ready 判断仍散落在 `src/commands/productloop.rs` 的文件开头、handler、JSON/text formatter 与 helper 区域，导致产品循环主文件继续承担 baseline projection owner 职责。
+   - 结果：新增 `src/commands/benchmark_baselines.rs`，迁移 `sota_baseline_next_actions`、默认 baseline action 常量、`handle_benchmark_baselines`、`handle_benchmark_baseline_template`、baseline report/case 类型、baseline 文件加载、baseline-template JSON/text、baseline inventory JSON/text 和 compare-ready 判断；`src/commands.rs` 注册 `mod benchmark_baselines;` 并通过 crate 内 re-export 供 `/round`、`/scorecard`、`/recipes`、`/opportunities`、benchmark compare/trends 复用；新增 `productloop_delegates_benchmark_baselines_projection` 契约测试防止 baseline projection 回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和 baseline projection owner 收束；当时 `productloop.rs` 仍保留 benchmark run/record/list/show/cleanup/summary/trends/compare 与 scorecard/round 逻辑，后续继续拆分或降级评估。
+
+195. Benchmark History Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍同时承担 benchmark summary/trends/compare 的 handler、历史聚合、趋势计算、baseline comparison、JSON/text projection 和 `/round`/`/scorecard` trend gate 状态判断，导致产品循环主文件继续承载 benchmark history 子域。
+   - 结果：新增 `src/commands/benchmark_history.rs`，迁移 `handle_benchmark_summary`、`handle_benchmark_trends`、`handle_benchmark_compare`、`build_benchmark_case_summaries`、`build_benchmark_case_trends`、summary/trends/compare JSON/text formatter、case summary/trend/comparison 类型与 trend gate 状态判断；`src/commands.rs` 注册 `mod benchmark_history;` 并通过 crate 内 re-export 供 `/benchmark summary|trends|compare`、`/round` 与 `/scorecard` 复用；新增 `productloop_delegates_benchmark_history_projection` 契约测试防止 history projection 回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和 benchmark history projection owner 收束；当时 `productloop.rs` 仍保留 benchmark run/record/list/show/cleanup 与 scorecard/round 逻辑，后续继续拆分或降级评估。
+
+196. Benchmark Artifact Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍同时承担 benchmark list/show/cleanup handler、artifact 读取排序、artifact detail summary、cleanup candidate 选择、artifact JSON/text projection 和 `BENCHMARK_ARTIFACT_SCHEMA` 所有权，导致 benchmark evidence artifact 生命周期没有独立 owner。
+   - 结果：新增 `src/commands/benchmark_artifacts.rs`，迁移 `BENCHMARK_ARTIFACT_SCHEMA`、`BenchmarkArtifact`、`handle_benchmark_list`、`handle_benchmark_show`、`handle_benchmark_cleanup`、`load_benchmark_artifacts`、artifact status/duration/string helper、artifact detail/list/cleanup JSON/text projection 和 cleanup 删除预览逻辑；`src/commands.rs` 注册 `mod benchmark_artifacts;` 并通过 crate 内 re-export 供 benchmark run/record、status、history、baseline 与 `/benchmark list|show|cleanup` 复用；新增 `productloop_delegates_benchmark_artifact_projection` 契约测试防止 artifact projection 回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和 artifact projection owner 收束；当时 `productloop.rs` 仍保留 benchmark run/record/run-suite/presets 与 scorecard/round 逻辑，后续继续拆分或降级评估。
+
+197. Benchmark Presets Catalog Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 `BenchmarkPreset`、`BENCHMARK_PRESETS`、required evidence preset 清单、default suite preset 清单、preset resolver 和 `/benchmark presets` JSON/text projection，导致 benchmark run-suite、status、baseline 等模块共享的 preset catalog 没有独立 owner。
+   - 结果：新增 `src/commands/benchmark_presets.rs`，迁移 `BenchmarkPreset`、`BENCHMARK_PRESETS`、`MEANINGFUL_BENCHMARK_PRESETS`、`DEFAULT_BENCHMARK_RUN_SUITE_PRESETS`、`benchmark_preset_by_name`、`handle_benchmark_presets`、presets JSON/text formatter 与 preset summary projection；`src/commands.rs` 注册 `mod benchmark_presets;` 并通过 crate 内 re-export 供 benchmark run-suite、status、baseline、tests 和 `/benchmark presets` 复用；新增 `productloop_delegates_benchmark_presets_catalog` 契约测试防止 preset catalog 回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和 preset catalog owner 收束；`productloop.rs` 仍保留 benchmark run/record/run-suite 与 scorecard/round 逻辑，后续仍需继续拆分或降级评估。
+
+198. Benchmark Runs Execution Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 benchmark run、benchmark record、benchmark run-suite 的 option 解析、shell 执行、timeout、execution artifact JSON、suite schema、artifact path slug 和 run-suite 输出 projection，导致产品循环主文件继续承担 benchmark 执行子域。
+   - 结果：新增 `src/commands/benchmark_runs.rs`，迁移 `BENCHMARK_RUN_SUITE_REMEDIATION_ACTION`、`BENCHMARK_SUITE_SCHEMA`、`BenchmarkRunSuiteOptions`、`BenchmarkRunArtifact`、`BenchmarkCommandExecution`、`handle_benchmark_run`、`handle_benchmark_record`、`handle_benchmark_run_suite`、`execute_benchmark_run_artifact`、benchmark run/record JSON builder、shell command execution、output truncation、artifact path 生成与 `benchmark_slug`；`src/commands.rs` 注册 `mod benchmark_runs;` 并通过 crate 内 re-export 供 `/benchmark run|record|run-suite`、`/round --run-benchmark`、status/artifact/baseline/tests 复用；新增 `productloop_delegates_benchmark_runs_execution` 契约测试防止执行子域回流到 `productloop.rs`。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身和 benchmark execution artifact owner 收束；`productloop.rs` 现在主要保留 scorecard/round 构建、benchmark 分发与 gate 汇总，后续仍需继续复查 support/legacy 策略、`session.rs`、`delivery.rs` 和 UI 剩余 projection。
+
+199. Benchmark Status Handler Owner
+   - 产品缺口：status projection 已拆出后，`src/commands/productloop.rs` 仍保留 `BENCHMARK_STATUS_SCHEMA`、freshness 阈值、`BenchmarkStatusOptions`、`handle_benchmark_status` 与 status option parser，导致 `/benchmark status|gate` 的 handler ownership 仍不完整。
+   - 结果：将 status schema/freshness 常量、status options、`handle_benchmark_status` 和 `parse_benchmark_status_options` 迁入 `src/commands/benchmark_status.rs`；`productloop.rs` 的 `/benchmark status|gate` 分发继续通过 crate 内 re-export 调用该 owner；`productloop_delegates_benchmark_status_projection` 契约测试扩展为同时约束 status handler 和常量不回流。
+   - 目的：补齐 benchmark status owner 边界，让 `productloop.rs` 不再直接拥有 status 子命令执行细节；后续继续处理 scorecard/round 主体、`session.rs`、`delivery.rs` 与 UI 剩余 projection。
+
+200. Scorecard Opportunity Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 `ScorecardOpportunity`、scorecard 产品机会生成、baseline nextActions 合并、opportunity JSON/text projection、recommended opportunity 以及 priority/effort counts；这些输出被 `/scorecard`、`/round`、`/recipes` 和 `/opportunities` 共同复用，不应继续由产品循环主文件承担 projection owner。
+   - 结果：新增 `src/commands/scorecard_opportunities.rs`，迁移 `ScorecardOpportunity`、`SCORECARD_ROUND_REPORT_ACTION`、`SCORECARD_OPPORTUNITIES_ACTION`、`scorecard_product_opportunities`、`opportunity_baseline_next_actions`、opportunity JSON/text projection、recommended opportunity projection 以及 priority/effort counts；`src/commands.rs` 注册并重新导出该 owner，`productloop.rs` 只消费这些 projection helper；新增 `productloop_delegates_scorecard_opportunity_projection` 契约测试防止 opportunity projection 回流。
+   - 目的：继续推进 harness 阶段 6 的产品循环大模块瘦身，让 scorecard opportunity 输出契约有独立 owner；`productloop.rs` 仍保留 scorecard/round 报告构建、benchmark 分发与 gate 汇总，后续仍需继续复查 support/legacy 策略、`session.rs`、`delivery.rs` 和 UI 剩余 projection。
+
+201. Benchmark Dispatch Owner
+   - 产品缺口：benchmark status/run/history/artifact/preset/baseline 子域已经拆出后，`src/commands/productloop.rs` 仍直接拥有 `/benchmark` 子命令分发表、scorecard-compatible benchmark args 判断和 benchmark gate dispatch 默认失败参数注入，导致产品循环主文件继续承担 benchmark CLI 路由职责。
+   - 结果：新增 `src/commands/benchmark_dispatch.rs`，迁移 `handle_benchmark`、`benchmark_status_args_request_failure` 和 `benchmark_args_are_scorecard_compatible`；`src/commands.rs` 注册并重新导出 `handle_benchmark`，`productloop.rs` 不再直接拥有 benchmark 子命令分发；新增 `productloop_delegates_benchmark_dispatch` 契约测试防止该分发表回流。
+   - 目的：继续推进 harness 阶段 6 的产品循环大模块瘦身，让 `/benchmark` CLI 路由只负责委派到各 benchmark owner；`productloop.rs` 现在更聚焦于 `/scorecard` 与 `/round` 报告构建，后续仍需继续拆分 scorecard/round builder、`session.rs`、`delivery.rs` 和 UI 剩余 projection。
+
+202. Round Benchmark Gate Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 round benchmark trend gate 判定、benchmark gate summary、round benchmark status JSON 和 freshness suffix；这些 helper 被 scorecard nextActions、round gates、round JSON/text 和 benchmark suite 输出共同复用，不属于 scorecard/round 报告构建主体。
+   - 结果：新增 `src/commands/round_benchmark_gates.rs`，迁移 `round_benchmark_trends_needs_attention`、trend gate summary/gap/action、`round_benchmark_gate_summary`、round benchmark status projection 和 freshness suffix；`src/commands.rs` 注册并重新导出该 owner，`benchmark_runs.rs` 改为通过命令层 re-export 复用 `round_benchmark_status_json`；新增 `productloop_delegates_round_benchmark_gate_projection` 契约测试防止 gate/status projection 回流。
+   - 目的：继续推进 harness 阶段 6 的产品循环大模块瘦身，把 benchmark gate/status 投影从报告构建主文件移出；`productloop.rs` 现在主要剩 scorecard/round builder、round goal status 与文本/JSON 输出，后续可继续沿这些边界拆分。
+
+203. Round Goal Status Projection Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 `RoundGoalStatus`、goal readiness 会话选择和 `goalStatus` JSON projection；这些逻辑读取 session/goal readiness，不属于 round 报告拼装本体，且与 goal 模块边界耦合较强。
+   - 结果：新增 `src/commands/round_goal_status.rs`，迁移 `RoundGoalStatus`、`build_round_goal_status` 和 `round_goal_status_json`；`src/commands.rs` 注册并重新导出该 owner，`productloop.rs` 只消费 round goal status projection 结果来构建 gate 和文本输出；新增 `productloop_delegates_round_goal_status_projection` 契约测试防止该 projection 回流。
+   - 目的：继续推进 harness 阶段 6 的产品循环大模块瘦身，把 goal readiness projection 与 round report builder 分离；`productloop.rs` 现在主要剩 scorecard/round builder、round benchmark suite wrapper 与文本/JSON 输出，后续继续按这些边界拆分。
+
+204. Scorecard Report Builder Owner
+   - 产品缺口：`src/commands/productloop.rs` 仍直接拥有 `/scorecard` handler、scorecard category projection、scorecard report builder、scorecard text/JSON output 和 scorecard summary JSON；这些逻辑已经形成独立报告域，继续留在 product loop 主文件会让 `/round` 编排和 `/scorecard` 报告构建混在一起。
+   - 结果：新增 `src/commands/scorecard_report.rs`，迁移 `ScorecardReport`、`ScorecardCategory`、`SCORECARD_BENCHMARK_REMEDIATION_ACTION`、`handle_scorecard`、scorecard option parsing、`build_scorecard_report`、category scoring helpers、scorecard text/JSON formatter 和 `scorecard_summary_json`；`src/commands.rs` 注册并重新导出该 owner，`benchmark_runs.rs` 和 `productloop.rs` 通过命令层 re-export 复用 scorecard report projection；新增 `productloop_delegates_scorecard_report_builder` 契约测试防止 scorecard report builder 回流。
+   - 目的：继续推进 harness 阶段 6 的产品循环大模块瘦身，把 `/scorecard` 报告构建与 `/round` 编排分离；`productloop.rs` 现在主要剩 `/round` handler、round builder、round benchmark suite wrapper 和 round text/JSON output，后续可继续拆 round report owner。
+
+205. Round Report Builder Owner
+   - 产品缺口：scorecard/benchmark/goal 子域拆出后，`src/commands/productloop.rs` 仍直接拥有 `/round` handler、round report builder、round text/JSON output、round summary JSON 和 `/round --run-benchmark` benchmark suite wrapper，旧产品循环大文件仍承担主体输出契约。
+   - 结果：新增 `src/commands/round_report.rs`，迁移 `DEFAULT_ROUND_SCORE_THRESHOLD`、`RoundReport`、`RoundGate`、`RoundBenchmarkRun`、`RoundTextInput`、`handle_round`、round option parsing、round benchmark suite wrapper、`build_round_report`、round text/JSON formatter、round summary/checklist JSON 与 benchmark run JSON；`src/commands/productloop.rs` 退化为兼容 re-export，`src/commands.rs` 注册新 owner，内部 round formatter 测试改为直接引用 `round_report`；新增 `productloop_delegates_round_report_builder` 契约测试防止 round report builder 回流。
+   - 目的：完成产品循环大模块中 scorecard/round 主体报告 owner 的分离，让 `productloop.rs` 不再拥有业务实现；后续阶段 6/7 继续复查低价值/重复命令、`session.rs`、`delivery.rs` 和 UI projection model。
+
+206. Delivery Diff Projection Owner
+   - 产品缺口：`src/commands/delivery.rs` 同时承担 `/diff` 参数解析、path scope filtering、session diff fallback、diff stat/name-only/display projection 和 review/verify/handoff 共享的 diff path classifier；这些纯 diff/source helper 和 delivery 报告编排混在一起，让 3000+ 行的大命令模块继续膨胀。
+   - 结果：新增 `src/commands/delivery_diff.rs`，迁移 `DiffOptions`、`DiffView`、`SESSION_DIFF_FALLBACK_LIMIT`、`SessionDiffSource`、`parse_diff_args`、`parse_review_args`、scope path 校验、`filter_diff_by_paths`、diff display/stat/name-only projection、session diff source/fallback、`session_diff_review_input`、`is_added_diff_line` 与 `review_path_from_diff_line`；`src/commands.rs` 注册并重新导出该 owner，delivery 单测改为直接引用 `delivery_diff`；新增 `delivery_delegates_diff_projection_owner` 契约测试防止 diff projection 回流。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身，把 diff 输入与 fallback 契约从 delivery 报告编排中拆出；后续可继续拆 verify/handoff report builder、`session.rs` 和 UI projection model。
+
+207. UI Monitor Output Projection Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 Result/Trace advanced tab formatter 和 Result 输出窗口大小计算；这些只读 output projection 与 TUI 输入、鼠标、布局、运行安全分发混在 9000+ 行入口文件里，不符合阶段 7 的 projection model 收束方向。
+   - 结果：新增 `src/ui/monitor_output.rs`，迁移 `format_result_tab_lines`、`result_output_window_size` 和 `format_trace_tab_lines`；`src/ui.rs` 注册 `mod monitor_output;` 并只调用 owner formatter；新增 `ui_module_docs_cover_monitor_output_owner` 契约测试防止 Result/Trace output projection 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI projection ownership，把 advanced output formatter 从 UI 入口中拆出；后续可继续评估 Changes/Tools 这类带交互状态的 projection 是否可拆成更细 owner。
+
+208. Session Restore-Backup Owner
+   - 产品缺口：`src/commands/session.rs` 同时承担 `/session` 大分发、restore-backup 参数解析、dry-run 预览、写回执行、备份选择、恢复目标解析、preview diff、JSON/text 报告和 UI running-safe dry-run 入口，导致 session 大模块继续混入独立恢复子域。
+   - 结果：新增 `src/commands/session_restore.rs`，迁移 `handle_restore_backup`、`handle_restore_backup_dry_run`、restore-backup parser、dry-run renderer、backup/session/target resolver、preview diff、nextActions、text report 和 `deepcli.session.restore_backup.v1` JSON formatter；`src/commands.rs` 注册并重新导出该 owner，`session.rs` 只保留 `/session restore-backup|restore` 分发调用；将 `session_backup_record_json` 与 `session_matches_fallback_kind` 提升为 crate 内可见复用；新增 `session_delegates_restore_backup_owner` 契约测试防止恢复子域回流。
+   - 目的：继续推进 harness 阶段 6 的大命令模块瘦身，把 session backup restore 从 session 主分发/检查/诊断投影中拆出；后续可继续拆 session list/search/inspect/report projection 或 delivery verify/handoff report builder。
+
+209. Session Catalog Owner
+   - 产品缺口：`src/commands/session.rs` 仍直接拥有默认 session 列表、`/session list`、`/session search`、`/session prune-empty` 的参数解析、catalog 查询、空会话清理、JSON/text projection、nextActions 和 checklist 生成，导致 session 主分发继续承担 catalog/report 子域。
+   - 结果：新增 `src/commands/session_catalog.rs`，迁移 `handle_session_default_list`、`handle_session_list`、`handle_session_search`、`handle_session_prune_empty`、list/search/prune-empty parser、`SessionListReport`、`SessionSearchReport`、`SessionPruneEmptyReport`、catalog JSON/text projection、search matching、session list item JSON、空会话过滤与删除逻辑；`src/commands.rs` 注册并重新导出该 owner，`session.rs` 只保留 list/search/prune-empty 的分发调用；新增 `session_delegates_catalog_owner` 契约测试防止 catalog 子域回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 catalog/list/search/prune-empty 输出契约从 session 检查、诊断、审批/旁路问题队列中拆出；后续可继续拆 session inspect/history/tools/tests/diffs/backups projection 或 delivery verify/handoff report builder。
+
+210. Delivery Report Builder Owner
+   - 产品缺口：`src/commands/delivery.rs` 在 diff projection 拆出后仍直接拥有 `/verify` 与 `/handoff` 的报告输入类型、验证/交接报告拼装、blocker/nextActions/checklist 投影、环境证据格式化和 Markdown/PR/JSON 输出，导致命令编排、执行副作用与报告契约继续混在同一大文件里。
+   - 结果：新增 `src/commands/delivery_reports.rs`，迁移 `VerificationDiffSource`、`VerificationTestRun`、`VerificationEnvironmentCheck`、`VerificationStatusSource`、`VerificationReportInput`、`HandoffReportInput`、`format_verification_report`、`format_handoff_report`、verification/handoff JSON formatter、handoff Markdown/PR formatter、blocker extraction、delivery action checklist、环境证据 JSON/text projection、强/弱测试证据判定和 stale test evidence blocker；`src/commands.rs` 注册并重新导出该 owner；当时 `delivery.rs` 只保留 diff/review/verify/handoff 的命令编排、选项解析、test/env 执行和 worktree review heuristic，后续 review heuristic 已继续拆出；新增 `delivery_delegates_report_builder_owner` 契约测试防止报告 builder 回流。
+   - 目的：继续推进 harness 阶段 6 的 delivery 大模块瘦身，把 verification report projection、handoff report projection 与 delivery report JSON 从命令编排中分离；后续已继续拆出 delivery review heuristic，仍需继续复查 `session.rs`、`delivery.rs` 剩余编排和 UI 剩余 projection。
+
+211. Session Inspect Owner
+   - 产品缺口：`src/commands/session.rs` 在 catalog 与 restore 拆出后仍直接拥有 `/session show|history|summary|tools|tests|diffs|backups` 的子命令 handler、record inspect parser、工具/测试/diff/backup 文本格式化、inspect JSON、记录 JSON projection 和失败工具筛选；这些只读 record projection 与 next/diagnose/rename/export 编排混在同一大文件里。
+   - 结果：新增 `src/commands/session_inspect.rs`，迁移 `handle_session_show`、`handle_session_history`、`handle_session_summary`、`handle_session_tools`、`handle_session_tests`、`handle_session_diffs`、`handle_session_backups`、`SessionInspectOptions`、`ToolCallFilter`、record inspect parser、session inspect JSON、session record projection、工具/测试/diff/backup record JSON、失败工具筛选、`format_tool_calls`、`format_test_runs`、`format_session_diffs` 和 `format_session_backups`；`src/commands.rs` 注册并重新导出该 owner，`session.rs` 只保留对应子命令分发调用；新增 `session_delegates_inspect_owner` 契约测试防止 inspect projection 回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 session inspect JSON 与 session tools/tests/diffs/backups projection 从 session next/diagnose 和导出编排中分离；后续可继续拆 session next/diagnose projection 或复查 support/legacy 命令面。
+
+212. Session Recovery Owner
+   - 产品缺口：`src/commands/session.rs` 在 inspect 拆出后仍直接拥有 `/session next` 与 `/session diagnose` 的子命令 handler、next/diagnose 参数解析、恢复候选选择、next-action signals、quick links、诊断报告和 `deepcli.session.next.v1`/`deepcli.session.diagnose.v1` JSON projection，导致恢复信号、诊断输出与 session 主分发继续耦合。
+   - 结果：新增 `src/commands/session_recovery.rs`，迁移 `handle_session_next`、`handle_session_diagnose`、`resolve_session_for_next_actions`、`session_has_next_action_signals`、next/diagnose parser、`format_session_next_actions`、`format_session_next_json`、`format_session_diagnosis`、`format_session_diagnosis_json`、next action/quick link projection、session next signals JSON 和诊断 tool/test/plan JSON projection；`src/commands.rs` 注册并重新导出该 owner，`session.rs` 只保留 `/session next|diagnose` 分发调用；新增 `session_delegates_recovery_owner` 契约测试防止 recovery projection 回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 session next projection、session diagnose projection 与 next-action signals 从 session 主文件拆出；后续已继续拆出 session export、rename 与 resumable owner，仍可继续评估 running-safe/session 主分发是否足够薄，或转向 UI projection owner。
+
+213. UI Monitor Changes Projection Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 Changes tab 的 worktree snapshot、Git status/diff 解析、session diff 聚合、patch formatter、键盘滚动和鼠标命中逻辑；这些带交互状态的 projection 与 TUI 输入、布局和 running-safe 分发混在同一入口文件里，不符合阶段 7 的 projection model 收束方向。
+   - 结果：新增 `src/ui/monitor_changes.rs`，迁移 `WorkspaceChangesSnapshot`、`WorkspaceDiffSection`、`handle_changes_tab_key`、`select_change_patch_at_row`、`refresh_workspace_changes_snapshot`、`format_changes_tab_lines`、`append_workspace_changes_lines`、`load_workspace_changes_snapshot`、`parse_git_status_snapshot`、`parse_diff_sections` 以及 diff preview/session diff summary helper；`src/ui.rs` 注册 `mod monitor_changes;` 并只保留状态字段和调用；新增 `ui_module_docs_cover_monitor_changes_owner` 契约测试防止 Changes projection 回流。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，把 Changes tab 的 workspace/session diff projection 从 UI 入口中拆出；后续可继续评估 Tools tab 的工具详情/选择/动作 projection 是否需要独立 owner。
+
+214. UI Monitor Tools Projection Owner
+   - 产品缺口：`src/ui.rs` 在 Changes projection 拆出后仍直接拥有 Tools tab 的 `ToolLogItem`/`ToolTabLine`、工具详情预览/截断、选择/展开、可见行映射、Ctrl-O/Ctrl-F 预填和工具 tab formatter；这些带交互状态的 projection 不应继续和 TUI 主循环、running-safe 分发及布局代码混在同一入口文件里。
+   - 结果：新增 `src/ui/monitor_tools.rs`，迁移 `ToolLogItem`、`ToolTabLine`、`handle_tools_tab_key`、`prefill_tools_session_command`、`toggle_selected_tool`、`toggle_tool_at_row`、`move_selected_tool_by`、`select_tool_at_index`、`visible_tool_index_at_line`、`selected_tool_panel_line`、`format_tool_tab_lines`、`tool_tab_lines`、`append_tool_quick_action_lines`、`tool_detail_preview_lines` 和 `tool_detail_is_truncated`；`src/ui.rs` 注册 `mod monitor_tools;` 并只保留工具列表状态、外层鼠标滚动分发和调用；新增 `ui_module_docs_cover_monitor_tools_owner` 契约测试防止 Tools projection 回流。
+   - 目的：继续推进 harness 阶段 6/7 的 UI 大文件瘦身和 projection ownership，把 Tools tab 的工具日志/详情 projection 从 UI 入口中拆出；后续阶段 7 主要剩真实终端观感验收与 UI 入口剩余职责复查。
+
+215. Delivery Review Heuristic Owner
+   - 产品缺口：`src/commands/delivery.rs` 在 diff projection 与 report builder 拆出后仍直接拥有 `review_diff`、`review_worktree` 以及 sensitive/dangerous/panic-prone 风险检测；这些信号被 `/review`、`/verify`、`/handoff` 共同复用，不应继续和交付命令编排、test/env 执行混在同一文件里。
+   - 结果：新增 `src/commands/delivery_review.rs`，迁移 `ReviewFindings`、`ReviewFinding`、`review_diff`、`review_worktree`、凭据路径识别、测试/文档路径豁免、敏感行检测、危险命令检测、panic-prone 检测、detector literal/source 过滤和 finding example 投影；`src/commands.rs` 注册并重新导出该 owner，`delivery.rs` 只保留交付命令编排和 owner 委派；新增 `delivery_delegates_review_heuristic_owner` 契约测试防止 review heuristic 回流。
+   - 目的：继续推进 harness 阶段 6 的 delivery 大模块瘦身，把 review risk detection 与 sensitive/dangerous/panic-prone finding projection 从命令编排中分离；后续继续复查 support/legacy 降级策略、`session.rs` 剩余主分发/running-safe 职责和 UI 入口剩余职责。
+
+216. Session Export Owner
+   - 产品缺口：`src/commands/session.rs` 在 catalog、restore、inspect、recovery 拆出后仍直接拥有 `/session export` 的参数解析、session id/当前会话选择、export path safety、默认 artifact 路径和 session export JSON 写出；这些文件写入与路径安全逻辑不应继续和 `/session` 主分发、rename、可恢复会话筛选混在同一文件里。
+   - 结果：新增 `src/commands/session_export.rs`，迁移 `handle_session_export`、`parse_export_args`、`resolve_export_path` 和 `export_session`；`src/commands.rs` 注册该 owner 并重新导出 `handle_session_export`，`session.rs` 的 `/session export` 分支只保留 owner 委派；命令测试改为直接引用 `session_export::parse_export_args`；新增 `session_delegates_export_owner` 契约测试防止 export parser/path safety/JSON 写出回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 session export parser、export path safety 与 session export JSON 从主分发中分离；后续已继续拆出 session rename owner，仍需评估可恢复会话筛选、support/legacy 降级策略和 UI 入口剩余职责。
+
+217. Session Rename Owner
+   - 产品缺口：`src/commands/session.rs` 在 export 拆出后仍直接拥有 `/session rename` 的参数解析、`--current` 解析、空标题校验、session title update 和文本回执；这些标题更新逻辑不应继续和 `/session` 主分发、running-safe 处理与可恢复会话筛选混在同一文件里。
+   - 结果：新增 `src/commands/session_rename.rs`，迁移 `handle_session_rename` 和 `parse_session_rename_args`；`src/commands.rs` 注册该 owner 并重新导出 `handle_session_rename`，`session.rs` 的 `/session rename` 分支只保留 owner 委派；新增 `session_delegates_rename_owner` 契约测试防止 rename parser/title update 回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 session rename parser、current-session rename 与 session title update 从主分发中分离；后续已继续拆出可恢复会话筛选，仍需复查 support/legacy 降级策略、delivery 剩余编排、session running-safe/主分发和 UI 入口剩余职责。
+
+218. Session Resumable Owner
+   - 产品缺口：`src/commands/session.rs` 在 export/rename 拆出后仍直接拥有当前 workspace 可恢复候选筛选、低信息 clarification 过滤、thin completed chat 过滤、可恢复候选列表文本和无显式 id 时的 workspace fallback；这些逻辑被 `/resume`、`/fork`、selftest 和 TUI resume picker 共同复用，不应继续和 `/session` 主分发、inspection fallback 混在同一文件里。
+   - 结果：新增 `src/commands/session_resumable.rs`，迁移 `format_resumable_session_list`、`sessions_with_resumable_context`、`filter_session_metadata_with_resumable_context`、`session_metadata_matches_workspace`、`session_has_resumable_context`、low-information clarification 过滤、thin completed chat 过滤、metric footer stripping、`format_limited_resumable_session_list` 和 `resolve_resumable_session_for_workspace`；`src/commands.rs` 注册并重新导出该 owner，保留 `SessionFallbackKind` 与通用 inspection fallback 在 `session.rs`；新增 `session_delegates_resumable_owner` 契约测试防止可恢复筛选回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把 resumable session filtering、low-information clarification filter、thin completed chat filter 与 workspace resumable fallback 从主分发中分离；后续继续复查 support/legacy 降级策略、delivery 剩余编排、session running-safe/主分发和 UI 入口剩余职责。
+
+219. UI Running Command Owner
+   - 产品缺口：`src/ui.rs` 在 monitor projection 多轮拆出后仍直接拥有运行中本地命令解析、read-only/write-output guard、状态/BTW/Terminal/Git 旁路处理、unsupported/deferred 提示和命令执行结果写回；这让 UI 入口继续承担 command safety gate 与旁路命令编排，不符合阶段 7 “UI 消费 projection、入口只保留外层 TUI 编排”的收束方向。
+   - 结果：新增 `src/ui/running_commands.rs`，迁移 `handle_running_tui_local_command`、`running_tui_supported_command_hint`、`running_tui_deferred_input_hint`、`ensure_running_no_output`、`ensure_running_completion_is_observation_only`、`ensure_running_round_is_read_only`、`ensure_running_benchmark_is_read_only`、`ensure_running_preflight_is_planned`、`ensure_running_session_is_read_only`、`ensure_running_git_is_read_only`、`handle_tui_running_git`、`format_tui_running_status`、`handle_tui_running_btw`、`handle_tui_running_terminal` 和运行中 BTW 列表 formatter；`src/ui.rs` 注册该 owner 并只保留 TUI 状态、主事件循环、`/stop` 后的 worker abort、session pause 和 runtime rebuild；新增 `ui_module_docs_cover_running_command_owner` 契约测试防止 running command owner 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把运行中命令 safety gate 和旁路处理从 UI 主文件中分离；后续继续复查 `src/ui.rs` 是否还存在可拆出的 resume picker、审批交互或布局/渲染 owner，并补真实终端观感验收。
+
+220. UI Resume Picker Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 resume picker 状态、metadata 过滤、独立全屏选择循环、TUI 内键鼠处理、列表/预览布局和会话预览文本；这些会话选择 projection 与主 TUI 事件循环、运行中命令、monitor 渲染混在一起，不符合阶段 7 的 UI owner 收束方向。
+   - 结果：新增 `src/ui/resume_picker.rs`，迁移 `ResumePicker`、`ResumeSelection`、`pick_resume_session`、`session_matches_resume_query`、`run_resume_picker_loop`、`resume_filter_accepts_char`、`handle_resume_picker_key`、`handle_resume_picker_mouse_for_state`、`handle_resume_picker_mouse`、`resume_picker_layout`、`render_resume_picker` 和 `format_resume_preview_text`；`src/ui.rs` 注册并复用该 owner，保留当前 picker 状态字段和恢复结果应用；新增 `ui_module_docs_cover_resume_picker_owner` 契约测试防止 resume picker 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 resume picker 的筛选、选择、预览和渲染从 UI 主文件中拆出；后续继续复查审批/旁路问题交互、命令 palette、布局/渲染等剩余入口职责。
+
+221. UI Approval Interaction Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 Approvals tab 的 pending approval / open BTW blocker 选择、鼠标命中、批准/拒绝、BTW 回答 prompt、session/runtime 写回和选择 clamp；这些交互规则与 TUI 主循环、monitor 渲染和输入框处理混在一起，不符合阶段 7 的 owner 收束方向。
+   - 结果：新增 `src/ui/approvals.rs`，迁移 `SideQuestionPrompt`、`SelectedBlocker`、`handle_approval_tab_key`、`handle_approvals_mouse_for_state`、`clicked_approvals_tab_index`、`selected_blocker`、`activate_selected_blocker`、`deny_selected_blocker`、`open_side_question_answer_prompt`、`handle_side_question_prompt_key`、`confirm_side_question_prompt`、`answer_side_question_for_state`、`update_selected_approval`、`update_approval_for_state` 和 `clamp_selected_blocker_to_monitor`；`src/ui.rs` 注册并复用该 owner，只保留选择状态字段、prompt 状态字段和输入框渲染；新增 `ui_module_docs_cover_approval_interaction_owner` 契约测试防止 approval interaction 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把审批/旁路问题交互与写回逻辑从 UI 主文件中拆出；后续继续复查命令 palette、credential prompt、布局/渲染等剩余入口职责。
+
+222. UI Command Palette Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 slash command palette 的命令查询、running-safe 排序、匹配上限、键鼠选择、点击命中、完成输入和渲染；这些命令发现/交互规则与主 TUI 事件循环、monitor 渲染和运行中命令分发混在一起，不符合阶段 7 的 owner 收束方向。
+   - 结果：新增 `src/ui/command_palette.rs`，迁移 `COMMAND_PALETTE_MATCH_LIMIT`、`RUNNING_SAFE_PALETTE_PRIORITY`、`handle_command_palette_key`、`handle_command_palette_mouse_for_state`、`clicked_command_palette_index`、`command_palette_selection_event`、`complete_selected_command`、`clamp_selected_command`、`slash_command_suggestions_for_state`、`prioritize_running_safe_suggestions`、`running_safe_palette_priority`、`slash_command_query`、`render_command_palette`、`format_command_palette_text`、`command_palette_match_token` 和 `command_palette_matches_line_index`；`src/ui.rs` 注册并复用该 owner，只保留当前选中命令索引和外层事件/渲染分发；新增 `ui_module_docs_cover_command_palette_owner` 契约测试防止 command palette 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 slash palette 查询、排序、完成和渲染从 UI 主文件中拆出；后续继续复查 credential prompt、布局/渲染等剩余入口职责，并补真实终端观感验收。
+
+223. UI Credential Prompt Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 `/credentials set` 解析、隐藏输入框打开、prompt 按键处理、API key 保存、隐藏正文和隐藏光标计算；这些 credentials 交互规则与主 TUI 输入循环和渲染路径混在一起，不符合阶段 7 的 owner 收束方向。
+   - 结果：新增 `src/ui/credential_prompt.rs`，迁移 `CredentialPrompt`、`CredentialPromptSpec`、`handle_tui_credential_set_for_state`、`handle_credential_prompt_key`、`confirm_credential_prompt`、`parse_tui_credential_set`、`credential_prompt_hidden_body` 和 `credential_prompt_hidden_cursor`；`src/ui.rs` 注册并复用该 owner，只保留当前 credential prompt 状态和外层输入/渲染分发；新增 `ui_module_docs_cover_credential_prompt_owner` 契约测试防止 credential prompt 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 credential prompt 的解析、隐藏输入和写回逻辑从 UI 主文件中拆出；后续继续复查布局/渲染等剩余入口职责，并补真实终端观感验收。
+
+224. UI Chat View Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有主聊天布局、transcript 窗口计算、消息正文拼接、整体 chat UI 渲染和 message-box 光标定位；这些布局/渲染职责与 TUI 事件循环、monitor owner 和运行中命令处理混在一起，不符合阶段 7 的 owner 收束方向。
+   - 结果：新增 `src/ui/chat_view.rs`，迁移 `ChatUiLayout`、`chat_ui_layout`、`transcript_visible_message_count`、`transcript_window`、`format_transcript_text`、`format_messages_title`、`render_chat_ui` 和 `message_box_cursor_position`；`src/ui.rs` 注册并复用该 owner，只保留外层 TUI 事件循环、状态字段、task monitor owner 和运行中 worker 编排；新增 `ui_module_docs_cover_chat_view_owner` 契约测试防止 chat view 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把主聊天布局、消息渲染和输入光标定位从 UI 主文件中拆出；后续需要复查入口是否只剩外层编排，并补真实终端观感验收。
+
+225. Session Selection Owner
+   - 产品缺口：`src/commands/session.rs` 在 catalog/restore/inspect/recovery/export/rename/resumable 拆出后仍直接拥有 `SessionFallbackKind`、metadata JSON、inspection fallback、scoped list/action parser、queue action parser、approval/BTW cross-session lookup、session note prefix 和 `short_id` 投影；这些逻辑被 `/approval`、`/btw`、`/resume`、`/fork`、session inspect/recovery/export/restore、status/usage/trace 与 verify/handoff 共享，不应继续留在 `/session` 主分发文件。
+   - 结果：新增 `src/commands/session_selection.rs`，迁移 session selection owner、`SessionFallbackKind`、会话 metadata JSON、inspection fallback、scoped list/action parser、queue action parser、approval/BTW cross-session lookup、session note prefix 与 `short_id`；`src/commands.rs` 注册并重新导出该 owner，`src/commands/session.rs` 只保留 `/session` 主分发和 restore-backup running-safe 入口委派；新增 `session_delegates_selection_owner` 契约测试防止 selection/fallback/scoped action helper 回流。
+   - 目的：继续推进 harness 阶段 6 的 session 大模块瘦身，把跨命令复用的 session selection/fallback/action 契约从 session 主分发中分离；后续重点转向 support/legacy 降级策略、delivery 剩余编排复查、UI 入口剩余职责和真实终端观感验收。
+
+226. Delivery Verify/Handoff Owner
+   - 产品缺口：`src/commands/delivery.rs` 在 diff/report/review owner 拆出后仍直接拥有 `/verify` 与 `/handoff` 的 handler、verify/handoff option parser、test/env execution helper、verification session selection、test run persistence 和 fail-on-blockers 编排；这些职责属于交付验证子域，不应继续留在 `/diff`/`/review` 编排文件里。
+   - 结果：新增 `src/commands/delivery_verify.rs`，迁移 `handle_verify`、`handle_handoff`、`VerifyOptions`、`HandoffOptions`、`HandoffFormat`、`parse_verify_args`、`parse_handoff_args`、verification session selection、test/env execution helper、verification test run projection 和 test run persistence；`src/commands.rs` 注册并重新导出该 owner，`src/commands/delivery.rs` 只保留 `/diff` 与 `/review` 命令编排；新增 `delivery_delegates_verify_handoff_owner` 契约测试防止 verify/handoff 编排回流。
+   - 目的：继续推进 harness 阶段 6 的 delivery 大模块瘦身，让 delivery 集群的 diff projection、report projection、review heuristic 与 verify/handoff execution 都有独立 owner；后续重点转向 support/legacy 降级策略、UI 入口剩余职责和真实终端观感验收。
+
+227. UI Task Monitor Shell Owner
+   - 产品缺口：`src/ui.rs` 在 chat view、monitor projection、Changes/Tools/Health/Library/Result/Trace、running commands、resume picker、approval、palette 和 credential prompt 拆出后，仍直接拥有 task monitor 的文本拼装、tab strip、quick-action 聚合、点击命中和面板截断逻辑；这些职责不是 TUI 主循环本身，不应继续留在入口文件里。
+   - 结果：新增 `src/ui/monitor_shell.rs`，迁移 `render_task_monitor`、`format_task_monitor_text`、`format_task_overview_lines`、`monitor_quick_actions_for_tab`、`monitor_tab_strip`、`format_monitor_tabs`、`select_monitor_tab_at_position`、`clicked_monitor_quick_action_index`、`visible_panel_line_indices`、`truncate_panel_lines`、`truncate_panel_lines_with_focus` 和 `selected_monitor_quick_action_line`；`src/ui.rs` 注册该 owner，只保留外层键鼠分发、状态字段、worker/runtime 编排与通用 UI helper；新增 `ui_module_docs_cover_monitor_shell_owner` 契约测试防止 task monitor shell 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 task monitor shell 从 TUI 主入口中分离；后续重点转向 support/legacy 降级策略、UI 入口最终职责复查和真实终端观感验收。
+
+228. Command Policy Projection Owner
+   - 产品缺口：阶段 6 已有 command registry 分组与 legacy successor/policy，但 completion catalog 只输出每条命令的 group/runningSafe；外部 UI 和脚本无法直接消费“core/support/legacy/experimental 的可见性策略”和 legacy successor/policy，只能再解析文档或硬编码降级规则。
+   - 结果：新增 `src/commands/command_policy.rs`，迁移 command group/legacy policy projection owner，提供 `CommandGroupPolicy`、`command_group_policy_json`、`legacy_command_policy_json` 和 `command_policy_group_policies`；`deepcli completion json` 新增 `groups[]` 与 `legacyCommands[]`，由 registry/policy metadata 派生；新增 `command_policy_owner_projects_group_and_legacy_strategy` 契约测试与 completion JSON 单测，防止策略投影漂移。
+   - 目的：继续推进 harness 阶段 6 的 support/legacy 降级策略落地，把兼容策略从文档约定升级为可被 UI、脚本和 docsync 检查消费的结构化投影；后续仍可逐项评估低价值命令是否删除或进一步降级。
+
+229. Completion Alias Legacy Policy
+   - 产品缺口：completion-only alias `repl` 已在 CLI 中描述为 legacy line-based REPL，但 registry 和 completion catalog 仍把它归为 support，`legacyCommands[]` 也没有暴露它应迁移到 `tui` 的 successor/policy，导致外部 UI 仍可能把旧入口当作普通 support 入口展示。
+   - 结果：`CompletionAliasMetadata` 增加 successor/policy 字段和 `legacy_completion_alias` 构造器，`repl` 改为 completion-only legacy alias 并指向 `tui`；`src/commands/command_policy.rs::legacy_command_policy_json` 合并 slash legacy 命令与 completion-only legacy alias，并通过 `surface` 区分来源；新增/更新契约测试与 completion JSON 单测防止 `repl` 回流到 support。
+   - 目的：继续推进 harness 阶段 6 的历史兼容入口降级策略，把“legacy”从文案描述落实到 registry metadata 与机器可读 completion policy，减少 UI/脚本硬编码和命令面漂移。
+
+230. UI Dashboard Snapshot Owner
+   - 产品缺口：`src/ui.rs` 在 chat view、monitor shell、command palette、credential prompt、running commands、resume picker 和 approval interaction 拆出后，仍直接拥有非交互 dashboard 的 `TuiSnapshot` 数据结构与 `render_dashboard` 布局渲染；这类快照展示不是 TUI 主事件循环或 runtime 编排职责。
+   - 结果：新增 `src/ui/dashboard.rs`，迁移 `TuiSnapshot` 和 `render_dashboard`；`src/ui.rs` 注册 dashboard owner 并 re-export 公开 API，删除 dashboard 专用 ratatui import；新增 `ui_module_docs_cover_dashboard_owner` 契约测试，防止非交互 dashboard 渲染回流到 UI 入口。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把独立快照渲染从主 TUI 事件循环中分离；后续仍需复查入口剩余 helper 是否确属外层编排，并补真实终端观感验收。
+
+231. TUI Real Terminal Smoke Gate
+   - 产品缺口：阶段 7 文档长期提示“真实终端观感需本地运行确认”，但只有 ratatui 单测和字符串级 projection 检查，没有一个可重复的真实 pty smoke gate，容易在收束 UI owner 时漏掉 alternate screen、终端尺寸、主区域可见性等真实终端问题。
+   - 结果：新增 `scripts/tui-smoke`，用 `/usr/bin/script` 分配真实 pty，在临时 workspace 中启动 `target/debug/deepcli --tui`，设置 `stty rows 32 cols 100`，延迟发送 Esc 退出，并检查 capture 中的 Status、Messages、Task Monitor、Overview 和 provider 信号；新增 `ui_terminal_smoke_gate_is_documented` 契约测试，要求脚本和文档入口同步存在。
+   - 目的：继续推进 harness 阶段 7 的真实终端观感验收，把“人工提醒”升级为可执行的本地 smoke gate；后续仍需复查 UI 入口剩余 helper 是否确属外层编排，并可在最终收尾时结合人工 `./scripts/deepcli tui` 复查。
+
+232. UI Chat History Owner
+   - 产品缺口：`src/ui.rs` 在 chat view 和 dashboard 拆出后仍直接拥有 `ChatLine`、session message 到 UI chat line 的角色映射、空消息过滤、长历史截断和 runtime 历史加载；这些属于聊天历史投影，不是 TUI 主事件循环或输入处理。
+   - 结果：新增 `src/ui/chat_history.rs`，迁移 `ChatLine`、`TUI_HISTORY_MESSAGE_CHARS`、`chat_lines_from_runtime`、`session_messages_to_chat_lines` 和 `truncate_history_message`；`src/ui.rs` 注册该 owner 并只导入当前聊天行状态需要的类型/函数；新增 `ui_module_docs_cover_chat_history_owner` 契约测试防止 chat history projection 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 session/runtime 消息投影与主事件循环分离；后续已继续拆出 header/session monitor projection，剩余重点是 worker drain、runtime rebuild 和通用输入 helper 是否还需要更细 owner。
+
+233. UI Session Projection Owner
+   - 产品缺口：`src/ui.rs` 在 chat history 拆出后仍直接拥有 active session 引用、header 状态、运行中 SessionMonitor fallback、plan 摘要和 workspace fallback；这些是会话状态投影，不是 TUI 主事件循环职责。
+   - 结果：新增 `src/ui/session_projection.rs`，迁移 `ActiveSessionRef`、`HeaderStatus`、`active_session_ref`、`sync_active_session_ref`、`session_monitor_for_state`、`header_status_for_state`、`load_active_session_header`、`load_active_session_monitor`、`session_monitor_from_session`、`summarize_plan_for_tui` 和 `workspace_for_state`；`src/ui.rs` 只保存 active session 引用并委派 owner；新增 `ui_module_docs_cover_session_projection_owner` 契约测试防止 session projection 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 active session/header/task monitor projection 与主事件循环分离；后续已继续拆出通用输入 helper，剩余重点是 worker drain 和 runtime rebuild 是否确属外层 TUI 编排。
+
+234. UI Message Box Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 `MessageBox` / `MessageBoxAction`、buffer/cursor/history 编辑规则、粘贴插入和 prompt 输入 helper；这些输入状态机被主输入、credential prompt、approval prompt 与 command palette 复用，不属于 TUI 入口主循环。
+   - 结果：新增 `src/ui/message_box.rs`，迁移 `MessageBoxAction`、`MessageBox`、`handle_prompt_input_key`、`handle_key` 和 `insert_str`；`src/ui.rs` 注册 message box owner 并只消费输入状态；新增 `ui_module_docs_cover_message_box_owner` 契约测试防止输入状态机回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把通用输入编辑模型与主事件循环分离；后续已继续拆出 worker drain，剩余重点是 runtime rebuild 是否确属外层 worker/runtime 编排。
+
+235. UI Worker Drain Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 `WorkerDone` envelope、progress channel drain、工具日志写入、done channel runtime 写回和运行结果 chat/event 写回；这些 worker channel 消费规则与主键鼠循环、命令分发和 runtime rebuild 混在一起。
+   - 结果：新增 `src/ui/worker.rs`，迁移 `WorkerDone`、`drain_progress` 和 `drain_done`；`src/ui.rs` 注册 worker drain owner，并只保留 worker spawn、input submit、`/stop` 后 abort、session pause 和 runtime rebuild；新增 `ui_module_docs_cover_worker_drain_owner` 契约测试防止 worker drain 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 worker progress/done channel 消费与主事件循环分离；后续已继续拆出 runtime rebuild，剩余重点是复查 UI 入口是否只剩外层事件循环和薄编排。
+
+236. UI Runtime Lifecycle Owner
+   - 产品缺口：`src/ui.rs` 仍直接拥有 `/stop` / running `/quit` 的 worker abort、session paused 状态写回、`task_stopped` audit event 和交互 runtime rebuild；这些属于运行中任务生命周期规则，不是主键鼠循环职责。
+   - 结果：新增 `src/ui/runtime_lifecycle.rs`，迁移 `stop_running_task`、`mark_active_session_paused` 和 `rebuild_runtime_for_active_session`；`src/ui.rs` 和 running command owner 只调用该 owner；新增 `ui_module_docs_cover_runtime_lifecycle_owner` 契约测试防止 runtime lifecycle 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 stop/pause/rebuild 生命周期规则与主事件循环分离；后续重点转向 UI 入口最终职责复查和真实终端观感收尾。
+
+237. UI External Test Module
+   - 产品缺口：`src/ui.rs` 的生产入口已拆出多个 owner，但文件仍有 5600+ 行，主要因为大型 `#[cfg(test)] mod tests { ... }` 内嵌在入口文件中；这让 UI 入口职责复查和后续迁移都被测试体量遮挡。
+   - 结果：新增 `src/ui/tests.rs`，将大型 UI 单测模块机械迁出；`src/ui.rs` 只保留 `#[cfg(test)] mod tests;`；新增 `ui_entrypoint_uses_external_test_module` 契约测试，防止大型 UI 单测回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，让 `src/ui.rs` 的生产职责更容易审计；后续重点转向 UI 入口最终职责复查、真实终端观感收尾和阶段 6 低价值命令降级/删除复查。
+
+238. UI Input Submission Owner
+   - 产品缺口：`src/ui.rs` 在 worker drain、runtime lifecycle、message box 和 resume picker 拆出后，仍直接拥有主输入提交、空闲期本地 TUI 命令（`/resume`、`/rename`、`/credentials set` 委派）、runtime spawn、deferred input 和 resume 结果应用；这些提交规则与键鼠事件循环混在一起，不利于入口最终职责复查。
+   - 结果：新增 `src/ui/input_submission.rs`，迁移 `submit_tui_input`、`handle_tui_local_command` 和 `apply_resume_result`；`src/ui.rs` 只在主输入提交和 quick action 提交时调用该 owner，resume picker owner 复用 `apply_resume_result` 应用恢复结果；新增 `ui_module_docs_cover_input_submission_owner` 契约测试防止 input submission 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把输入提交、空闲本地命令和 resume 状态应用从主事件循环中分离；后续重点转向剩余键鼠分发、滚动状态、quick action 激活和真实终端观感收尾。
+
+239. UI Shared Text Helper Owner
+   - 产品缺口：`src/ui.rs` 在多数 projection owner 拆出后仍直接维护通用文本截断、短 ID、usage/environment 格式化、action 输出摘要和最新 action result 行提取；这些 helper 被 monitor、running commands、worker、resume picker、approval、Changes/Tools/Health/Library/Result/Trace 等多个 owner 复用，不属于 TUI 入口主循环。
+   - 结果：新增 `src/ui/text.rs`，迁移 `format_optional_u64`、`format_optional_bytes`、`format_cache_hit_rate`、`format_latest_environment`、`compact_ui_text`、`format_action_event`、`latest_action_result_line`、`latest_action_result`、`non_empty_output_lines`、`first_non_empty_line` 和 `short_id`；`src/ui.rs` 只注册并导入该 owner 供现有子模块复用；新增 `ui_module_docs_cover_text_helper_owner` 契约测试防止 shared text helper 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把跨 projection 复用的文本 helper 从主入口移出；后续已继续拆出滚动状态，下一步重点转向 quick action 激活、键鼠分发是否需要更细 owner，以及阶段 6 低价值命令降级/删除复查。
+
+240. UI Transcript/Result Scrolling Owner
+   - 产品缺口：`src/ui.rs` 在 text helper 拆出后仍直接拥有 transcript/result 滚动常量、PageUp/PageDown/Ctrl-Home/Ctrl-End 键盘滚动、Result 鼠标滚动、滚动事件文案和 Result 输出行计数；这些是可独立测试的 UI 状态机，不属于 TUI 入口主事件循环。
+   - 结果：新增 `src/ui/scrolling.rs`，迁移 `TRANSCRIPT_SCROLL_STEP`、`TRANSCRIPT_MOUSE_SCROLL_STEP`、`RESULT_SCROLL_STEP`、`RESULT_MOUSE_SCROLL_STEP`、`handle_transcript_scroll_key`、`handle_result_scroll_key`、`scroll_result_from_mouse`、`scroll_result`、`scroll_result_down`、`result_scroll_event`、`result_output_line_count`、`scroll_transcript` 和 `transcript_scroll_event`；`src/ui.rs` 只在键鼠事件分发时调用该 owner；新增 `ui_module_docs_cover_scrolling_owner` 契约测试防止 scrolling state machine 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 transcript/result 滚动状态机从主入口移出；后续已继续拆出 quick action 激活，下一步重点转向剩余键鼠分发、粘贴路由是否需要更细 owner，以及阶段 6 低价值命令降级/删除复查。
+
+241. UI Quick Action Activation Owner
+   - 产品缺口：`src/ui.rs` 在 scrolling owner 拆出后仍直接拥有 monitor quick action 的键盘选择、选中事件文案、edit-before-run 预填、直接提交和点击激活规则；quick action projection 已由 monitor/monitor_shell owner 负责，激活状态机继续留在入口文件会让键鼠分发与业务动作提交纠缠。
+   - 结果：新增 `src/ui/quick_actions.rs`，迁移 `handle_monitor_quick_action_key`、`selected_quick_action_event`、`activate_selected_monitor_quick_action` 和 `activate_monitor_quick_action_at_row`；该 owner 复用 monitor_shell 的 action projection/click hit、input_submission 的提交入口和 command_palette 的 suggestion guard；新增 `ui_module_docs_cover_quick_action_owner` 契约测试防止 quick action activation 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 monitor quick action 选择与激活从主键鼠循环中分离；后续已继续拆出粘贴路由，下一步重点转向剩余键鼠分发、几何 hit-test helper 是否需要更细 owner，以及阶段 6 低价值命令降级/删除复查。
+
+242. UI Paste Routing Owner
+   - 产品缺口：`src/ui.rs` 在 quick action activation 拆出后仍直接拥有 paste event 路由、换行归一化、credential prompt/BTW answer/resume filter/主输入框的粘贴目标选择和 paste event 文案；同时 Tools detail 预填也复用 `normalize_pasted_text`，该 helper 不应继续寄居在入口文件。
+   - 结果：新增 `src/ui/paste.rs`，迁移 `handle_tui_paste` 和 `normalize_pasted_text`；`src/ui.rs` 只在 crossterm paste event 中调用该 owner，Tools detail 预填继续通过同一归一化 helper 复用；新增 `ui_module_docs_cover_paste_owner` 契约测试防止 paste routing 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把 paste routing 和换行归一化从主事件循环中分离；后续已继续拆出 geometry helper，下一步重点转向 `src/ui.rs` 最终职责复查、真实终端观感收尾，以及阶段 6 低价值命令降级/删除复查。
+
+243. UI Geometry Helper Owner
+   - 产品缺口：`src/ui.rs` 在 paste routing 拆出后仍直接维护 `rect_contains` 和 `rect_content_row_contains`；这两个 hit-test helper 被 command palette、resume picker、approvals、Changes、monitor shell、quick actions 和入口鼠标分发共同复用，不属于 TUI 主事件循环。
+   - 结果：新增 `src/ui/geometry.rs`，迁移 `rect_contains` 和 `rect_content_row_contains`；`src/ui.rs` 和各交互 owner 通过同一 owner 复用矩形/内容行命中判断；新增 `ui_module_docs_cover_geometry_owner` 契约测试防止 geometry helper 回流。
+   - 目的：继续推进 harness 阶段 7 的 UI 入口瘦身，把共享 hit-test helper 从主入口移出；后续重点转向 `src/ui.rs` 最终职责复查、真实终端观感收尾，以及阶段 6 低价值命令降级/删除复查。
+
+244. UI Entrypoint Final Boundary Audit
+   - 产品缺口：多轮 UI owner 拆分后，`src/ui.rs` 已接近只剩外层编排，但缺少一个可执行契约说明“入口最终边界”具体允许保留哪些函数；如果后续再把业务 projection、输入状态机或 helper 塞回入口文件，文档和测试不会立即暴露漂移。
+   - 结果：新增 `ui_entrypoint_is_final_orchestration_boundary` 契约测试，约束 `src/ui.rs` 只保留 `TuiState`、`run_basic_repl`、`run_tui`、`run_tui_loop`、`handle_tui_mouse`、`handle_tools_scroll_mouse`、`handle_tui_key` 和 `cycle_monitor_tab`；同步更新 `docs/MODULES/ui.md`、`docs/HARNESS.md`、`docs/ARCHITECTURE.md` 与 `docs/ai/HANDOFF.md`，把 UI entrypoint final orchestration boundary 写入 owner 文档和验证入口。
+   - 目的：完成 harness 阶段 7 的 UI 入口最终职责审计，把入口瘦身从人工判断变成契约约束；完整 harness 目标仍未结束，后续重点转向最终真实终端观感收尾和阶段 6 低价值/重复命令删除或降级复查。
+
+245. Command Surface Pruning Audit
+   - 产品缺口：阶段 6 已有 command registry 分组、legacy successor/policy 和 parser alias metadata，但缺少一份最终删除/降级审计来说明哪些重复入口保留、哪些降级展示、当前是否存在可直接删除的公开入口；这会让“删除策略已执行”仍停留在分组实现而不是可复查结论。
+   - 结果：在 `docs/COMMANDS.md` 新增“删除/降级审计”，覆盖 parser thin alias、legacy slash successor 和 completion-only alias；新增 `command_surface_pruning_audit_covers_aliases_and_legacy_entries` 契约测试，要求审计记录覆盖 `CommandRouter::command_alias_metadata()`、`legacy_command_metadata()` 和 `completion_alias_metadata()`，并记录“当前未发现可直接删除的公开入口”。
+   - 目的：完成 harness 阶段 6 的低价值/重复命令删除或降级复查，把保留/降级决策从口头判断变成文档与 registry 同步约束；完整 harness 收尾剩余重点转向最终真实终端观感和全量验证。
+
+246. Harness Refactor Final Verification
+   - 产品缺口：Stage 6 删除/降级审计和 Stage 7 UI 入口边界完成后，还需要用当前仓库状态重新跑文档契约、UI 投影、真实 pty smoke、全量测试和产品 gate，才能回答“按重构文档是否完整达成”。
+   - 结果：已验证 `cargo test --test mvp_contract`（73 passed）、`cargo test ui::tests --lib`（74 passed）、`cargo fmt --check`、`git diff --check`、`bash -n scripts/tui-smoke && scripts/tui-smoke`（`tui-smoke: ok`）、`cargo test --quiet`（486 lib + 73 contract + 13 integration passed）、`./scripts/deepcli preflight --quick --json`（status ok，format/diff-whitespace/selftest/doctor/privacy passed）和 `./scripts/deepcli round --json`（ready true，gaps empty）。
+   - 目的：本轮 `docs/ai/HARNESS_REFACTOR_PLAN.md` 对应的 harness 化重构切片可以判定完成；`docs/ai/CONTEXT.md` 里的长期 SOTA 产品循环目标仍未完成，后续应作为新的产品迭代继续推进。
+
 ## 下一步建议
 
-- 继续检查 `docs/ai/REQUIREMENTS.md` 中尚未被当前实现充分覆盖的 SOTA 能力。
-- 优先选择用户明显会感知到的阻力，例如真实 benchmark evidence 工作流、竞品对比基准、环境自动化验收、TUI 产品循环入口、或长任务可观测性。
-- 每轮完成后提交并推送，保持工作区干净。
+- 本轮 harness 化重构切片已完成并通过 gate；后续不要继续把它当作未完成的 Stage 6/7 任务重复执行。
+- 长期 SOTA 产品循环目标仍未完成；下一轮应重新做产品缺口评估，优先考虑此前明确延后的上下文压缩重构或 LLM wiki，并先单独出计划和 challenge。
+- 如果需要提交本轮改动，提交前再次检查 `git status --short`、外发 diff、敏感信息和本地产物，保持 `.deepcli/benchmarks/`、exports、support bundle、credentials、logs、sessions 不进提交。

@@ -1,4 +1,4 @@
-use super::registry::{command_group_name, is_running_safe_command_name, CommandHelpSummary};
+use super::registry::{command_metadata_for, CommandHelpSummary};
 use anyhow::{bail, Result};
 
 pub(super) fn help_text() -> String {
@@ -36,15 +36,19 @@ pub(super) fn help_for(args: &[String]) -> Result<String> {
 pub(super) fn help_summaries() -> Vec<CommandHelpSummary> {
     help_topics()
         .iter()
-        .map(|topic| CommandHelpSummary {
-            name: topic.name,
-            listing: topic.listing,
-            summary: topic.summary,
-            usage: topic.usage,
-            examples: topic.examples,
-            notes: topic.notes,
-            running_safe: is_running_safe_command_name(topic.name),
-            group: command_group_name(topic.name),
+        .map(|topic| {
+            let metadata = command_metadata_for(topic.name)
+                .unwrap_or_else(|| panic!("{} missing command metadata", topic.name));
+            CommandHelpSummary {
+                name: topic.name,
+                listing: topic.listing,
+                summary: topic.summary,
+                usage: topic.usage,
+                examples: topic.examples,
+                notes: topic.notes,
+                running_safe: metadata.running_safe,
+                group: metadata.group,
+            }
         })
         .collect()
 }
@@ -1135,15 +1139,13 @@ fn normalize_help_topic(topic: &str) -> String {
 }
 
 fn format_help_topic(topic: &CommandHelp) -> String {
+    let metadata = command_metadata_for(topic.name)
+        .unwrap_or_else(|| panic!("{} missing command metadata", topic.name));
     let mut lines = vec![
         format!("{} - {}", topic.name, topic.summary),
         format!(
             "running-safe: {}",
-            if is_running_safe_command_name(topic.name) {
-                "yes"
-            } else {
-                "no"
-            }
+            if metadata.running_safe { "yes" } else { "no" }
         ),
         "usage:".to_string(),
     ];

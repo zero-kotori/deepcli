@@ -1,3 +1,4 @@
+use super::registry::{command_alias_metadata_for, CommandAliasAction};
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +69,34 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
     });
     let command = parts.first().cloned().unwrap_or_default();
     let args = parts.into_iter().skip(1).collect::<Vec<_>>();
+    if let Some(alias) = command_alias_metadata_for(command.as_str()) {
+        return Ok(Some(match alias.action {
+            CommandAliasAction::SupportBundle => SlashCommand::Diagnose {
+                args: normalize_support_args(args),
+            },
+            CommandAliasAction::CredentialSet => SlashCommand::Credentials {
+                args: prefixed_command_args("set", args),
+            },
+            CommandAliasAction::CredentialRemove => SlashCommand::Credentials {
+                args: prefixed_command_args("remove", args),
+            },
+            CommandAliasAction::VerifyAccept => SlashCommand::Verify {
+                args: normalize_accept_args(args, false),
+            },
+            CommandAliasAction::VerifyGate => SlashCommand::Verify {
+                args: normalize_accept_args(args, true),
+            },
+            CommandAliasAction::EnvCompiler => SlashCommand::Env {
+                args: target_first_env_args("compiler", args),
+            },
+            CommandAliasAction::EnvInstall => SlashCommand::Env {
+                args: prefixed_command_args("install", args),
+            },
+            CommandAliasAction::SessionCleanup => SlashCommand::Session {
+                args: normalize_cleanup_args(args),
+            },
+        }));
+    }
     Ok(Some(match command.as_str() {
         "/help" => SlashCommand::Help { args },
         "/version" => SlashCommand::Version { args },
@@ -89,9 +118,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
             }
         }
         "/diagnose" => SlashCommand::Diagnose { args },
-        "/support" => SlashCommand::Diagnose {
-            args: normalize_support_args(args),
-        },
         "/doctor" if args.first().is_some_and(|arg| is_environment_target(arg)) => {
             SlashCommand::Env {
                 args: prefixed_command_args("check", args),
@@ -103,12 +129,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/privacy" => SlashCommand::Privacy { args },
         "/context" => SlashCommand::Context,
         "/permissions" => SlashCommand::Permissions { args },
-        "/login" | "/apikey" => SlashCommand::Credentials {
-            args: prefixed_command_args("set", args),
-        },
-        "/logout" => SlashCommand::Credentials {
-            args: prefixed_command_args("remove", args),
-        },
         "/credentials" => SlashCommand::Credentials { args },
         "/config" => SlashCommand::Config { args },
         "/timeout" => SlashCommand::Timeout { args },
@@ -120,21 +140,9 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/fork" => SlashCommand::Fork { args },
         "/diff" => SlashCommand::Diff { args },
         "/review" => SlashCommand::Review { args },
-        "/accept" => SlashCommand::Verify {
-            args: normalize_accept_args(args, false),
-        },
-        "/gate" => SlashCommand::Verify {
-            args: normalize_accept_args(args, true),
-        },
         "/verify" => SlashCommand::Verify { args },
         "/handoff" => SlashCommand::Handoff { args },
         "/test" => SlashCommand::Test { args },
-        "/compiler" => SlashCommand::Env {
-            args: target_first_env_args("compiler", args),
-        },
-        "/install" => SlashCommand::Env {
-            args: prefixed_command_args("install", args),
-        },
         "/git" => SlashCommand::Git { args },
         "/web" => SlashCommand::Web { args },
         "/prompt" => SlashCommand::Prompt { args },
@@ -142,9 +150,6 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/agent" => SlashCommand::Agent { args },
         "/btw" => SlashCommand::Btw { args },
         "/approval" => SlashCommand::Approval { args },
-        "/cleanup" => SlashCommand::Session {
-            args: normalize_cleanup_args(args),
-        },
         "/session" => SlashCommand::Session { args },
         "/resume" => SlashCommand::Resume { args },
         "/rename" => SlashCommand::Rename { args },

@@ -1,6 +1,7 @@
 use super::{
-    command_group_name, dedup_preserve_order, is_running_safe_command_name, local_action_checklist,
-    required_arg, set_command_output_path, write_command_output, CommandGroup, CommandRouter,
+    command_group_policy_json, dedup_preserve_order, legacy_command_policy_json,
+    local_action_checklist, required_arg, set_command_output_path, write_command_output,
+    CommandGroup, CommandRouter,
 };
 use crate::schema_ids;
 use anyhow::{bail, Context, Result};
@@ -262,42 +263,25 @@ fn detect_completion_shell() -> CompletionFormat {
 }
 
 pub(super) fn completion_commands() -> Vec<CompletionCommand> {
-    let summaries = CommandRouter::help_summaries();
     let mut commands = Vec::new();
-    for raw_name in CommandRouter::command_names() {
-        let name = raw_name.trim_start_matches('/').to_string();
-        let metadata = summaries.iter().find(|summary| summary.name == raw_name);
-        let summary = metadata
-            .map(|summary| summary.summary.to_string())
-            .unwrap_or_else(|| format!("Run {raw_name}."));
-        let running_safe = metadata
-            .map(|summary| summary.running_safe)
-            .unwrap_or_else(|| is_running_safe_command_name(raw_name));
-        let group = metadata
-            .map(|summary| summary.group)
-            .unwrap_or_else(|| command_group_name(raw_name));
-        add_completion_command(&mut commands, name, summary, running_safe, group);
-    }
-
-    for (name, summary) in [
-        (
-            "deepseek",
-            "Start deepcli with the DeepSeek provider preset.",
-        ),
-        ("kimi", "Start deepcli with the Kimi provider preset."),
-        ("ask", "Run a one-shot task."),
-        ("stream", "Run a streaming one-shot chat task."),
-        ("tui", "Start the terminal UI."),
-        ("repl", "Start the legacy line-based REPL."),
-        ("sessions", "Alias for session list."),
-        ("completions", "Alias for completion."),
-    ] {
+    for summary in CommandRouter::help_summaries() {
+        let name = summary.name.trim_start_matches('/').to_string();
         add_completion_command(
             &mut commands,
-            name.to_string(),
-            summary.to_string(),
-            true,
-            CommandGroup::Support,
+            name,
+            summary.summary.to_string(),
+            summary.running_safe,
+            summary.group,
+        );
+    }
+
+    for alias in CommandRouter::completion_alias_metadata() {
+        add_completion_command(
+            &mut commands,
+            alias.name.to_string(),
+            alias.summary.to_string(),
+            alias.running_safe,
+            alias.group,
         );
     }
     commands
@@ -685,6 +669,8 @@ fn format_completion_json(commands: &[CompletionCommand]) -> Result<String> {
         "version": env!("CARGO_PKG_VERSION"),
         "shells": ["bash", "zsh", "fish"],
         "providers": ["deepseek", "kimi"],
+        "groups": command_group_policy_json(),
+        "legacyCommands": legacy_command_policy_json(),
         "install": [
             "deepcli completion status zsh",
             "deepcli completion status bash",

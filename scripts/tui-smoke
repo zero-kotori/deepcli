@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+while [[ -L "$SCRIPT_PATH" ]]; do
+  SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+  LINK_TARGET="$(readlink "$SCRIPT_PATH")"
+  if [[ "$LINK_TARGET" == /* ]]; then
+    SCRIPT_PATH="$LINK_TARGET"
+  else
+    SCRIPT_PATH="$SCRIPT_DIR/$LINK_TARGET"
+  fi
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_PATH")" && pwd)"
+DEEPCLI_HOME="${DEEPCLI_HOME:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+DEEPCLI_BIN="${DEEPCLI_BIN:-$DEEPCLI_HOME/target/debug/deepcli}"
+SMOKE_ROWS="${DEEPCLI_TUI_SMOKE_ROWS:-32}"
+SMOKE_COLS="${DEEPCLI_TUI_SMOKE_COLS:-100}"
+EXIT_DELAY="${DEEPCLI_TUI_SMOKE_EXIT_DELAY:-1}"
+# Default pty sizing is equivalent to: stty rows 32 cols 100
+
+if [[ ! -x /usr/bin/script ]]; then
+  echo "tui-smoke: /usr/bin/script is required to allocate a real pty" >&2
+  exit 1
+fi
+
+(cd "$DEEPCLI_HOME" && cargo build --quiet)
+
+workspace="$(mktemp -d -t deepcli-tui-smoke.XXXXXX)"
+capture="$(mktemp -t deepcli-tui-capture.XXXXXX)"
+stdout="$(mktemp -t deepcli-tui-stdout.XXXXXX)"
+stderr="$(mktemp -t deepcli-tui-stderr.XXXXXX)"
+cleanup() {
+  rm -rf "$workspace" "$capture" "$stdout" "$stderr"
+}
+trap cleanup EXIT
+
+set +e
+(
+  sleep "$EXIT_DELAY"
+  printf '\033'
+) | TERM=xterm-256color /usr/bin/script -q "$capture" /bin/sh -lc \
+  'stty rows "$1" cols "$2"; shift 2; exec "$@"' \
+  sh "$SMOKE_ROWS" "$SMOKE_COLS" "$DEEPCLI_BIN" -C "$workspace" --yes --tui \
+  >"$stdout" 2>"$stderr"
+status=$?
+set -e
+
+if [[ "$status" -ne 0 ]]; then
+  echo "tui-smoke: TUI exited with status $status" >&2
+  if [[ -s "$stderr" ]]; then
+    sed -n '1,80p' "$stderr" >&2
+  fi
+  exit "$status"
+fi
+
+plain_capture="$(
+  perl -pe 's/\e\[[0-9]+;[0-9]+H/ /g; s/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\r//g' "$capture"
+)"
+
+for marker in "Status" "Messages" "Task Monitor" "Overview" "provider=deepseek"; do
+  if [[ "$plain_capture" != *"$marker"* ]]; then
+    echo "tui-smoke: missing expected terminal marker: $marker" >&2
+    printf '%s\n' "$plain_capture" | sed -n '1,80p' >&2
+    exit 1
+  fi
+done
+
+echo "tui-smoke: ok"
