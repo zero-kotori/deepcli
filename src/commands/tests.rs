@@ -2925,7 +2925,7 @@ fn command_specific_help_explains_usage_examples_and_notes() {
     let resume_help = CommandRouter::help_for(&["resume".to_string()]).unwrap();
     assert!(resume_help.contains("/resume <session_id> --dry-run --json"));
     assert!(resume_help.contains("deepcli.resume.preview.v1"));
-    assert!(resume_help.contains("does not start the TUI"));
+    assert!(resume_help.contains("does not start interactive chat"));
     assert!(resume_help.contains("workspace-contained output"));
 
     let stop_help = CommandRouter::help_for(&["stop".to_string()]).unwrap();
@@ -10426,6 +10426,39 @@ fn usage_json_output_is_structured_and_written() {
         .contains("largest provider request"));
     let written = fs::read_to_string(dir.path().join(".deepcli/exports/usage.json")).unwrap();
     assert_eq!(written, output);
+}
+
+#[test]
+fn usage_text_output_does_not_echo_session_summary_body() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path());
+    let session = store
+        .create(
+            dir.path(),
+            "deepseek".to_string(),
+            Some("deepseek-v4-pro".to_string()),
+        )
+        .unwrap();
+    session
+        .write_summary("上一轮 assistant 的长回复内容不应出现在普通 usage 文本里")
+        .unwrap();
+    session
+        .append_audit_event(
+            "provider_turn_completed",
+            json!({
+                "elapsed_ms": 123,
+                "tool_calls": 0,
+                "usage": {"total_tokens": 9}
+            }),
+        )
+        .unwrap();
+
+    let output = handle_usage(dir.path(), Some(session.id().to_string()), Vec::new()).unwrap();
+
+    assert!(output.contains("activity:"));
+    assert!(output.contains("summary=true"));
+    assert!(!output.contains("summary preview:"));
+    assert!(!output.contains("上一轮 assistant 的长回复内容"));
 }
 
 #[test]

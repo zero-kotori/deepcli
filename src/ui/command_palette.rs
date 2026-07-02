@@ -34,7 +34,14 @@ pub(super) const RUNNING_SAFE_PALETTE_PRIORITY: &[&str] = &[
     "/btw",
 ];
 
+pub(super) fn command_palette_auto_popup_enabled() -> bool {
+    false
+}
+
 pub(super) fn handle_command_palette_key(key: KeyEvent, state: &mut TuiState) -> bool {
+    if !command_palette_auto_popup_enabled() {
+        return false;
+    }
     let Some(suggestions) =
         slash_command_suggestions_for_state(state.input.buffer(), state.running)
     else {
@@ -65,6 +72,9 @@ pub(super) fn handle_command_palette_mouse_for_state(
     mouse: MouseEvent,
     tools_area: Rect,
 ) -> bool {
+    if !command_palette_auto_popup_enabled() {
+        return false;
+    }
     let Some(suggestions) =
         slash_command_suggestions_for_state(state.input.buffer(), state.running)
     else {
@@ -245,7 +255,7 @@ pub(super) fn render_command_palette(
         Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Command Help (Up/Down/wheel select, Tab/click complete, Esc dismiss)"),
+                .title("Command Help (Up/Down select, Tab complete, Esc dismiss)"),
         ),
         area,
     );

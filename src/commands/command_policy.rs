@@ -14,7 +14,7 @@ const COMMAND_GROUP_POLICIES: &[CommandGroupPolicy] = &[
     CommandGroupPolicy {
         group: CommandGroup::Core,
         label: "Core",
-        visibility: "primary product and TUI workflow surface",
+        visibility: "primary product and interactive workflow surface",
         policy: "keep stable and prefer for new implementation work",
     },
     CommandGroupPolicy {

@@ -179,7 +179,7 @@ fn recipes_catalog() -> Vec<Recipe> {
                 "deepcli next --json",
             ],
             notes: &[
-                "Use the TUI for multi-step edits and `ask` for bounded one-shot analysis.",
+                "Use native terminal chat for multi-step edits and `ask` for bounded one-shot analysis.",
                 "Use `/status`, `/usage`, and `/trace` during long tasks instead of interrupting the agent.",
             ],
         },
@@ -261,7 +261,7 @@ fn recipes_catalog() -> Vec<Recipe> {
             ],
             notes: &[
                 "`completion install` is dry-run by default and only writes under allowlisted HOME completion paths with `--force`.",
-                "Use the JSON command catalog for external launchers, docs generators, or TUI command palettes.",
+                "Use the JSON command catalog for external launchers, docs generators, or interactive command surfaces.",
             ],
         },
         Recipe {

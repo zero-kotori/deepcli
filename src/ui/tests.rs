@@ -260,6 +260,53 @@ fn tui_ctrl_c_copies_selected_message_box_text_without_exiting() {
 }
 
 #[test]
+fn tui_terminal_setup_captures_scroll_without_all_motion_tracking() {
+    let setup = tui_terminal_setup_commands();
+    let teardown = tui_terminal_teardown_commands();
+    let setup_debug = format!("{setup:?}");
+    let teardown_debug = format!("{teardown:?}");
+    let mut setup_output = Vec::new();
+    let mut teardown_output = Vec::new();
+
+    assert_eq!(
+        setup,
+        &[
+            TuiTerminalCommand::EnterAlternateScreen,
+            TuiTerminalCommand::EnableMouseScrollCapture,
+            TuiTerminalCommand::EnableBracketedPaste,
+        ]
+    );
+    assert!(setup_debug.contains("EnableMouseScrollCapture"));
+    assert!(!setup_debug.contains("KeyboardEnhancement"));
+    assert_eq!(
+        teardown,
+        &[
+            TuiTerminalCommand::LeaveAlternateScreen,
+            TuiTerminalCommand::DisableMouseScrollCapture,
+            TuiTerminalCommand::DisableBracketedPaste,
+        ]
+    );
+    assert!(teardown_debug.contains("DisableMouseScrollCapture"));
+    assert!(!teardown_debug.contains("KeyboardEnhancement"));
+
+    apply_tui_terminal_setup(&mut setup_output).unwrap();
+    let setup_output = String::from_utf8(setup_output).unwrap();
+    assert!(setup_output.contains("\u{1b}[?1000h"));
+    assert!(setup_output.contains("\u{1b}[?1002h"));
+    assert!(setup_output.contains("\u{1b}[?1006h"));
+    assert!(!setup_output.contains("\u{1b}[?1003h"));
+    assert!(!setup_output.contains("\u{1b}[>"));
+
+    apply_tui_terminal_teardown(&mut teardown_output).unwrap();
+    let teardown_output = String::from_utf8(teardown_output).unwrap();
+    assert!(teardown_output.contains("\u{1b}[?1006l"));
+    assert!(teardown_output.contains("\u{1b}[?1003l"));
+    assert!(teardown_output.contains("\u{1b}[?1002l"));
+    assert!(teardown_output.contains("\u{1b}[?1000l"));
+    assert!(!teardown_output.contains("\u{1b}[>"));
+}
+
+#[test]
 fn tui_ctrl_c_without_selection_keeps_interrupt_semantics() {
     let mut state = test_tui_state();
     let (progress_tx, _progress_rx) = mpsc::channel();
@@ -437,7 +484,7 @@ fn transcript_render_scrolls_within_long_single_message() {
     let mut state = test_tui_state();
     state.chat = vec![ChatLine {
         role: "deepcli".to_string(),
-        content: (0..12)
+        content: (0..36)
             .map(|index| format!("long-message-line-{index}"))
             .collect::<Vec<_>>()
             .join("\n"),
@@ -453,9 +500,10 @@ fn transcript_render_scrolls_within_long_single_message() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(latest.contains("long-message-line-11"));
+    assert!(latest.contains("long-message-line-35"));
+    assert!(!latest.contains("long-message-line-0"));
 
-    state.transcript_scroll = 3;
+    state.transcript_scroll = 8;
     terminal
         .draw(|frame| render_chat_ui(frame, &state))
         .unwrap();
@@ -467,8 +515,55 @@ fn transcript_render_scrolls_within_long_single_message() {
         .map(|cell| cell.symbol())
         .collect::<String>();
 
-    assert!(scrolled.contains("long-message-line-6"));
-    assert!(!scrolled.contains("long-message-line-11"));
+    assert!(scrolled.contains("long-message-line-14"));
+    assert!(!scrolled.contains("long-message-line-35"));
+}
+
+#[test]
+fn chat_ui_layout_reserves_no_status_or_task_monitor_rows() {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 32,
+    };
+    let layout = chat_ui_layout(area);
+
+    assert_eq!(layout.header.height, 0);
+    assert_eq!(layout.tools.height, 0);
+    assert_eq!(layout.transcript.y, 0);
+    assert_eq!(layout.transcript.height, 27);
+    assert_eq!(layout.input.y, 27);
+    assert_eq!(layout.input.height, 5);
+}
+
+#[test]
+fn chat_ui_render_omits_status_and_task_monitor_panels() {
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    state.chat.push(ChatLine {
+        role: "deepcli".to_string(),
+        content: "VISIBLE_TRANSCRIPT".to_string(),
+    });
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("Messages"));
+    assert!(rendered.contains("Message Box"));
+    assert!(rendered.contains("VISIBLE_TRANSCRIPT"));
+    assert!(!rendered.contains("Status"));
+    assert!(!rendered.contains("Task Monitor"));
+    assert!(!rendered.contains("provider=deepseek"));
 }
 
 #[test]
@@ -529,7 +624,7 @@ fn transcript_scroll_keys_move_history_window() {
         runtime: None,
         active_session: None,
         input: MessageBox::new(),
-        chat: (0..12)
+        chat: (0..40)
             .map(|index| ChatLine {
                 role: "deepcli".to_string(),
                 content: format!("message-{index}"),
@@ -588,7 +683,7 @@ fn transcript_mouse_wheel_scrolls_messages_and_unhandled_tool_area() {
         runtime: None,
         active_session: None,
         input: MessageBox::new(),
-        chat: (0..12)
+        chat: (0..40)
             .map(|index| ChatLine {
                 role: "deepcli".to_string(),
                 content: format!("message-{index}"),
@@ -656,8 +751,8 @@ fn transcript_mouse_wheel_scrolls_messages_and_unhandled_tool_area() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: layout.input.x + 1,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -670,7 +765,7 @@ fn transcript_mouse_wheel_scrolls_messages_and_unhandled_tool_area() {
 #[test]
 fn overview_mouse_wheel_falls_back_to_transcript_scroll() {
     let mut state = test_tui_state();
-    state.chat = (0..12)
+    state.chat = (0..40)
         .map(|index| ChatLine {
             role: "deepcli".to_string(),
             content: format!("message-{index}"),
@@ -691,8 +786,8 @@ fn overview_mouse_wheel_falls_back_to_transcript_scroll() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: layout.input.x + 1,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -706,8 +801,8 @@ fn overview_mouse_wheel_falls_back_to_transcript_scroll() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: layout.input.x + 1,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -723,7 +818,7 @@ fn transcript_mouse_wheel_clamps_to_renderable_history() {
     let mut state = test_tui_state();
     state.chat = vec![ChatLine {
         role: "deepcli".to_string(),
-        content: (0..12)
+        content: (0..36)
             .map(|index| format!("long-message-line-{index}"))
             .collect::<Vec<_>>()
             .join("\n"),
@@ -753,7 +848,8 @@ fn transcript_mouse_wheel_clamps_to_renderable_history() {
         );
     }
 
-    assert_eq!(state.transcript_scroll, 6);
+    assert!(state.transcript_scroll > TRANSCRIPT_MOUSE_SCROLL_STEP);
+    let max_scroll = state.transcript_scroll;
 
     handle_tui_mouse(
         &mut state,
@@ -768,7 +864,10 @@ fn transcript_mouse_wheel_clamps_to_renderable_history() {
         area,
     );
 
-    assert_eq!(state.transcript_scroll, 3);
+    assert_eq!(
+        state.transcript_scroll,
+        max_scroll.saturating_sub(TRANSCRIPT_MOUSE_SCROLL_STEP)
+    );
 }
 
 #[test]
@@ -864,43 +963,38 @@ fn result_mouse_wheel_scrolls_result_tab_tools_area_only() {
         streaming_assistant: None,
         worker: None,
     };
-    let area = Rect {
+    let tools_area = Rect {
         x: 0,
-        y: 0,
+        y: 3,
         width: 100,
-        height: 24,
+        height: 9,
     };
-    let layout = chat_ui_layout(area);
-    let (progress_tx, _progress_rx) = mpsc::channel();
-    let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(handle_tools_scroll_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: tools_area.x + 1,
+            row: tools_area.y + 1,
             modifiers: KeyModifiers::NONE,
         },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        true
+    ));
     assert_eq!(state.result_scroll, RESULT_MOUSE_SCROLL_STEP);
     assert_eq!(state.transcript_scroll, 0);
 
-    handle_tui_mouse(
+    assert!(handle_tools_scroll_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: tools_area.x + 1,
+            row: tools_area.y + 1,
             modifiers: KeyModifiers::NONE,
         },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        false
+    ));
     assert_eq!(state.result_scroll, 0);
 }
 
@@ -947,43 +1041,38 @@ fn changes_mouse_wheel_scrolls_selected_patch_in_tools_area() {
         streaming_assistant: None,
         worker: None,
     };
-    let area = Rect {
+    let tools_area = Rect {
         x: 0,
-        y: 0,
+        y: 3,
         width: 100,
-        height: 24,
+        height: 9,
     };
-    let layout = chat_ui_layout(area);
-    let (progress_tx, _progress_rx) = mpsc::channel();
-    let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(handle_tools_scroll_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: tools_area.x + 1,
+            row: tools_area.y + 1,
             modifiers: KeyModifiers::NONE,
         },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        false
+    ));
     assert_eq!(state.change_patch_scroll, CHANGE_PATCH_MOUSE_SCROLL_STEP);
     assert_eq!(state.result_scroll, 0);
 
-    handle_tui_mouse(
+    assert!(handle_tools_scroll_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollUp,
-            column: layout.tools.x + 1,
-            row: layout.tools.y + 1,
+            column: tools_area.x + 1,
+            row: tools_area.y + 1,
             modifiers: KeyModifiers::NONE,
         },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        true
+    ));
     assert_eq!(state.change_patch_scroll, 0);
 }
 
@@ -1042,46 +1131,31 @@ fn changes_mouse_click_selects_patch_from_worktree_file_list() {
         streaming_assistant: None,
         worker: None,
     };
-    let area = Rect {
+    let tools_area = Rect {
         x: 0,
-        y: 0,
+        y: 3,
         width: 100,
-        height: 24,
+        height: 12,
     };
-    let layout = chat_ui_layout(area);
-    let (progress_tx, _progress_rx) = mpsc::channel();
-    let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(select_change_patch_at_row(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 1 + 4,
-            modifiers: KeyModifiers::NONE,
-        },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        tools_area.x + 2,
+        tools_area.y + 1 + 4,
+    ));
     assert_eq!(state.selected_change, 1);
     assert_eq!(state.change_patch_scroll, 0);
     assert!(state.last_event.contains("src/ui.rs"));
     state.workspace_changes.as_mut().unwrap().paths =
         vec!["src/lib.rs".to_string(), "notes.md".to_string()];
 
-    handle_tui_mouse(
+    assert!(select_change_patch_at_row(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 1 + 4,
-            modifiers: KeyModifiers::NONE,
-        },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        tools_area.x + 2,
+        tools_area.y + 1 + 4,
+    ));
     assert_eq!(state.selected_change, 1);
     assert!(
         state.last_event.contains("no patch for notes.md"),
@@ -1172,6 +1246,23 @@ fn tui_loop_batches_pending_terminal_events_before_redraw() {
     assert!(source.contains("TUI_EVENT_BATCH_LIMIT"));
     assert!(source.contains("processed_events < TUI_EVENT_BATCH_LIMIT"));
     assert!(source.contains("event::poll(Duration::ZERO)"));
+}
+
+#[test]
+fn chat_view_visible_render_avoids_full_transcript_formatting_on_input_frames() {
+    let source = fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/ui/chat_view.rs"),
+    )
+    .unwrap();
+    let visible_start = source
+        .find("fn format_visible_transcript_text")
+        .expect("visible transcript formatter exists");
+    let title_start = source
+        .find("fn format_messages_title")
+        .expect("messages title formatter exists");
+    let visible_body = &source[visible_start..title_start];
+
+    assert!(!visible_body.contains("format_full_transcript_text("));
 }
 
 #[test]
@@ -1406,9 +1497,7 @@ fn slash_command_palette_filters_formats_and_completes() {
 }
 
 #[test]
-fn slash_command_palette_mouse_selects_and_completes_match() {
-    let suggestions = slash_command_suggestions_for_state("/", false).unwrap();
-    assert!(suggestions.len() > 1);
+fn slash_command_input_mouse_events_do_not_open_or_complete_palette() {
     let mut state = TuiState {
         runtime: None,
         active_session: None,
@@ -1441,6 +1530,7 @@ fn slash_command_palette_mouse_selects_and_completes_match() {
         worker: None,
     };
     state.input.set_buffer("/".to_string());
+    state.transcript_scroll = TRANSCRIPT_MOUSE_SCROLL_STEP;
     let area = Rect {
         x: 0,
         y: 0,
@@ -1455,41 +1545,38 @@ fn slash_command_palette_mouse_selects_and_completes_match() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 1,
+            column: layout.input.x + 2,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
         &done_tx,
         area,
     );
-    assert_eq!(state.selected_command, 1);
+    assert_eq!(state.selected_command, 0);
+    assert_eq!(state.input.buffer(), "/");
     assert_eq!(state.result_scroll, 0);
-    assert!(state.last_event.starts_with("command selected: "));
+    assert_eq!(state.transcript_scroll, 0);
 
-    let offset = "matches: ".len()
-        + command_palette_match_token(0, state.selected_command, &suggestions[0]).len()
-        + 2;
-    let selected = suggestions[state.selected_command].name;
     handle_tui_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 1 + offset as u16 + 1,
-            row: layout.tools.y + 1 + command_palette_matches_line_index(false) as u16,
+            column: layout.input.x + 2,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
         &done_tx,
         area,
     );
-    assert_eq!(state.input.buffer(), format!("{selected} "));
+    assert_eq!(state.input.buffer(), "/");
     assert_eq!(state.selected_command, 0);
-    assert_eq!(state.last_event, format!("completed {selected}"));
+    assert_ne!(state.last_event, "completed /help");
 }
 
 #[test]
-fn slash_command_palette_can_be_rendered_in_tools_area() {
+fn slash_command_input_stays_in_message_box_without_auto_popup() {
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     let mut state = TuiState {
@@ -1533,7 +1620,10 @@ fn slash_command_palette_can_be_rendered_in_tools_area() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("Command Help"));
+    assert!(rendered.contains("Message Box"));
+    assert!(rendered.contains("/doctor"));
+    assert!(!rendered.contains("Command Help"));
+    assert!(!rendered.contains("matches:"));
     assert!(!rendered.contains("tool: read_file"));
 }
 
@@ -2397,30 +2487,21 @@ fn monitor_advanced_toggle_enters_first_advanced_tab() {
         streaming_assistant: None,
         worker: None,
     };
-    let area = Rect {
+    let tools_area = Rect {
         x: 0,
-        y: 0,
+        y: 3,
         width: 120,
-        height: 24,
+        height: 9,
     };
-    let layout = chat_ui_layout(area);
     let tabs = format_monitor_tabs(state.monitor_tab);
     let toggle_offset = tabs.find(MONITOR_ADVANCED_TOGGLE_LABEL).unwrap() as u16;
-    let (progress_tx, _progress_rx) = mpsc::channel();
-    let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(select_monitor_tab_at_position(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 1 + toggle_offset,
-            row: layout.tools.y + 1,
-            modifiers: KeyModifiers::NONE,
-        },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        tools_area.x + 1 + toggle_offset,
+        tools_area.y + 1,
+    ));
     assert_eq!(state.monitor_tab, first_advanced_monitor_tab());
     assert_eq!(state.monitor_tab, MonitorTab::Result);
     assert_eq!(state.selected_command, 0);
@@ -2428,23 +2509,17 @@ fn monitor_advanced_toggle_enters_first_advanced_tab() {
     // From the expanded advanced group, clicking a core tab collapses again.
     let expanded = format_monitor_tabs(state.monitor_tab);
     let overview_offset = expanded.find("Overview").unwrap() as u16;
-    handle_tui_mouse(
+    assert!(select_monitor_tab_at_position(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 1 + overview_offset,
-            row: layout.tools.y + 1,
-            modifiers: KeyModifiers::NONE,
-        },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        tools_area.x + 1 + overview_offset,
+        tools_area.y + 1,
+    ));
     assert_eq!(state.monitor_tab, MonitorTab::Overview);
 }
 
 #[test]
-fn monitor_tabs_can_be_clicked_from_task_monitor_header() {
+fn monitor_tab_hit_test_selects_visible_tab() {
     let mut state = TuiState {
         runtime: None,
         active_session: None,
@@ -2476,36 +2551,35 @@ fn monitor_tabs_can_be_clicked_from_task_monitor_header() {
         width: 120,
         height: 24,
     };
-    let layout = chat_ui_layout(area);
+    let tools_area = Rect {
+        x: 0,
+        y: 3,
+        width: 120,
+        height: 9,
+    };
     let tabs = format_monitor_tabs(state.monitor_tab);
     let changes_offset = tabs.find("Changes").unwrap() as u16;
-    let toggle_offset = tabs.find(MONITOR_ADVANCED_TOGGLE_LABEL).unwrap() as u16;
-    let (progress_tx, _progress_rx) = mpsc::channel();
-    let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(select_monitor_tab_at_position(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 1 + changes_offset,
-            row: layout.tools.y + 1,
-            modifiers: KeyModifiers::NONE,
-        },
-        &progress_tx,
-        &done_tx,
-        area,
-    );
+        tools_area,
+        tools_area.x + 1 + changes_offset,
+        tools_area.y + 1,
+    ));
     assert_eq!(state.monitor_tab, MonitorTab::Changes);
     assert_eq!(state.selected_command, 0);
     assert_eq!(state.last_event, "monitor tab: Changes");
 
     state.input.set_buffer("/he".to_string());
+    let layout = chat_ui_layout(area);
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
     handle_tui_mouse(
         &mut state,
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 1 + toggle_offset,
-            row: layout.tools.y + 1,
+            column: layout.input.x + 1,
+            row: layout.input.y + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -2793,7 +2867,7 @@ fn monitor_quick_actions_can_select_and_prefill_editable_commands() {
 }
 
 #[test]
-fn monitor_quick_actions_can_be_clicked_from_task_monitor() {
+fn monitor_quick_action_hit_test_can_activate_action() {
     let mut state = TuiState {
         runtime: None,
         active_session: None,
@@ -2819,14 +2893,13 @@ fn monitor_quick_actions_can_be_clicked_from_task_monitor() {
         streaming_assistant: None,
         worker: None,
     };
-    let area = Rect {
+    let tools_area = Rect {
         x: 0,
-        y: 0,
+        y: 3,
         width: 100,
-        height: 24,
+        height: 12,
     };
-    let layout = chat_ui_layout(area);
-    let rendered = format_task_monitor_text(&state, None, layout.tools.height);
+    let rendered = format_task_monitor_text(&state, None, tools_area.height);
     let action_row = rendered
         .lines()
         .position(|line| line.contains("/doctor docker --json"))
@@ -2834,18 +2907,13 @@ fn monitor_quick_actions_can_be_clicked_from_task_monitor() {
     let (progress_tx, _progress_rx) = mpsc::channel();
     let (done_tx, _done_rx) = mpsc::channel();
 
-    handle_tui_mouse(
+    assert!(activate_monitor_quick_action_at_row(
         &mut state,
-        MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 4,
-            row: layout.tools.y + 1 + action_row as u16,
-            modifiers: KeyModifiers::NONE,
-        },
+        tools_area,
+        tools_area.y + 1 + action_row as u16,
         &progress_tx,
         &done_tx,
-        area,
-    );
+    ));
 
     assert_eq!(state.selected_command, 0);
     assert!(state
@@ -2961,6 +3029,114 @@ fn approvals_tab_can_approve_selected_request() {
 }
 
 #[test]
+fn approval_prompt_covers_input_and_returns_after_choice() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let session_id = runtime.session_id();
+    let store = SessionStore::new(dir.path());
+    let session = store.load(&session_id).unwrap();
+    let request = session
+        .enqueue_approval_request(
+            "write_file",
+            PermissionDecision {
+                outcome: DecisionOutcome::RequiresUserApproval,
+                risk: RiskLevel::Medium,
+                reason: "write requires approval".to_string(),
+            },
+        )
+        .unwrap();
+
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = TuiState {
+        runtime: Some(runtime),
+        active_session: None,
+        input: MessageBox::new(),
+        chat: Vec::new(),
+        transcript_scroll: 0,
+        result_scroll: 0,
+        workspace_changes: None,
+        workspace_changes_checked_at: None,
+        tool_log: Vec::new(),
+        resume_picker: None,
+        credential_prompt: None,
+        side_question_prompt: None,
+        selected_tool: None,
+        selected_command: 0,
+        selected_change: 0,
+        change_patch_scroll: 0,
+        monitor_tab: MonitorTab::Overview,
+        selected_approval: 0,
+        running: false,
+        exit_requested: false,
+        last_event: "ready".to_string(),
+        streaming_assistant: None,
+        worker: None,
+    };
+    state.input.set_buffer("draft message".to_string());
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let blocked = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(blocked.contains("Approval"));
+    assert!(blocked.contains("approve/deny"));
+    assert!(blocked.contains("write_file"));
+    assert!(!blocked.contains("Message Box"));
+    assert!(!blocked.contains("draft message"));
+
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    let mut clipboard = Vec::new();
+    handle_tui_key_with_clipboard_writer(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+        &progress_tx,
+        &done_tx,
+        &mut clipboard,
+    )
+    .unwrap();
+
+    assert_eq!(state.last_event, "approval approved");
+    assert_eq!(state.input.buffer(), "draft message");
+    let loaded = store.load(&session_id).unwrap();
+    let updated = loaded.load_approval_requests().unwrap();
+    assert_eq!(updated[0].id, request.id);
+    assert_eq!(updated[0].status, ApprovalStatus::Approved);
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let restored = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(restored.contains("Message Box"));
+    assert!(restored.contains("draft message"));
+    assert!(!restored.contains("Approval"));
+}
+
+#[test]
 fn approvals_tab_opens_and_saves_btw_answer_prompt() {
     let dir = tempdir().unwrap();
     let runtime = AgentRuntime::new(
@@ -3051,7 +3227,7 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
 }
 
 #[test]
-fn approvals_tab_mouse_selects_blockers_without_acting() {
+fn approval_prompt_mouse_selects_blockers_without_acting() {
     let dir = tempdir().unwrap();
     let runtime = AgentRuntime::new(
         AppConfig::default(),
@@ -3119,8 +3295,8 @@ fn approvals_tab_mouse_selects_blockers_without_acting() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::ScrollDown,
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 2,
+            column: layout.input.x + 2,
+            row: layout.input.y + 2,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -3138,8 +3314,8 @@ fn approvals_tab_mouse_selects_blockers_without_acting() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 1 + 2,
+            column: layout.input.x + 2,
+            row: layout.input.y + 1 + 1,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -3158,8 +3334,8 @@ fn approvals_tab_mouse_selects_blockers_without_acting() {
         &mut state,
         MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: layout.tools.x + 2,
-            row: layout.tools.y + 1 + 4,
+            column: layout.input.x + 2,
+            row: layout.input.y + 1 + 2,
             modifiers: KeyModifiers::NONE,
         },
         &progress_tx,
@@ -4549,7 +4725,7 @@ fn approvals_tab_answers_active_btw_question_while_running() {
 }
 
 #[test]
-fn task_monitor_renders_overview_and_tool_calls() {
+fn chat_ui_render_keeps_tools_out_of_primary_view() {
     let backend = TestBackend::new(100, 24);
     let mut terminal = Terminal::new(backend).unwrap();
     let state = TuiState {
@@ -4592,9 +4768,11 @@ fn task_monitor_renders_overview_and_tool_calls() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(rendered.contains("Task Monitor"));
-    assert!(rendered.contains("Tools"));
-    assert!(rendered.contains("tool: read_file"));
+    assert!(rendered.contains("Messages"));
+    assert!(rendered.contains("Message Box"));
+    assert!(!rendered.contains("Task Monitor"));
+    assert!(!rendered.contains("Tools"));
+    assert!(!rendered.contains("tool: read_file"));
 }
 
 #[test]
@@ -5090,7 +5268,7 @@ fn resume_picker_mouse_selects_and_scrolls_without_falling_through() {
         height: 24,
     };
     let layout = chat_ui_layout(area);
-    let (list_area, _) = resume_picker_layout(layout.tools);
+    let (list_area, _) = resume_picker_layout(layout.input);
     let (progress_tx, _progress_rx) = mpsc::channel();
     let (done_tx, _done_rx) = mpsc::channel();
 
@@ -5124,7 +5302,7 @@ fn resume_picker_mouse_selects_and_scrolls_without_falling_through() {
         area,
     );
     let picker = state.resume_picker.as_ref().unwrap();
-    assert_eq!(picker.selected, 1);
+    assert_eq!(picker.selected, 2);
 
     handle_tui_mouse(
         &mut state,

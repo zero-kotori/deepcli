@@ -26,10 +26,10 @@ fi
 
 (cd "$DEEPCLI_HOME" && cargo build --quiet)
 
-workspace="$(mktemp -d -t deepcli-tui-smoke.XXXXXX)"
-capture="$(mktemp -t deepcli-tui-capture.XXXXXX)"
-stdout="$(mktemp -t deepcli-tui-stdout.XXXXXX)"
-stderr="$(mktemp -t deepcli-tui-stderr.XXXXXX)"
+workspace="$(mktemp -d -t deepcli-native-smoke.XXXXXX)"
+capture="$(mktemp -t deepcli-native-capture.XXXXXX)"
+stdout="$(mktemp -t deepcli-native-stdout.XXXXXX)"
+stderr="$(mktemp -t deepcli-native-stderr.XXXXXX)"
 cleanup() {
   rm -rf "$workspace" "$capture" "$stdout" "$stderr"
 }
@@ -38,16 +38,16 @@ trap cleanup EXIT
 set +e
 (
   sleep "$EXIT_DELAY"
-  printf '\033'
+  printf '/quit\n'
 ) | TERM=xterm-256color /usr/bin/script -q "$capture" /bin/sh -lc \
   'stty rows "$1" cols "$2"; shift 2; exec "$@"' \
-  sh "$SMOKE_ROWS" "$SMOKE_COLS" "$DEEPCLI_BIN" -C "$workspace" --yes --tui \
+  sh "$SMOKE_ROWS" "$SMOKE_COLS" "$DEEPCLI_BIN" -C "$workspace" --yes \
   >"$stdout" 2>"$stderr"
 status=$?
 set -e
 
 if [[ "$status" -ne 0 ]]; then
-  echo "tui-smoke: TUI exited with status $status" >&2
+  echo "tui-smoke: native terminal mode exited with status $status" >&2
   if [[ -s "$stderr" ]]; then
     sed -n '1,80p' "$stderr" >&2
   fi
@@ -58,10 +58,32 @@ plain_capture="$(
   perl -pe 's/\e\[[0-9]+;[0-9]+H/ /g; s/\e\[[0-9;?]*[ -\/]*[@-~]//g; s/\r//g' "$capture"
 )"
 
-for marker in "Status" "Messages" "Task Monitor" "Overview" "provider=deepseek"; do
+for marker in "deepcli session" "Type /help for commands, /quit to exit." "> "; do
   if [[ "$plain_capture" != *"$marker"* ]]; then
     echo "tui-smoke: missing expected terminal marker: $marker" >&2
     printf '%s\n' "$plain_capture" | sed -n '1,80p' >&2
+    exit 1
+  fi
+done
+
+for marker in "Messages" "Message Box" "Status" "Task Monitor" "deepcli>"; do
+  if [[ "$plain_capture" == *"$marker"* ]]; then
+    echo "tui-smoke: found removed terminal marker: $marker" >&2
+    printf '%s\n' "$plain_capture" | sed -n '1,80p' >&2
+    exit 1
+  fi
+done
+
+for sequence in \
+  $'\033[?1049h' \
+  $'\033[?1000h' \
+  $'\033[?1002h' \
+  $'\033[?1003h' \
+  $'\033[?1006h' \
+  $'\033[>1u' \
+  $'\033[>4;2m'; do
+  if grep -Fq "$sequence" "$capture"; then
+    echo "tui-smoke: found removed terminal control sequence" >&2
     exit 1
   fi
 done

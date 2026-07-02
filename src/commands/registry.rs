@@ -150,13 +150,18 @@ const COMPLETION_ALIAS_METADATA: &[CompletionAliasMetadata] = &[
         true,
         CommandGroup::Support,
     ),
-    completion_alias("tui", "Start the terminal UI.", true, CommandGroup::Support),
+    completion_alias(
+        "tui",
+        "Compatibility alias for native terminal chat.",
+        true,
+        CommandGroup::Support,
+    ),
     legacy_completion_alias(
         "repl",
-        "Start the legacy line-based REPL.",
+        "Compatibility alias for native terminal chat.",
         true,
         "tui",
-        "keep as line-based REPL compatibility alias",
+        "keep as native terminal chat compatibility alias",
     ),
     completion_alias(
         "sessions",

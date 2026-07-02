@@ -1,6 +1,6 @@
 use super::{
     compact_text_line, display_json_value, display_optional_u64, display_optional_usize,
-    indent_text, latest_session_with_recorded_activity, local_action_checklist, required_arg,
+    latest_session_with_recorded_activity, local_action_checklist, required_arg,
     session_has_no_recorded_activity, session_storage_bytes, set_command_output_path, short_id,
     status_u128_value, truncate_display, write_command_output,
 };
@@ -237,16 +237,6 @@ fn format_usage_report(
         ),
     ];
     lines.push(format_usage_diagnostics(&usage, &audits));
-
-    if let Some(summary) = session.load_summary()? {
-        let summary = summary.trim();
-        if !summary.is_empty() {
-            lines.push(format!(
-                "summary preview:\n{}",
-                indent_text(&truncate_display(summary, 1_000), "  ")
-            ));
-        }
-    }
 
     Ok(lines.join("\n"))
 }

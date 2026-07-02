@@ -63,6 +63,7 @@ pub(super) fn visible_panel_line_indices(
     focused
 }
 
+#[allow(dead_code)]
 pub(super) fn render_task_monitor(frame: &mut Frame<'_>, area: Rect, state: &TuiState) {
     let monitor = session_monitor_for_state(state);
     let text = format_task_monitor_text(state, monitor.as_ref(), area.height);
@@ -70,7 +71,7 @@ pub(super) fn render_task_monitor(frame: &mut Frame<'_>, area: Rect, state: &Tui
         Paragraph::new(text).wrap(Wrap { trim: false }).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title("Task Monitor (Ctrl-T/click tabs; Up/Down actions; Enter/click run)"),
+                .title("Task Monitor (Ctrl-T tabs; Up/Down actions; Enter run)"),
         ),
         area,
     );

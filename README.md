@@ -1,6 +1,6 @@
 # deepcli
 
-deepcli 是一个 local-first 的 AI 编程代理 CLI，面向日常工程协作：启动 TUI、切换 Provider/模型、恢复会话、检查健康状态、准备本地环境、运行测试，以及生成验收或交付报告。
+deepcli 是一个 local-first 的 AI 编程代理 CLI，面向日常工程协作：启动原生终端聊天、切换 Provider/模型、恢复会话、检查健康状态、准备本地环境、运行测试，以及生成验收或交付报告。
 
 本文是快速入口。命令清单、功能契约与架构见下方 [文档](#文档)。
 
@@ -11,7 +11,7 @@ deepcli 是一个 local-first 的 AI 编程代理 CLI，面向日常工程协作
 ## 快速开始
 
 ```bash
-# 构建并在当前项目启动 TUI
+# 构建并在当前项目启动原生终端聊天
 cargo build
 ./scripts/deepcli            # 或 deepcli（若已在 PATH）
 

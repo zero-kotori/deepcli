@@ -912,7 +912,7 @@ fn wrapper_resume_preview_forwards_to_local_slash_command() {
 
     let direct_resume = run_wrapper(&["resume", "6155c14e"]);
     assert!(has_adjacent(&direct_resume.args, "--resume", "6155c14e"));
-    assert!(direct_resume.args.iter().any(|arg| arg == "--tui"));
+    assert!(!direct_resume.args.iter().any(|arg| arg == "--tui"));
 }
 
 #[test]

@@ -13,7 +13,7 @@ use anyhow::{bail, Context, Result};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::Path;
-use std::process::Command as ProcessCommand;
+use std::process::{Command as ProcessCommand, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ForkOptions {
@@ -601,6 +601,13 @@ enum ForkTerminalAppKind {
     Other,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForkTerminalLaunch {
+    program: &'static str,
+    args: Vec<String>,
+    quiet: bool,
+}
+
 fn terminal_app_kind(app: &str) -> ForkTerminalAppKind {
     match app
         .to_ascii_lowercase()
@@ -630,15 +637,7 @@ fn open_fork_terminal(workspace: &Path, fork_id: &str, app: &str) -> Result<()> 
                 "opening a resumed fork is only implemented for Terminal and iTerm2; rerun with --no-open and use `{command}` manually"
             ),
         };
-        let status = ProcessCommand::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .status()
-            .context("failed to launch osascript")?;
-        if !status.success() {
-            bail!("osascript exited with status {status}");
-        }
-        Ok(())
+        run_fork_terminal_launch(fork_terminal_launch_for_script(&script))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -646,6 +645,29 @@ fn open_fork_terminal(workspace: &Path, fork_id: &str, app: &str) -> Result<()> 
         let _ = app;
         bail!("opening a resumed fork is only implemented for macOS Terminal or iTerm2; rerun with --no-open")
     }
+}
+
+fn fork_terminal_launch_for_script(script: &str) -> ForkTerminalLaunch {
+    ForkTerminalLaunch {
+        program: "osascript",
+        args: vec!["-e".to_string(), script.to_string()],
+        quiet: true,
+    }
+}
+
+fn run_fork_terminal_launch(launch: ForkTerminalLaunch) -> Result<()> {
+    let mut command = ProcessCommand::new(launch.program);
+    command.args(&launch.args);
+    if launch.quiet {
+        command.stdout(Stdio::null()).stderr(Stdio::null());
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to launch {}", launch.program))?;
+    if !status.success() {
+        bail!("{} exited with status {status}", launch.program);
+    }
+    Ok(())
 }
 
 fn fork_workspace_resume_command(workspace: &Path, fork_id: &str) -> String {
@@ -948,4 +970,18 @@ fn fork_count_check_json(check: &ForkCountCheck) -> Value {
         "fork": check.fork,
         "matches": check.matches,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fork_terminal_launcher_discards_osascript_output() {
+        let launch = fork_terminal_launch_for_script("return \"tab 1 of window id 11788\"");
+
+        assert_eq!(launch.program, "osascript");
+        assert_eq!(launch.args[0], "-e");
+        assert!(launch.quiet);
+    }
 }

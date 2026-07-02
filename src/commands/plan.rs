@@ -204,8 +204,8 @@ fn planning_questions(requirement: &str) -> Vec<PlanningQuestion> {
             question: "交互方式优先放在哪里？".to_string(),
             options: vec![
                 PlanningOption {
-                    label: "TUI slash command",
-                    description: "先在现有 TUI/CLI 命令体系内闭环。",
+                    label: "Interactive slash command",
+                    description: "先在现有交互/CLI 命令体系内闭环。",
                     recommended: true,
                 },
                 PlanningOption {
@@ -215,7 +215,7 @@ fn planning_questions(requirement: &str) -> Vec<PlanningQuestion> {
                 },
                 PlanningOption {
                     label: "Both",
-                    description: "同时做 TUI 和 one-shot，测试面更大。",
+                    description: "同时做交互入口和 one-shot，测试面更大。",
                     recommended: false,
                 },
             ],
@@ -325,7 +325,7 @@ fn format_requirements_draft(requirement: &str, questions: &[PlanningQuestion]) 
         String::new(),
         "## Functional Requirements".to_string(),
         String::new(),
-        "- The feature must be reachable from the CLI/TUI command surface.".to_string(),
+        "- The feature must be reachable from the CLI or interactive command surface.".to_string(),
         "- The feature must preserve existing session, permission, and output-path safety behavior.".to_string(),
         "- The feature must provide human-readable output and a stable JSON/report path when useful.".to_string(),
         "- The feature must make the next action obvious after partial or missing answers.".to_string(),

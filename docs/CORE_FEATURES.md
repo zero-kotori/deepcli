@@ -4,7 +4,7 @@
 
 ## CLI 与命令发现
 
-- 默认 `deepcli` 进入 TUI；`deepcli repl` 为旧行式 REPL；`deepcli ask|stream <prompt>` 为 one-shot（缺 prompt 本地报错）。
+- 默认 `deepcli` 进入原生终端聊天；`deepcli tui` / `deepcli repl` 为兼容 alias；`deepcli ask|stream <prompt>` 为 one-shot（缺 prompt 本地报错）。
 - 高频 slash 命令、provider 前缀（deepseek/kimi）与模式有顶层别名；`--help`/`-h` 转发到 `/help <topic>`。
 - 本地 one-shot 命令不创建空 session、不预调用 provider；未知/拼错命令本地拦截并给 nearest-command 建议。
 - `completion` 输出 bash/zsh/fish 脚本与 JSON 命令目录。
@@ -35,7 +35,7 @@
 ## 产品循环
 
 - `scorecard`/`round`/`benchmark`/`recipes`/`opportunities`：本地评分、迭代 gate、benchmark 证据管理、工作流目录、非阻塞机会。
-- 关键 JSON 输出 `report` + `nextActions`（可直接执行的 `deepcli ...`）+ `checklist[]`，供 TUI/外部 UI 直接渲染。
+- 关键 JSON 输出 `report` + `nextActions`（可直接执行的 `deepcli ...`）+ `checklist[]`，供原生终端聊天和外部 UI 直接渲染。
 
 ## 诊断、隐私与本地库
 

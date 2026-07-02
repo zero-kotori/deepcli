@@ -4,7 +4,7 @@
 
 ## 产品定位
 
-deepcli 是一个 local-first 的 AI 编程代理 CLI。它以当前工作目录为中心，提供 TUI 交互、Provider/模型切换、会话恢复、工具调用、安全审批、环境准备、测试验收、诊断支持包和 shell 集成等能力。
+deepcli 是一个 local-first 的 AI 编程代理 CLI。它以当前工作目录为中心，提供原生终端聊天、Provider/模型切换、会话恢复、工具调用、安全审批、环境准备、测试验收、诊断支持包和 shell 集成等能力。
 
 核心目标是让用户可以在一个命令行工具里完成：
 
@@ -18,12 +18,12 @@ deepcli 是一个 local-first 的 AI 编程代理 CLI。它以当前工作目录
 
 deepcli 提供脚本入口和 Rust 二进制入口：
 
-- `deepcli`：默认进入 TUI。
-- `deepcli tui`：显式进入 TUI。
-- `deepcli repl`：进入兼容的行式 REPL。
+- `deepcli`：默认进入原生终端聊天。
+- `deepcli tui`：原生终端聊天兼容 alias。
+- `deepcli repl`：原生终端聊天兼容 alias。
 - `deepcli ask <prompt>`：一次性任务。
 - `deepcli stream <prompt>`：流式一次性任务。
-- `deepcli resume [session_id] --dry-run --json`：预览将恢复的会话上下文，不进入 TUI、不调用 provider。
+- `deepcli resume [session_id] --dry-run --json`：预览将恢复的会话上下文，不启动交互聊天、不调用 provider。
 - `deepcli deepseek ...`：使用 DeepSeek provider 预设。
 - `deepcli kimi ...`：使用 Kimi provider 预设。
 - `deepcli recipes [topic]`：查看任务型工作流命令清单。
@@ -40,21 +40,18 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 
 启动 wrapper 会自动补充当前工作目录、配置路径和 yes 授权默认值，同时保留显式参数。
 
-## TUI 与交互体验
+## 原生终端交互体验
 
-TUI 面向实际编码任务，而不是简单聊天框：
+交互聊天使用终端原生 scrollback，而不是全屏 alternate-screen UI：
 
-- message box 支持编辑、粘贴、多行输入和历史输入。
-- TUI 的 message box 和 BTW answer 对话框支持选中文本后用 `Ctrl-C` / `Cmd-C` 通过终端 OSC 52 clipboard 通道写入剪贴板；没有选区时 `Ctrl-C` 仍保持停止运行中任务或退出 TUI 的原语义。
-- slash command palette 支持过滤、选择和补全。
-- 会话消息会从持久化记录恢复。
-- Agent 运行中仍可执行本地安全命令，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark status|summary|trends|compare|baselines|list|show|presets`、`/git status|diff|branch|message`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
-- 会执行本地 shell、修改 session metadata、安装 shell completion、导出/写入 artifact、删除会话、Git 写操作或恢复文件的 `/round --run-benchmark`、`/benchmark run*|record|baseline-template|clean`、`/completion install --force`、任意运行中旁路命令的 `--output`、`/git create-branch`、`/git commit`、`/session rename`、`/session export`、`/session prune-empty --force`、`/session restore-backup` 真实恢复和完整 `/preflight` 需要等当前 Agent 任务结束或先 `/stop`。
+- deepcli 不进入 alternate screen、不接管鼠标，也不启用鼠标捕获；滚轮滚动的是终端历史 scrollback，鼠标选中文本和 `Cmd-C` / 终端复制使用终端原生行为。
+- 输入使用普通行提示符 `>`；`Enter` 发送当前行，`/quit` 退出交互聊天。
+- Agent 输出、工具进度和最终回复追加到普通 stdout；当前任务结束后才回到下一次 `>` 输入。
+- slash 命令可以作为普通输入发送，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark status|summary|trends|compare|baselines|list|show|presets`、`/git status|diff|branch|message`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
+- 会话消息会从持久化记录恢复，`deepcli resume` 会先选择或恢复历史会话，再进入同一个原生终端聊天入口。
 - `deepcli approval list --json` 和 `deepcli btw list --json` 会输出稳定协作队列 schema，并在顶层 `nextActions` 中给出可直接执行、无占位符的 `deepcli ...` 命令，再派生 `checklist[]` 供协作队列面板直接渲染；审批队列存在 pending 项时会优先给出 approve/deny 动作，空队列也会给出 `--all --json` 和帮助入口。
 - `deepcli approval approve|deny|clear --json` 和 `deepcli btw answer|clear --json` 会输出稳定 action schema，包含处理后的 session、item 或 cleared count、nextActions、checklist 和 report；`--output` 可写入 workspace 内 artifact。
 - `deepcli --help` 会直接展示审批和旁路问题的查看、处理和清理命令，包括 approval approve/deny/clear 与 btw answer/clear，减少用户在二级帮助里查找协作队列闭环的成本。
-- 任务观察面板的 quick actions 会按动作类型展示 `Enter run`、`Enter edit` 或 `Enter run/edit`，避免可编辑命令被误认为会直接执行。
-- 工具调用默认以可扫描的任务观察面板呈现，并支持查看工具详情；Tools 视图在折叠列表状态直接展示 `/session tools --limit 20 --current` 和 `/session tools --failed --limit 20 --current` 可编辑动作，鼠标点击会预填 message box，展开详情时仍保留 `Ctrl-O`/`Ctrl-F` 快捷入口。
 
 ## 会话管理
 
@@ -62,13 +59,13 @@ TUI 面向实际编码任务，而不是简单聊天框：
 
 - `deepcli resume` 打开当前 workspace 的会话选择器，并默认跳过只包含工具、测试或审计记录的诊断型 session、只包含低信息输入和本地澄清回复的会话，以及短小已完成的单轮任务会话。
 - `deepcli resume <session_id>` 恢复指定会话。
-- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，并从 `nextActions` 派生顶层 `checklist[]`，不创建新会话、不进入 TUI、不调用 provider；无 id 时同样使用当前 workspace 内去噪后的可恢复候选；没有可恢复候选时同一 schema 输出 `status=error`、`selected=null`、`error.code`、可执行 `nextActions` 和 `checklist[]` 后返回非零。
+- `deepcli resume <session_id> --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，展示将恢复的 session、activity、summary、最近消息和 next actions，并从 `nextActions` 派生顶层 `checklist[]`，不创建新会话、不启动交互聊天、不调用 provider；无 id 时同样使用当前 workspace 内去噪后的可恢复候选；没有可恢复候选时同一 schema 输出 `status=error`、`selected=null`、`error.code`、可执行 `nextActions` 和 `checklist[]` 后返回非零。
 - `deepcli sessions --all --limit 20` 查看历史。
 - `deepcli history` 是历史列表快捷入口。
 - 顶层命令支持常规帮助旗标，例如 `deepcli fork --help`、`deepcli sessions -h` 和 `deepcli deepseek fork --help` 都会转到对应 `/help` 主题。
 - `/rename` 可重命名当前或指定会话。
 - `/goal` 可把当前会话绑定到长期目标，默认目标是完整实现项目文档需求，并要求验收命令和测试全部通过后才可结束。
-- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；终端 app 优先级为 `--app`/`--terminal-app`、`DEEPCLI_TERMINAL_APP`、`TERM_PROGRAM` 自动推断、Terminal，iTerm 用户无需配置即可默认使用 iTerm2，Terminal 和 iTerm2 支持自动执行 resume，其他 app 应配合 `--no-open` 使用 JSON 中的 workspace resume 命令；TUI 内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题、终端 app 和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code`、`nextActions` 和 `checklist[]`，shell 中误用 `--current` 时优先给出 `deepcli fork --dry-run --json`，一般 no-source JSON 动作优先给出 `deepcli resume candidates --json` 和 `deepcli session list --all --limit 20 --json`，不会输出 `<session_id>` 这类占位动作，方便脚本和外部 UI 不打开 TUI 也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.app`、`terminal.autoResumeSupported` 和 `terminal.workspaceResumeCommand` 中给出终端选择、自动 resume 支持状态和 `cd <workspace> && deepcli resume <new_id>`，并把同一条恢复命令放在顶层 `nextActions[0]`，再由顶层 `checklist[]` 给这些动作命名，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
+- `/fork` 会复制当前或指定会话目录中的持久化上下文，给副本生成新 id/title，并默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；终端 app 优先级为 `--app`/`--terminal-app`、`DEEPCLI_TERMINAL_APP`、`TERM_PROGRAM` 自动推断、Terminal，iTerm 用户无需配置即可默认使用 iTerm2，Terminal 和 iTerm2 支持自动执行 resume，其他 app 应配合 `--no-open` 使用 JSON 中的 workspace resume 命令；交互聊天内的 `/fork` 或 `/fork --current` 使用 active session，shell 中的 `deepcli fork` 无 id 时会选择当前 workspace 最近的可恢复对话上下文，并跳过空会话和诊断型 session；`--dry-run --json` 只预览源会话、复制模式、计划标题、终端 app 和下一步动作，不创建 session；源会话选择失败时仍输出 `deepcli.session.fork.v1`、`status=error`、`error.code`、`nextActions` 和 `checklist[]`，shell 中误用 `--current` 时优先给出 `deepcli fork --dry-run --json`，一般 no-source JSON 动作优先给出 `deepcli resume candidates --json` 和 `deepcli session list --all --limit 20 --json`，不会输出 `<session_id>` 这类占位动作，方便脚本和外部 UI 不启动交互聊天也能继续发现候选；`--no-open` 会真实创建 fork 但跳过 Terminal；真实 fork 的 JSON 会在 `terminal.app`、`terminal.autoResumeSupported` 和 `terminal.workspaceResumeCommand` 中给出终端选择、自动 resume 支持状态和 `cd <workspace> && deepcli resume <new_id>`，并把同一条恢复命令放在顶层 `nextActions[0]`，再由顶层 `checklist[]` 给这些动作命名，方便用户从任意 shell 目录手动恢复副本；`--verify --json` 会在真实 fork 后输出 `verification`，检查 workspace、provider/model、fork state、resume command，以及消息、工具、测试、diff、backup 计数是否复制一致；JSON 中的 `contextCopy` 会说明源会话状态、复制模式和是否处于运行中任务；Agent 运行中也可立即 fork 已落盘上下文，让新终端基于同一历史副本独立继续交互，但当前运行中的 Agent 任务不会被热分叉。
 - 源会话处于运行中时，fork JSON 的顶层 `nextActions` 仍只给可执行命令，例如 `deepcli stop` 和 `deepcli fork --current`，并从这些动作派生 `checklist[]`；不热复制内存任务的说明保留在 `contextCopy.warning` 和 `report`。
 - `benchmark baselines --json` 在只有 ready 的 `.deepcli/baselines/current-main.json`、但默认 `.deepcli/baselines/competitor.json` 缺失时返回 `status=needs_default`，首个 `nextActions` 指向 competitor template，避免 inventory 把非默认 baseline 误当成完整对照基线。
 - `/session list --json` 和 `/session show|history|summary|tools|tests|diffs|backups --json` 会输出可执行 `nextActions` 并派生顶层 `checklist[]`；列表页会围绕首个展示会话给出 resume preview、history、next 和 diagnose，检查页会给出同一会话的 resume preview、next、diagnose、列表和帮助动作。
@@ -145,7 +142,7 @@ deepcli 可以检查、规划和准备本地任务环境：
 - `deepcli compiler test --json`
 
 环境 setup/test 走权限和工具审计路径；只读 check/plan 可作为快速预检。
-环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli install docker --smoke` 和 `deepcli doctor docker --json`，并从这些动作派生 `checklist[]`，让 Environment 面板直接渲染检查、计划、安装、环境测试、验收和 gate 动作；`commands` 与报告正文仍保留 slash 形式，便于 TUI 内继续使用。
+环境 JSON 顶层 `nextActions` 使用可直接复制到 shell 的 `deepcli ...` 命令，例如 `deepcli install docker --smoke` 和 `deepcli doctor docker --json`，并从这些动作派生 `checklist[]`，让 Environment 面板直接渲染检查、计划、安装、环境测试、验收和 gate 动作；`commands` 与报告正文仍保留 slash 形式，便于交互聊天内继续使用。
 `health/doctor --json` 复用同一可执行动作契约：缺凭据时给出 `deepcli credentials set/import-env/template ...`，环境未就绪时给出 `deepcli install ... --smoke` 或 `deepcli compiler test --json`，`doctor shell --json` 的 PATH 和 completion 建议直接给出可复制命令；顶层 `checklist[]` 从这些可执行动作派生，便于健康面板直接渲染。
 
 ## 测试、验收与交付
@@ -197,7 +194,7 @@ deepcli 不只负责生成代码，也负责形成交付证据：
 
 验收报告会聚合 Git 状态、diff、review 风险、测试证据、环境证据、失败工具、待审批和会话信号。无当前会话的一次性 `accept` / `gate` 会优先使用本次 workspace 测试证据，避免历史 session 的旧失败污染最终验收。`verify/gate/handoff --json` 的顶层 `nextActions` 会从文本报告中的 slash 建议归一成可直接执行的 `deepcli ...` 命令，并过滤 `<message>` 这类占位动作；顶层 `checklist[]` 会把这些交付动作结构化为 `step`、`label` 和 `command`，方便 TUI、外部 UI 或脚本直接渲染验收/交付动作队列；说明性建议继续留在 `report` 中供人工阅读。
 
-`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`resume --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，从持久化 session 文件读取 metadata、activity、summary 和最近消息，供外部 UI 或脚本在进入 TUI 前确认将恢复的上下文；无 id 时只在当前 workspace 中选择候选，并跳过只包含工具、测试或审计记录的诊断型 session、只包含低信息输入和本地澄清回复的会话，以及短小已完成的单轮任务会话；`resume candidates --json` 输出稳定 `deepcli.resume.candidates.v1`，展示默认可恢复候选、eligible/hidden 计数、每个会话的隐藏原因和可执行 nextActions；当无可恢复候选时，preview error 的首个动作会指向该候选诊断入口，帮助用户区分“没有历史记录”和“历史被恢复过滤器隐藏”。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；无 id 且没有 active session 时，fork 使用同一类可恢复对话候选，避免把空诊断 session 当作默认源；dry-run 报告使用同一 schema、`status=dry_run` 和 `dryRun=true`，且 `fork=null`，用于确认源会话和计划而不创建历史记录；预期源会话选择失败时会使用同一 schema 输出 `status=error`、`source=null`、`fork=null`、`error`、`nextActions` 和 `checklist[]` 后非零退出，其中 no-source 动作优先给出 `deepcli resume candidates --json` 和 `deepcli session list --all --limit 20 --json`；真实 fork 可加 `--verify` 输出 `verification` resume 健康检查，确认副本是否 ready、workspace/provider/model 是否一致、持久化记录计数是否复制一致；`contextCopy`、`nextActions` 与 `checklist[]` 会明确暴露源会话状态、复制模式、运行中任务限制、恢复命令和可渲染动作队列；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。运行中 `/session` 仅允许 read-only inspection 和不带 `--output` 的 restore-backup dry-run 预览，`rename`、`export`、`prune-empty --force`、真实恢复和任何 `--output` artifact 写入都会提示等待任务结束或先 `/stop`。`terminal` 输出稳定 `deepcli.terminal.v1` JSON，允许外部 UI 或验收脚本在不打开 Terminal 的情况下确认 workspace、命令、平台支持状态和可复制的 `workspaceCommand`。
+`goal` 输出稳定 `deepcli.goal.v1` JSON，并把目标、需求来源、停止条件和验收命令保存到当前 session 的 `goal.json` 与守护 `plan.json`。后续 Provider 上下文会收到 active goal contract，约束 Agent 不能在目标、验收要求和测试全部满足前声称结束。`goal status` 输出稳定 `deepcli.goal.status.v1`，检查需求来源文件、goal 守护计划步骤和每条 acceptance command 的最新测试证据；`goal gate` 复用同一报告，并在仍有 blocker 时返回非零，适合用作“是否允许停止”的本地门禁。`goal show/status/gate` 在无 active session 或当前 session 没有 goal 时，会回退到最近一个带 goal 的会话，并在 JSON 中标注 `sessionSource`；创建和清理 goal 不回退，避免 one-shot 命令误写历史会话。`plan` 输出稳定 `deepcli.plan.requirements_draft.v1`，面向粗糙需求生成澄清问题、多个候选选项、首推选项、假设、功能要求、验收标准和下一步动作；在有当前 session 时，澄清问题也会进入旁路问题队列，用户可继续回答。`resume --dry-run --json` 输出稳定 `deepcli.resume.preview.v1`，从持久化 session 文件读取 metadata、activity、summary 和最近消息，供外部 UI 或脚本在启动交互聊天前确认将恢复的上下文；无 id 时只在当前 workspace 中选择候选，并跳过只包含工具、测试或审计记录的诊断型 session、只包含低信息输入和本地澄清回复的会话，以及短小已完成的单轮任务会话；`resume candidates --json` 输出稳定 `deepcli.resume.candidates.v1`，展示默认可恢复候选、eligible/hidden 计数、每个会话的隐藏原因和可执行 nextActions；当无可恢复候选时，preview error 的首个动作会指向该候选诊断入口，帮助用户区分“没有历史记录”和“历史被恢复过滤器隐藏”。`fork` 输出稳定 `deepcli.session.fork.v1`，复制已持久化会话上下文但不复制 metadata id，适合把同一上下文分支给新的终端继续探索；无 id 且没有 active session 时，fork 使用同一类可恢复对话候选，避免把空诊断 session 当作默认源；dry-run 报告使用同一 schema、`status=dry_run` 和 `dryRun=true`，且 `fork=null`，用于确认源会话和计划而不创建历史记录；预期源会话选择失败时会使用同一 schema 输出 `status=error`、`source=null`、`fork=null`、`error`、`nextActions` 和 `checklist[]` 后非零退出，其中 no-source 动作优先给出 `deepcli resume candidates --json` 和 `deepcli session list --all --limit 20 --json`；真实 fork 可加 `--verify` 输出 `verification` resume 健康检查，确认副本是否 ready、workspace/provider/model 是否一致、持久化记录计数是否复制一致；`contextCopy`、`nextActions` 与 `checklist[]` 会明确暴露源会话状态、复制模式、运行中任务限制、恢复命令和可渲染动作队列；Agent 运行中允许 fork 当前已落盘上下文，但不热复制后台 Agent 任务。运行中 `/session` 仅允许 read-only inspection 和不带 `--output` 的 restore-backup dry-run 预览，`rename`、`export`、`prune-empty --force`、真实恢复和任何 `--output` artifact 写入都会提示等待任务结束或先 `/stop`。`terminal` 输出稳定 `deepcli.terminal.v1` JSON，允许外部 UI 或验收脚本在不打开 Terminal 的情况下确认 workspace、命令、平台支持状态和可复制的 `workspaceCommand`。
 
 当 `resume candidates --json` 没有 eligible 候选但发现空会话时，顶层 `nextActions[0]` 会指向 `deepcli session prune-empty --dry-run --json`；存在工具/诊断型隐藏会话时，还会补充 `deepcli session diagnose --limit 5 --json`，让恢复页和 fork 失败页能直接给出可执行的清理与诊断按钮。
 

@@ -254,7 +254,7 @@ fn tool_tab_lines_with_actions(
         });
     } else {
         lines.push(ToolTabLine {
-            text: "tool calls: Up/Down select, Enter/click expand, Ctrl-O full, Ctrl-F failed"
+            text: "tool calls: Up/Down select, Enter expand, Ctrl-O full, Ctrl-F failed"
                 .to_string(),
             tool_index: None,
         });
@@ -284,7 +284,7 @@ pub(super) fn append_tool_quick_action_lines(
         return;
     }
     lines.push(ToolTabLine {
-        text: "tool actions (click or Ctrl-O/Ctrl-F; edit before run):".to_string(),
+        text: "tool actions (Ctrl-O/Ctrl-F; edit before run):".to_string(),
         tool_index: None,
     });
     let selected = selected.min(actions.len() - 1);

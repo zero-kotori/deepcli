@@ -6,23 +6,14 @@ use super::{
 use crate::commands::list_resumable_sessions;
 use crate::session::{SessionMetadata, SessionStore};
 use anyhow::Result;
-use crossterm::{
-    event::{
-        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
-        MouseButton, MouseEvent, MouseEventKind,
-    },
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
-    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout, Rect},
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
-    Frame, Terminal,
+    Frame,
 };
-use std::io::{self, Stdout};
+use std::io::{self, Write};
 use std::path::Path;
-use std::time::Duration;
 
 pub(super) struct ResumePicker {
     pub(super) sessions: Vec<SessionMetadata>,
@@ -157,81 +148,67 @@ pub fn pick_resume_session(workspace: &Path) -> Result<ResumeSelection> {
         return Ok(ResumeSelection::NoSessions);
     }
 
-    let mut picker = ResumePicker::new(sessions);
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let result = run_resume_picker_loop(&mut terminal, &mut picker);
-    let raw_result = disable_raw_mode();
-    let screen_result = execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    );
-    let cursor_result = terminal.show_cursor();
-    raw_result?;
-    screen_result?;
-    cursor_result?;
-    result
+    run_resume_picker_loop(&sessions)
 }
 
-fn run_resume_picker_loop(
-    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
-    picker: &mut ResumePicker,
-) -> Result<ResumeSelection> {
+fn run_resume_picker_loop(sessions: &[SessionMetadata]) -> Result<ResumeSelection> {
+    print_native_resume_sessions(sessions)?;
+    let stdin = io::stdin();
     loop {
-        terminal.draw(|frame| render_resume_picker(frame, frame.area(), picker))?;
-        if !event::poll(Duration::from_millis(250))? {
-            continue;
+        print!("resume> ");
+        io::stdout().flush()?;
+
+        let mut input = String::new();
+        if stdin.read_line(&mut input)? == 0 {
+            return Ok(ResumeSelection::Cancelled);
         }
-        match event::read()? {
-            Event::Key(key) => match key.code {
-                KeyCode::Up | KeyCode::Left => {
-                    picker.move_previous();
-                }
-                KeyCode::Down | KeyCode::Right => {
-                    picker.move_next();
-                }
-                KeyCode::Home => picker.move_home(),
-                KeyCode::End => picker.move_end(),
-                KeyCode::Backspace => picker.pop_query_char(),
-                KeyCode::Enter => {
-                    let Some(session) = picker.selected_session() else {
-                        return Ok(ResumeSelection::Cancelled);
-                    };
-                    return Ok(ResumeSelection::Selected(session.id.to_string()));
-                }
-                KeyCode::Esc => return Ok(ResumeSelection::Cancelled),
-                KeyCode::Char('q') if picker.query.is_empty() => {
-                    return Ok(ResumeSelection::Cancelled);
-                }
-                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    return Ok(ResumeSelection::Cancelled);
-                }
-                KeyCode::Char(ch) if resume_filter_accepts_char(key, ch) => {
-                    picker.push_query_char(ch);
-                }
-                _ => {}
-            },
-            Event::Mouse(mouse) => {
-                let size = terminal.size()?;
-                handle_resume_picker_mouse(
-                    picker,
-                    mouse,
-                    Rect {
-                        x: 0,
-                        y: 0,
-                        width: size.width,
-                        height: size.height,
-                    },
-                );
-            }
-            _ => {}
+
+        let input = input.trim();
+        if input.is_empty() {
+            return Ok(ResumeSelection::Selected(sessions[0].id.to_string()));
+        }
+        if matches!(input, "q" | "quit" | "cancel") {
+            return Ok(ResumeSelection::Cancelled);
+        }
+        if let Some(session_id) = native_resume_selection(&sessions, input) {
+            return Ok(ResumeSelection::Selected(session_id));
+        }
+
+        println!("no matching session; enter a number, unique id prefix, or q");
+    }
+}
+
+fn print_native_resume_sessions(sessions: &[SessionMetadata]) -> io::Result<()> {
+    println!("Resumable sessions:");
+    for (index, session) in sessions.iter().enumerate() {
+        let title = session.title.as_deref().unwrap_or("<untitled>");
+        let model = session.model.as_deref().unwrap_or("<unset>");
+        println!(
+            "{:>2}. {}  {}  {}  {}",
+            index + 1,
+            short_id(&session.id.to_string()),
+            compact_ui_text(title, 50),
+            session.provider,
+            model
+        );
+    }
+    println!("Enter a number or unique id prefix; blank selects the first session; q cancels.");
+    Ok(())
+}
+
+fn native_resume_selection(sessions: &[SessionMetadata], input: &str) -> Option<String> {
+    if let Ok(number) = input.parse::<usize>() {
+        if (1..=sessions.len()).contains(&number) {
+            return Some(sessions[number - 1].id.to_string());
         }
     }
+
+    let mut matches = sessions
+        .iter()
+        .filter(|session| session.id.to_string().starts_with(input))
+        .map(|session| session.id.to_string());
+    let selected = matches.next()?;
+    matches.next().is_none().then_some(selected)
 }
 
 fn resume_filter_accepts_char(key: KeyEvent, ch: char) -> bool {
@@ -433,7 +410,7 @@ pub(super) fn render_resume_picker(frame: &mut Frame<'_>, area: Rect, picker: &R
             .block(
                 Block::default()
                     .borders(Borders::ALL)
-                    .title("Resume Preview (click select, Enter confirm, Esc cancel)"),
+                    .title("Resume Preview (Enter confirm, Esc cancel)"),
             ),
         preview_area,
     );

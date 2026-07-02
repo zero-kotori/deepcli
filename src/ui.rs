@@ -6,12 +6,9 @@ use crate::session::SessionMessage;
 use anyhow::Result;
 use crossterm::{
     event::{
-        self, DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
-        Event, KeyCode, KeyEvent, KeyModifiers, KeyboardEnhancementFlags, MouseButton, MouseEvent,
-        MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+        self, Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     },
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use std::io::{self, Stdout, Write};
@@ -38,6 +35,7 @@ mod monitor_library;
 mod monitor_output;
 mod monitor_shell;
 mod monitor_tools;
+mod native_terminal;
 mod paste;
 mod quick_actions;
 mod resume_picker;
@@ -45,13 +43,14 @@ mod running_commands;
 mod runtime_lifecycle;
 mod scrolling;
 mod session_projection;
+mod terminal_mode;
 mod text;
 mod worker;
 #[cfg(test)]
 use approvals::blocker_count;
 use approvals::{
-    handle_approval_tab_key, handle_approvals_mouse_for_state, handle_side_question_prompt_key,
-    SideQuestionPrompt,
+    approval_prompt_view_for_state, handle_approval_prompt_key, handle_approval_tab_key,
+    handle_approvals_mouse_for_state, handle_side_question_prompt_key, SideQuestionPrompt,
 };
 #[cfg(test)]
 use chat_history::session_messages_to_chat_lines;
@@ -61,13 +60,14 @@ use chat_view::{chat_ui_layout, clamp_transcript_scroll_to_area, render_chat_ui}
 use chat_view::{format_transcript_text, message_box_cursor_position};
 use clipboard::{handle_clipboard_key, handle_input_selection_mouse};
 use command_palette::{
-    clamp_selected_command, handle_command_palette_key, handle_command_palette_mouse_for_state,
-    render_command_palette, slash_command_suggestions_for_state,
+    clamp_selected_command, command_palette_auto_popup_enabled, handle_command_palette_key,
+    handle_command_palette_mouse_for_state, render_command_palette,
+    slash_command_suggestions_for_state,
 };
 #[cfg(test)]
 use command_palette::{
-    command_palette_match_token, command_palette_matches_line_index, complete_selected_command,
-    format_command_palette_text, running_safe_palette_priority, COMMAND_PALETTE_MATCH_LIMIT,
+    complete_selected_command, format_command_palette_text, running_safe_palette_priority,
+    COMMAND_PALETTE_MATCH_LIMIT,
 };
 #[cfg(test)]
 use credential_prompt::parse_tui_credential_set;
@@ -111,6 +111,7 @@ use monitor_tools::{
 };
 #[cfg(test)]
 use monitor_tools::{tool_tab_lines, TOOL_KEY_SCROLL_STEP};
+use native_terminal::run_native_terminal;
 use paste::{handle_tui_paste, normalize_pasted_text};
 #[cfg(test)]
 use quick_actions::activate_selected_monitor_quick_action;
@@ -137,6 +138,11 @@ use session_projection::{
     active_session_ref, header_status_for_state, session_monitor_for_state,
     sync_active_session_ref, workspace_for_state, ActiveSessionRef,
 };
+use terminal_mode::{apply_tui_terminal_setup, apply_tui_terminal_teardown};
+#[cfg(test)]
+use terminal_mode::{
+    tui_terminal_setup_commands, tui_terminal_teardown_commands, TuiTerminalCommand,
+};
 use text::{
     compact_ui_text, format_action_event, format_cache_hit_rate, format_latest_environment,
     format_optional_bytes, format_optional_u64, latest_action_result, latest_action_result_line,
@@ -147,29 +153,8 @@ use worker::{drain_done, drain_progress, WorkerDone};
 const RESUME_PICKER_MOUSE_SCROLL_STEP: usize = 3;
 const TUI_EVENT_BATCH_LIMIT: usize = 128;
 
-pub async fn run_basic_repl(runtime: &mut AgentRuntime) -> Result<()> {
-    println!("deepcli session {}", runtime.session_id());
-    println!("Type /help for commands, Ctrl-D to exit.");
-    let stdin = io::stdin();
-    loop {
-        print!("deepcli> ");
-        io::stdout().flush()?;
-        let mut line = String::new();
-        let bytes = stdin.read_line(&mut line)?;
-        if bytes == 0 {
-            break;
-        }
-        let input = line.trim_end();
-        if input.is_empty() {
-            continue;
-        }
-        if input.trim() == "/quit" {
-            break;
-        }
-        let output = runtime.handle_input(input).await?;
-        println!("{output}");
-    }
-    Ok(())
+pub async fn run_basic_repl(runtime: AgentRuntime) -> Result<()> {
+    run_native_terminal(runtime).await
 }
 
 struct TuiState {
@@ -213,13 +198,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
 
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableMouseCapture,
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES),
-        EnableBracketedPaste
-    )?;
+    apply_tui_terminal_setup(&mut stdout)?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -258,13 +237,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
     .await;
 
     disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture,
-        PopKeyboardEnhancementFlags,
-        DisableBracketedPaste
-    )?;
+    apply_tui_terminal_teardown(terminal.backend_mut())?;
     terminal.show_cursor()?;
     result
 }
@@ -325,6 +298,15 @@ fn handle_tui_mouse(
     area: Rect,
 ) {
     let areas = chat_ui_layout(area);
+    if handle_resume_picker_mouse_for_state(state, mouse, areas.input) {
+        return;
+    }
+    if handle_approvals_mouse_for_state(state, mouse, areas.input) {
+        return;
+    }
+    if handle_command_palette_mouse_for_state(state, mouse, areas.input) {
+        return;
+    }
     if handle_input_selection_mouse(state, mouse, areas.input) {
         return;
     }
@@ -352,16 +334,7 @@ fn handle_tui_mouse(
             state.last_event = transcript_scroll_event(state);
         }
         MouseEventKind::Down(MouseButton::Left) => {
-            if handle_resume_picker_mouse_for_state(state, mouse, areas.tools) {
-                return;
-            }
-            if handle_command_palette_mouse_for_state(state, mouse, areas.tools) {
-                return;
-            }
             if select_monitor_tab_at_position(state, areas.tools, mouse.column, mouse.row) {
-                return;
-            }
-            if handle_approvals_mouse_for_state(state, mouse, areas.tools) {
                 return;
             }
             if select_change_patch_at_row(state, areas.tools, mouse.column, mouse.row) {
@@ -496,6 +469,9 @@ fn handle_tui_key_with_clipboard_writer<W: Write>(
     }
     if state.resume_picker.is_some() {
         handle_resume_picker_key(key, state);
+        return Ok(());
+    }
+    if handle_approval_prompt_key(key, state) {
         return Ok(());
     }
     if handle_command_palette_key(key, state) {

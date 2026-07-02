@@ -161,8 +161,8 @@ help_topic_for_top_level_command() {
 usage() {
   cat <<'EOF'
 Usage:
-  deepcli                         Start the terminal UI in the current directory
-  deepcli repl                    Start the legacy line-based REPL
+  deepcli                         Start native terminal chat in the current directory
+  deepcli repl                    Compatibility alias for native terminal chat
   deepcli resume [session_id] [--dry-run] [--json]
                                    Open the session picker, resume by id, or preview resume context
   deepcli quickstart [--check|--json|--fail-on-missing]
@@ -242,7 +242,7 @@ Usage:
   deepcli init [--quick]          Run /init without typing the slash
   deepcli status|usage|goal|plan|fork|terminal|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion
                                    Run common diagnostic slash commands
-  deepcli tui                     Start the terminal UI in the current directory
+  deepcli tui                     Compatibility alias for native terminal chat
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
   deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
@@ -392,7 +392,7 @@ run_provider_command() {
 
   case "${1:-}" in
     "" )
-      run_deepcli --provider "$provider" --model "$model" --tui
+      run_deepcli --provider "$provider" --model "$model"
       ;;
     ask )
       run_deepcli --provider "$provider" --model "$model" "$@"
@@ -402,11 +402,11 @@ run_provider_command() {
       ;;
     tui )
       shift
-      run_deepcli --provider "$provider" --model "$model" --tui "$@"
+      run_deepcli --provider "$provider" --model "$model" "$@"
       ;;
     repl )
       shift
-      run_deepcli --provider "$provider" --model "$model" --repl "$@"
+      run_deepcli --provider "$provider" --model "$model" "$@"
       ;;
     resume )
       shift
@@ -417,7 +417,7 @@ run_provider_command() {
       else
         local session_id="${1:-}"
         shift
-        run_deepcli --provider "$provider" --model "$model" --tui --resume "$session_id" "$@"
+        run_deepcli --provider "$provider" --model "$model" --resume "$session_id" "$@"
       fi
       ;;
     diagnose )
@@ -480,7 +480,7 @@ run_provider_command() {
 
 case "${1:-}" in
   "" )
-    run_deepcli --tui
+    run_deepcli
     ;;
   * )
     if [[ -n "${1:-}" ]] && help_topic="$(help_topic_for_top_level_command "$1")" && is_help_flag "${2:-}"; then
@@ -491,7 +491,7 @@ esac
 
 case "${1:-}" in
   "" )
-    run_deepcli --tui
+    run_deepcli
     ;;
   help )
     shift
@@ -513,7 +513,7 @@ case "${1:-}" in
     else
       session_id="${1:-}"
       shift
-      run_deepcli --tui --resume "$session_id" "$@"
+      run_deepcli --resume "$session_id" "$@"
     fi
     ;;
   sessions )
@@ -554,11 +554,11 @@ case "${1:-}" in
     ;;
   tui )
     shift
-    run_deepcli --tui "$@"
+    run_deepcli "$@"
     ;;
   repl )
     shift
-    run_deepcli --repl "$@"
+    run_deepcli "$@"
     ;;
   ask )
     run_deepcli "$@"

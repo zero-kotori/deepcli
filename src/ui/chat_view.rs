@@ -1,12 +1,11 @@
-use super::monitor_shell::render_task_monitor;
 use super::{
-    compact_ui_text, credential_prompt_hidden_body, credential_prompt_hidden_cursor,
-    header_status_for_state, render_command_palette, render_resume_picker,
-    slash_command_suggestions_for_state, ChatLine, TuiState,
+    approval_prompt_view_for_state, command_palette_auto_popup_enabled, compact_ui_text,
+    credential_prompt_hidden_body, credential_prompt_hidden_cursor, render_command_palette,
+    render_resume_picker, slash_command_suggestions_for_state, ChatLine, TuiState,
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
@@ -15,6 +14,7 @@ use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
 pub(super) struct ChatUiLayout {
+    #[allow(dead_code)]
     pub(super) header: Rect,
     pub(super) transcript: Rect,
     pub(super) tools: Rect,
@@ -24,18 +24,19 @@ pub(super) struct ChatUiLayout {
 pub(super) fn chat_ui_layout(area: Rect) -> ChatUiLayout {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(9),
-            Constraint::Length(5),
-        ])
+        .constraints([Constraint::Min(1), Constraint::Length(5)])
         .split(area);
+    let hidden = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: 0,
+    };
     ChatUiLayout {
-        header: chunks[0],
-        transcript: chunks[1],
-        tools: chunks[2],
-        input: chunks[3],
+        header: hidden,
+        transcript: chunks[0],
+        tools: hidden,
+        input: chunks[1],
     }
 }
 
@@ -84,12 +85,69 @@ fn format_visible_transcript_text(
     scroll: usize,
     visible: usize,
     width: usize,
-) -> String {
-    let transcript = format_full_transcript_text(chat);
-    let visual_lines = wrap_transcript_lines(&transcript, width);
+) -> VisibleTranscript {
     let visible = visible.max(1);
-    let (start, end, _) = transcript_visual_window(visual_lines.len(), scroll, visible);
-    visual_lines[start..end].join("\n")
+    let needed = visible.saturating_add(scroll);
+    let (visual_lines, complete) = collect_visible_transcript_tail(chat, needed, width);
+    if !complete {
+        let end = visual_lines.len().saturating_sub(scroll);
+        let start = end.saturating_sub(visible);
+        return VisibleTranscript {
+            text: visual_lines[start..end].join("\n"),
+            scroll,
+        };
+    }
+
+    let (start, end, scroll) = transcript_visual_window(visual_lines.len(), scroll, visible);
+    VisibleTranscript {
+        text: visual_lines[start..end].join("\n"),
+        scroll,
+    }
+}
+
+struct VisibleTranscript {
+    text: String,
+    scroll: usize,
+}
+
+fn collect_visible_transcript_tail(
+    chat: &[ChatLine],
+    needed: usize,
+    width: usize,
+) -> (Vec<String>, bool) {
+    if chat.is_empty() || needed == 0 {
+        return (Vec::new(), true);
+    }
+
+    let mut reversed = Vec::new();
+    for (index, line) in chat.iter().enumerate().rev() {
+        let message = format!("{}: {}", line.role, line.content);
+        let wrapped = wrap_transcript_lines(&message, width);
+        for visual_line in wrapped.into_iter().rev() {
+            reversed.push(visual_line);
+            if reversed.len() >= needed {
+                reversed.reverse();
+                return (reversed, false);
+            }
+        }
+        if index > 0 {
+            reversed.push(String::new());
+            if reversed.len() >= needed {
+                reversed.reverse();
+                return (reversed, false);
+            }
+        }
+    }
+    reversed.reverse();
+    (reversed, true)
+}
+
+fn format_messages_title(scroll: usize) -> String {
+    if scroll == 0 {
+        "Messages (PageUp history)".to_string()
+    } else {
+        format!("Messages (scroll={scroll}; PageDown latest, Ctrl-End bottom)")
+    }
 }
 
 fn format_full_transcript_text(chat: &[ChatLine]) -> String {
@@ -151,40 +209,8 @@ fn append_wrapped_line(lines: &mut Vec<String>, line: &str, width: usize) {
     }
 }
 
-fn format_messages_title(state: &TuiState, visible: usize, width: usize) -> String {
-    let transcript = format_full_transcript_text(&state.chat);
-    let visual_lines = wrap_transcript_lines(&transcript, width);
-    let (_, _, scroll) =
-        transcript_visual_window(visual_lines.len(), state.transcript_scroll, visible);
-    if scroll == 0 {
-        "Messages (PageUp history)".to_string()
-    } else {
-        format!("Messages (scroll={scroll}; PageDown latest, Ctrl-End bottom)")
-    }
-}
-
 pub(super) fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
     let areas = chat_ui_layout(frame.area());
-    let header_status = header_status_for_state(state);
-
-    let header = Paragraph::new(Line::from(vec![
-        Span::styled(
-            "deepcli",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!(
-            "  title={} session={} provider={} model={} state={}",
-            header_status.title,
-            header_status.session,
-            header_status.provider,
-            header_status.model,
-            header_status.state
-        )),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title("Status"));
-    frame.render_widget(header, areas.header);
 
     let visible_messages = transcript_visible_message_count(areas.transcript);
     let transcript_width = transcript_inner_width(areas.transcript);
@@ -194,22 +220,34 @@ pub(super) fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
         visible_messages,
         transcript_width,
     );
-    let messages_title = format_messages_title(state, visible_messages, transcript_width);
+    let messages_title = format_messages_title(transcript.scroll);
     frame.render_widget(
-        Paragraph::new(transcript)
+        Paragraph::new(transcript.text)
             .wrap(Wrap { trim: false })
             .block(Block::default().borders(Borders::ALL).title(messages_title)),
         areas.transcript,
     );
 
-    if let Some(picker) = &state.resume_picker {
-        render_resume_picker(frame, areas.tools, picker);
-    } else if let Some(suggestions) =
-        slash_command_suggestions_for_state(state.input.buffer(), state.running)
-    {
-        render_command_palette(frame, areas.tools, state, &suggestions);
-    } else {
-        render_task_monitor(frame, areas.tools, state);
+    if state.credential_prompt.is_none() && state.side_question_prompt.is_none() {
+        if let Some(picker) = &state.resume_picker {
+            render_resume_picker(frame, areas.input, picker);
+            return;
+        } else if let Some(prompt) = approval_prompt_view_for_state(state, areas.input.height) {
+            frame.render_widget(
+                Paragraph::new(prompt.body)
+                    .wrap(Wrap { trim: false })
+                    .block(Block::default().borders(Borders::ALL).title(prompt.title)),
+                areas.input,
+            );
+            return;
+        } else if command_palette_auto_popup_enabled() {
+            if let Some(suggestions) =
+                slash_command_suggestions_for_state(state.input.buffer(), state.running)
+            {
+                render_command_palette(frame, areas.input, state, &suggestions);
+                return;
+            }
+        }
     }
 
     let input_title = if let Some(prompt) = &state.credential_prompt {

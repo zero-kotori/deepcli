@@ -3461,17 +3461,32 @@ fn ui_terminal_smoke_gate_is_documented() {
         "mktemp -d",
         "stty rows 32 cols 100",
         "TERM=xterm-256color",
-        "printf '\\033'",
-        "Status",
-        "Messages",
-        "Task Monitor",
-        "Overview",
+        "printf '/quit\\n'",
+        "deepcli session",
+        "> ",
+        "found removed terminal marker",
     ] {
         assert!(
             script.contains(marker),
             "scripts/tui-smoke should contain `{marker}`"
         );
     }
+    for marker in [
+        "Messages",
+        "Message Box",
+        "Status",
+        "Task Monitor",
+        "deepcli>",
+    ] {
+        assert!(
+            script.contains(marker),
+            "scripts/tui-smoke should assert removed marker `{marker}` stays absent"
+        );
+    }
+    assert!(
+        !script.contains("\"Overview\""),
+        "scripts/tui-smoke should not require the removed task monitor overview"
+    );
     for doc in [&ui_doc, &harness_doc] {
         assert!(
             doc.contains("scripts/tui-smoke"),

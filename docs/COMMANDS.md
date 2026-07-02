@@ -56,7 +56,7 @@
 | /cleanup | legacy | session | stable alias | `/session prune-empty` 的别名。替代：`/session prune-empty`。 |
 | /resume | core | session | stable | 会话恢复与候选预览。 |
 | /rename | legacy | session | stable alias | 运行时会话标题重命名。替代：`/session rename --current`。 |
-| /stop | core | runtime | stable | 停止活动 TUI 任务并保持会话可恢复。 |
+| /stop | core | runtime | stable | 停止活动交互任务并保持会话可恢复。 |
 | /quit | core | ui | stable | 退出交互会话。 |
 | /terminal | core | tools | stable | 打开或预览同工作区终端。 |
 
@@ -90,8 +90,8 @@ Completion-only alias 决策：
 - `completion:kimi`：保留 support provider preset。
 - `completion:ask`：保留 support one-shot alias。
 - `completion:stream`：保留 support streaming one-shot alias。
-- `completion:tui`：保留 support TUI alias。
-- `completion:repl` -> `tui`：保留 legacy line-based REPL 兼容 alias，降级展示并指向 `tui`。
+- `completion:tui`：保留 support 原生终端聊天兼容 alias。
+- `completion:repl` -> `tui`：保留 legacy 原生终端聊天兼容 alias，降级展示并指向 `tui`。
 - `completion:sessions`：保留 support `session list` alias。
 - `completion:completions`：保留 support `completion` alias。
 
@@ -101,4 +101,4 @@ Completion-only alias 决策：
 - `deepcli completion json` 会输出 `groups[]` 和 `legacyCommands[]`，其中 `legacyCommands[]` 来自 registry 的 successor/policy metadata，覆盖 slash legacy 命令和 completion-only legacy alias；外部 UI 应使用这些字段把 legacy 入口降级展示，并指向替代命令。
 - 除非直接服务于核心 harness 重构或已确认的核心能力，否则冻结新增的细碎 slash 命令与顶层别名。
 - 稳定 JSON schema 应保持现有版本，除非在同一次改动中加入迁移计划和测试。
-- running-safe 状态仍以代码为准；本文档记录的是分组与所有权，不是运行时 TUI 分发行为。
+- running-safe 状态仍以代码为准；本文档记录的是分组与所有权，不是运行时交互分发行为。

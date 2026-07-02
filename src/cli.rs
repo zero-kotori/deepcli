@@ -3,7 +3,7 @@ use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::runtime::{AgentRuntime, RuntimeOptions};
 use crate::tools::{ToolExecutor, ToolRegistry};
-use crate::ui::{pick_resume_session, run_basic_repl, run_tui, ResumeSelection};
+use crate::ui::{pick_resume_session, run_basic_repl, ResumeSelection};
 use crate::workspace::WorkspaceManager;
 use anyhow::{bail, Result};
 use clap::Parser;
@@ -13,7 +13,7 @@ use std::path::PathBuf;
 #[derive(Debug, Parser)]
 #[command(name = "deepcli", version, about = "Local-first AI coding agent CLI")]
 pub struct Cli {
-    /// One-shot task to run. Omit to start the interactive terminal UI.
+    /// One-shot task to run. Omit to start native terminal chat.
     #[arg(
         value_name = "TASK",
         trailing_var_arg = true,
@@ -41,7 +41,7 @@ pub struct Cli {
     #[arg(long)]
     pub resume: Option<String>,
 
-    /// Pick a saved session interactively, then start the terminal UI.
+    /// Pick a saved session interactively, then start native terminal chat.
     #[arg(long)]
     pub resume_picker: bool,
 
@@ -49,12 +49,11 @@ pub struct Cli {
     #[arg(long)]
     pub stream: bool,
 
-    /// Start the interactive terminal UI with a message box and collapsible tool log.
-    /// This is the default when no task is provided.
+    /// Compatibility flag for native terminal chat.
     #[arg(long)]
     pub tui: bool,
 
-    /// Start the legacy line-based REPL instead of the terminal UI.
+    /// Start native terminal chat.
     #[arg(long, conflicts_with = "tui")]
     pub repl: bool,
 
@@ -134,12 +133,10 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
 
     ensure_first_use_authorization(&workspace, cli.yes)?;
     let config = AppConfig::load_effective(&workspace, cli.config.as_deref())?;
-    let mut use_tui = should_start_tui(&cli);
     if cli.resume_picker {
         match pick_resume_session(&workspace)? {
             ResumeSelection::Selected(id) => {
                 resume_session = Some(id);
-                use_tui = true;
             }
             ResumeSelection::NoSessions => {
                 println!("no resumable conversation context; run `deepcli` to start a new session");
@@ -152,6 +149,7 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
         }
     }
 
+    let stream_output = should_use_provider_stream(&cli);
     let mut runtime = AgentRuntime::new(
         config,
         RuntimeOptions {
@@ -160,16 +158,12 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
             model: cli.model,
             assume_yes: cli.yes,
             resume_session,
-            stream_output: cli.stream,
+            stream_output,
         },
     )?;
 
     if cli.task.is_empty() {
-        if use_tui {
-            run_tui(runtime).await
-        } else {
-            run_basic_repl(&mut runtime).await
-        }
+        run_basic_repl(runtime).await
     } else {
         let task = cli.task.join(" ");
         let output = runtime.handle_input(&task).await?;
@@ -178,8 +172,14 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 fn should_start_tui(cli: &Cli) -> bool {
-    cli.tui || (cli.task.is_empty() && !cli.repl)
+    let _ = cli;
+    false
+}
+
+fn should_use_provider_stream(cli: &Cli) -> bool {
+    cli.stream || cli.task.is_empty()
 }
 
 fn ensure_terminal_for_interactive_entry(cli: &Cli) -> Result<()> {
@@ -195,7 +195,7 @@ fn ensure_terminal_for_interactive_entry(cli: &Cli) -> Result<()> {
 }
 
 fn requires_interactive_terminal(cli: &Cli) -> bool {
-    cli.resume_picker || (cli.task.is_empty() && (cli.repl || should_start_tui(cli)))
+    cli.resume_picker || cli.task.is_empty()
 }
 
 fn normalize_cli_aliases(mut cli: Cli) -> Result<Cli> {
@@ -806,9 +806,37 @@ mod tests {
         assert!(!should_start_tui(&cli));
 
         let cli = Cli::try_parse_from(["deepcli"]).unwrap();
-        assert!(should_start_tui(&cli));
+        assert!(!should_start_tui(&cli));
 
         assert!(Cli::try_parse_from(["deepcli", "--tui", "--repl"]).is_err());
+    }
+
+    #[test]
+    fn interactive_default_uses_native_terminal_not_fullscreen_tui() {
+        let cli = test_cli(&[]);
+        assert!(requires_interactive_terminal(&cli));
+        assert!(!should_start_tui(&cli));
+        assert!(should_use_provider_stream(&cli));
+
+        let cli = normalize_cli_aliases(test_cli(&["tui"])).unwrap();
+        assert!(requires_interactive_terminal(&cli));
+        assert!(!should_start_tui(&cli));
+        assert!(should_use_provider_stream(&cli));
+
+        let cli = normalize_cli_aliases(test_cli(&["resume", "session-123"])).unwrap();
+        assert!(requires_interactive_terminal(&cli));
+        assert!(should_use_provider_stream(&cli));
+
+        let cli = normalize_cli_aliases(test_cli(&["resume", "--dry-run", "--json"])).unwrap();
+        assert!(!requires_interactive_terminal(&cli));
+        assert!(!should_use_provider_stream(&cli));
+
+        let cli = normalize_cli_aliases(test_cli(&["ask", "hello"])).unwrap();
+        assert!(!requires_interactive_terminal(&cli));
+        assert!(!should_use_provider_stream(&cli));
+
+        let cli = normalize_cli_aliases(test_cli(&["stream", "hello"])).unwrap();
+        assert!(should_use_provider_stream(&cli));
     }
 
     #[test]

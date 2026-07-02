@@ -293,7 +293,7 @@ pub(super) fn quickstart_provider_status(
 
 fn quickstart_steps() -> Vec<String> {
     vec![
-        "run `deepcli` in the project directory to open the TUI".to_string(),
+        "run `deepcli` in the project directory to open native terminal chat".to_string(),
         "run `/recipes` when you want task-oriented workflows instead of the full command list"
             .to_string(),
         "run `/scorecard --json` when you want product capability coverage and benchmark gaps"
