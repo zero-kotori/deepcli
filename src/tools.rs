@@ -434,7 +434,7 @@ impl ToolExecutor {
         let max_file_bytes = args
             .get("max_file_bytes")
             .and_then(Value::as_u64)
-            .unwrap_or(1_000_000) as u64;
+            .unwrap_or(1_000_000);
         let needle = if case_sensitive {
             query.to_string()
         } else {

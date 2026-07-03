@@ -170,7 +170,7 @@ fn run_resume_picker_loop(sessions: &[SessionMetadata]) -> Result<ResumeSelectio
         if matches!(input, "q" | "quit" | "cancel") {
             return Ok(ResumeSelection::Cancelled);
         }
-        if let Some(session_id) = native_resume_selection(&sessions, input) {
+        if let Some(session_id) = native_resume_selection(sessions, input) {
             return Ok(ResumeSelection::Selected(session_id));
         }
 

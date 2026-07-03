@@ -18,10 +18,12 @@ use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use futures_util::future::join_all;
+use serde::Serialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 use tokio::time::timeout;
 
@@ -376,6 +378,113 @@ impl RuntimeProgress {
                 let status = if *ok { "completed" } else { "failed" };
                 format!("deepcli: tool {tool} {status}")
             }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentLoopState {
+    Initialized,
+    PreparingRequest,
+    RequestingProvider,
+    RecoveringProvider,
+    CheckingCompletion,
+    DispatchingTools,
+    Completed,
+    Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentLoopTransitionReason {
+    StartIteration,
+    ContextPrepared,
+    ProviderResponded,
+    RecoveryAttempted,
+    ToolCallsRequested,
+    ToolsCompleted,
+    CompletionAccepted,
+    CompletionBlocked,
+    BudgetGuardStopped,
+    MaxIterationsReached,
+    ProviderFailed,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct AgentLoopTransition {
+    iteration: Option<usize>,
+    from: AgentLoopState,
+    to: AgentLoopState,
+    reason: AgentLoopTransitionReason,
+    detail: Value,
+}
+
+#[derive(Debug, Clone)]
+struct AgentLoopTracker {
+    state: AgentLoopState,
+}
+
+impl AgentLoopTracker {
+    fn new() -> Self {
+        Self {
+            state: AgentLoopState::Initialized,
+        }
+    }
+
+    fn transition(
+        &mut self,
+        iteration: Option<usize>,
+        to: AgentLoopState,
+        reason: AgentLoopTransitionReason,
+        detail: Value,
+    ) -> AgentLoopTransition {
+        let transition = AgentLoopTransition {
+            iteration,
+            from: self.state,
+            to,
+            reason,
+            detail,
+        };
+        self.state = to;
+        transition
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CompletionAction {
+    Accept,
+    Continue,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompletionDecision {
+    action: CompletionAction,
+    blockers: Vec<String>,
+    follow_up_prompt: Option<String>,
+}
+
+impl CompletionDecision {
+    fn accept() -> Self {
+        Self {
+            action: CompletionAction::Accept,
+            blockers: Vec::new(),
+            follow_up_prompt: None,
+        }
+    }
+
+    fn continue_with(blockers: Vec<String>) -> Self {
+        let blocker_lines = blockers
+            .iter()
+            .map(|blocker| format!("- {blocker}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Self {
+            action: CompletionAction::Continue,
+            blockers,
+            follow_up_prompt: Some(format!(
+                "[deepcli completion blocked]\nThe assistant attempted to finish, but completion hooks found unresolved blockers:\n{blocker_lines}\nContinue the agent loop by resolving these blockers with the appropriate tool calls, or explicitly report why user input is required."
+            )),
         }
     }
 }
@@ -947,7 +1056,21 @@ impl AgentRuntime {
         let mut context_tool_calls_before_action = 0usize;
         let mut verification_calls_before_action = 0usize;
         let mut consecutive_budget_skipped_turns = 0usize;
+        let mut completion_hook_continuations = 0usize;
+        let mut loop_tracker = AgentLoopTracker::new();
         for iteration in 0..self.config.agent.max_tool_iterations {
+            let iteration_number = iteration + 1;
+            self.record_agent_loop_transition(
+                &mut loop_tracker,
+                Some(iteration_number),
+                AgentLoopState::PreparingRequest,
+                AgentLoopTransitionReason::StartIteration,
+                json!({
+                    "message_count": messages.len(),
+                    "context_tool_calls_before_action": context_tool_calls_before_action,
+                    "verification_calls_before_action": verification_calls_before_action,
+                }),
+            )?;
             let tool_specs = self.registry.tool_specs();
             let prepared_context = prepare_messages_for_provider(
                 provider.as_ref(),
@@ -967,8 +1090,22 @@ impl AgentRuntime {
             let compacted_messages = messages.clone();
             let request_stats = provider_request_stats(&compacted_messages, &tool_specs);
             let full_compact_error = prepared_context.full_compact_error.clone();
+            self.record_agent_loop_transition(
+                &mut loop_tracker,
+                Some(iteration_number),
+                AgentLoopState::RequestingProvider,
+                AgentLoopTransitionReason::ContextPrepared,
+                json!({
+                    "message_count": request_stats.message_count,
+                    "tool_count": request_stats.tool_count,
+                    "request_bytes": request_stats.total_bytes,
+                    "compacted": compacted,
+                    "estimated_tokens": context_estimated_tokens,
+                    "threshold_tokens": context_threshold_tokens,
+                }),
+            )?;
             self.emit_progress(RuntimeProgress::ProviderTurnStarted {
-                iteration: iteration + 1,
+                iteration: iteration_number,
                 max_iterations: self.config.agent.max_tool_iterations,
                 message_count: request_stats.message_count,
                 tool_count: request_stats.tool_count,
@@ -978,7 +1115,7 @@ impl AgentRuntime {
             self.session.append_audit_event(
                 "provider_turn_started",
                 json!({
-                    "iteration": iteration + 1,
+                    "iteration": iteration_number,
                     "timeout_seconds": provider_turn_timeout.as_secs(),
                     "request": {
                         "message_count": request_stats.message_count,
@@ -1007,28 +1144,53 @@ impl AgentRuntime {
                     }
                 }
             };
-            let chat_result = match chat_with_context_retry(
-                provider.as_ref(),
-                ChatRequest {
-                    messages: compacted_messages,
-                    tools: tool_specs,
-                    json_mode: false,
-                },
-                provider_turn_timeout,
-                &mut on_stream_event,
-            )
-            .await
+            let chat_result = match self
+                .chat_with_context_retry_and_streaming_tools(
+                    provider.as_ref(),
+                    ChatRequest {
+                        messages: compacted_messages,
+                        tools: tool_specs,
+                        json_mode: false,
+                    },
+                    provider_turn_timeout,
+                    &mut on_stream_event,
+                    ToolBudgetSnapshot {
+                        context_tool_calls_before_action,
+                        verification_calls_before_action,
+                        context_tool_limit,
+                        verification_tool_limit,
+                    },
+                )
+                .await
             {
                 Ok(result) => result,
                 Err(error) => {
+                    let _ = self.record_agent_loop_transition(
+                        &mut loop_tracker,
+                        Some(iteration_number),
+                        AgentLoopState::Failed,
+                        AgentLoopTransitionReason::ProviderFailed,
+                        json!({ "error": error.to_string() }),
+                    );
                     if is_provider_chat_timeout_error(&error) {
                         self.session.set_state(SessionState::Failed)?;
                     }
                     return Err(error);
                 }
             };
-            if chat_result.retried_after_context_error {
+            if !chat_result.recoveries.is_empty() {
+                for recovery in &chat_result.recoveries {
+                    self.record_agent_loop_transition(
+                        &mut loop_tracker,
+                        Some(iteration_number),
+                        AgentLoopState::RecoveringProvider,
+                        AgentLoopTransitionReason::RecoveryAttempted,
+                        json!(recovery),
+                    )?;
+                }
                 messages = chat_result.messages.clone();
+            }
+            if chat_result.retried_after_context_error {
                 self.session.append_audit_event(
                     "provider_context_retry",
                     json!({
@@ -1037,6 +1199,8 @@ impl AgentRuntime {
                     }),
                 )?;
             }
+            let recoveries = chat_result.recoveries.clone();
+            let mut early_tool_results = chat_result.early_tool_results;
             let response = chat_result.response;
             let elapsed = started.elapsed();
             self.emit_progress(RuntimeProgress::ProviderTurnCompleted {
@@ -1046,30 +1210,93 @@ impl AgentRuntime {
             self.session.append_audit_event(
                 "provider_turn_completed",
                 json!({
-                    "iteration": iteration + 1,
+                    "iteration": iteration_number,
                     "elapsed_ms": elapsed.as_millis(),
                     "tool_calls": response.tool_calls.len(),
-                    "usage": response.usage
+                    "usage": response.usage,
+                    "recoveries": recoveries
                 }),
             )?;
 
             if response.tool_calls.is_empty() {
-                let mut content = response.content.unwrap_or_default();
+                self.record_agent_loop_transition(
+                    &mut loop_tracker,
+                    Some(iteration_number),
+                    AgentLoopState::CheckingCompletion,
+                    AgentLoopTransitionReason::ProviderResponded,
+                    json!({ "tool_calls": 0 }),
+                )?;
+                let mut provider_content = response.content.unwrap_or_default();
                 append_usage_report(
-                    &mut content,
+                    &mut provider_content,
                     &response.usage,
                     self.config.usage.token_warning_threshold,
                 );
-                let content = with_token_estimate(content, estimated_tokens);
+                let decision = self.evaluate_completion_hooks(
+                    &provider_content,
+                    iteration_number,
+                    completion_hook_continuations,
+                )?;
+                if decision.action == CompletionAction::Continue {
+                    self.session.append_audit_event(
+                        "completion_hook_blocked",
+                        json!({
+                            "iteration": iteration_number,
+                            "blockers": decision.blockers.clone(),
+                            "continuation_count": completion_hook_continuations + 1
+                        }),
+                    )?;
+                    messages.push(ProviderMessage {
+                        role: "assistant".to_string(),
+                        content: Some(provider_content),
+                        reasoning_content: response.reasoning_content.clone(),
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    messages.push(ProviderMessage {
+                        role: "user".to_string(),
+                        content: decision.follow_up_prompt,
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    completion_hook_continuations += 1;
+                    self.record_agent_loop_transition(
+                        &mut loop_tracker,
+                        Some(iteration_number),
+                        AgentLoopState::PreparingRequest,
+                        AgentLoopTransitionReason::CompletionBlocked,
+                        json!({ "continuation_count": completion_hook_continuations }),
+                    )?;
+                    continue;
+                }
+
+                let content = with_token_estimate(provider_content, estimated_tokens);
                 self.session.append_message("assistant", &content)?;
                 self.session
                     .update_plan_step("review", PlanStepStatus::Completed)?;
                 self.session.complete_pending_plan_steps()?;
                 self.session.set_state(SessionState::Completed)?;
                 self.session.write_summary(&content)?;
+                self.record_agent_loop_transition(
+                    &mut loop_tracker,
+                    Some(iteration_number),
+                    AgentLoopState::Completed,
+                    AgentLoopTransitionReason::CompletionAccepted,
+                    json!({ "content_chars": content.chars().count() }),
+                )?;
                 return Ok(content);
             }
 
+            self.record_agent_loop_transition(
+                &mut loop_tracker,
+                Some(iteration_number),
+                AgentLoopState::DispatchingTools,
+                AgentLoopTransitionReason::ToolCallsRequested,
+                json!({ "tool_calls": response.tool_calls.len() }),
+            )?;
             messages.push(ProviderMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),
@@ -1093,8 +1320,29 @@ impl AgentRuntime {
                         ) =>
                     {
                         let calls = &turn_tool_calls[range];
-                        let outputs = self.execute_parallel_tool_calls(calls).await?;
-                        for (call, tool_output) in calls.iter().zip(outputs) {
+                        let mut outputs_by_id = BTreeMap::new();
+                        let pending_calls = calls
+                            .iter()
+                            .filter(|call| !early_tool_result_matches(&early_tool_results, call))
+                            .cloned()
+                            .collect::<Vec<_>>();
+                        if !pending_calls.is_empty() {
+                            let pending_outputs =
+                                self.execute_parallel_tool_calls(&pending_calls).await?;
+                            for (call, output) in pending_calls.iter().zip(pending_outputs) {
+                                outputs_by_id.insert(call.id.clone(), output);
+                            }
+                        }
+                        for call in calls {
+                            let tool_output =
+                                take_matching_early_tool_output(&mut early_tool_results, call)
+                                    .or_else(|| outputs_by_id.remove(&call.id))
+                                    .unwrap_or_else(|| {
+                                        format!(
+                                            "tool `{}` failed: missing tool execution output",
+                                            call.function.name
+                                        )
+                                    });
                             let tool_failed = tool_output_indicates_failure(&tool_output);
                             update_tool_budget_counters(
                                 call,
@@ -1107,8 +1355,12 @@ impl AgentRuntime {
                     }
                     ToolCallBatch::Parallel(range) => {
                         for call in &turn_tool_calls[range] {
-                            let tool_output = self
-                                .execute_serial_tool_call_with_budgets(
+                            let tool_output = if let Some(output) =
+                                take_matching_early_tool_output(&mut early_tool_results, call)
+                            {
+                                output
+                            } else {
+                                self.execute_serial_tool_call_with_budgets(
                                     call,
                                     context_tool_calls_before_action,
                                     verification_calls_before_action,
@@ -1116,7 +1368,8 @@ impl AgentRuntime {
                                     verification_tool_limit,
                                     &mut budget_skipped_this_turn,
                                 )
-                                .await?;
+                                .await?
+                            };
                             let tool_failed = tool_output_indicates_failure(&tool_output);
                             update_tool_budget_counters(
                                 call,
@@ -1129,8 +1382,12 @@ impl AgentRuntime {
                     }
                     ToolCallBatch::Serial(index) => {
                         let call = &turn_tool_calls[index];
-                        let tool_output = self
-                            .execute_serial_tool_call_with_budgets(
+                        let tool_output = if let Some(output) =
+                            take_matching_early_tool_output(&mut early_tool_results, call)
+                        {
+                            output
+                        } else {
+                            self.execute_serial_tool_call_with_budgets(
                                 call,
                                 context_tool_calls_before_action,
                                 verification_calls_before_action,
@@ -1138,7 +1395,8 @@ impl AgentRuntime {
                                 verification_tool_limit,
                                 &mut budget_skipped_this_turn,
                             )
-                            .await?;
+                            .await?
+                        };
                         let tool_failed = tool_output_indicates_failure(&tool_output);
                         update_tool_budget_counters(
                             call,
@@ -1150,10 +1408,24 @@ impl AgentRuntime {
                     }
                 }
             }
+            self.record_agent_loop_transition(
+                &mut loop_tracker,
+                Some(iteration_number),
+                AgentLoopState::PreparingRequest,
+                AgentLoopTransitionReason::ToolsCompleted,
+                json!({ "tool_calls": turn_tool_calls.len() }),
+            )?;
 
             if budget_skipped_this_turn > 0 {
                 consecutive_budget_skipped_turns += 1;
                 if consecutive_budget_skipped_turns >= budget_skip_turn_limit {
+                    self.record_agent_loop_transition(
+                        &mut loop_tracker,
+                        Some(iteration_number),
+                        AgentLoopState::Completed,
+                        AgentLoopTransitionReason::BudgetGuardStopped,
+                        json!({ "turns": consecutive_budget_skipped_turns }),
+                    )?;
                     return self.finish_repeated_budget_skipped_tool_calls(
                         consecutive_budget_skipped_turns,
                     );
@@ -1163,6 +1435,13 @@ impl AgentRuntime {
             }
         }
 
+        self.record_agent_loop_transition(
+            &mut loop_tracker,
+            Some(self.config.agent.max_tool_iterations),
+            AgentLoopState::Failed,
+            AgentLoopTransitionReason::MaxIterationsReached,
+            json!({ "max_iterations": self.config.agent.max_tool_iterations }),
+        )?;
         self.session.set_state(SessionState::Failed)?;
         Err(anyhow!("agent loop reached maximum tool-call iterations"))
     }
@@ -1278,6 +1557,260 @@ impl AgentRuntime {
         } else {
             eprintln!("{}", event.plain_text());
         }
+    }
+
+    fn record_agent_loop_transition(
+        &self,
+        tracker: &mut AgentLoopTracker,
+        iteration: Option<usize>,
+        to: AgentLoopState,
+        reason: AgentLoopTransitionReason,
+        detail: Value,
+    ) -> Result<()> {
+        let transition = tracker.transition(iteration, to, reason, detail);
+        self.session
+            .append_audit_event("agent_loop_transition", serde_json::to_value(transition)?)?;
+        Ok(())
+    }
+
+    fn evaluate_completion_hooks(
+        &self,
+        _content: &str,
+        _iteration: usize,
+        continuation_count: usize,
+    ) -> Result<CompletionDecision> {
+        let continuation_limit = completion_hook_continuation_limit();
+        if continuation_count >= continuation_limit {
+            return Ok(CompletionDecision::accept());
+        }
+
+        let mut blockers = Vec::new();
+        let pending_approvals = self
+            .session
+            .load_approval_requests()?
+            .iter()
+            .filter(|request| request.status == ApprovalStatus::Pending)
+            .count();
+        if pending_approvals > 0 {
+            blockers.push(format!(
+                "pending approval request count: {pending_approvals}"
+            ));
+        }
+
+        let open_questions = self
+            .session
+            .load_side_questions()?
+            .iter()
+            .filter(|question| question.status == SideQuestionStatus::Open)
+            .count();
+        if open_questions > 0 {
+            blockers.push(format!("open user question count: {open_questions}"));
+        }
+
+        let failed_steps = self
+            .session
+            .load_plan()?
+            .map(|plan| {
+                plan.steps
+                    .into_iter()
+                    .filter(|step| step.status == PlanStepStatus::Failed)
+                    .map(|step| step.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if !failed_steps.is_empty() {
+            blockers.push(format!("failed plan steps: {}", failed_steps.join(", ")));
+        }
+
+        if blockers.is_empty() {
+            Ok(CompletionDecision::accept())
+        } else {
+            Ok(CompletionDecision::continue_with(blockers))
+        }
+    }
+
+    async fn chat_with_context_retry_and_streaming_tools<F>(
+        &mut self,
+        provider: &dyn ProviderClient,
+        request: ChatRequest,
+        provider_turn_timeout: Duration,
+        on_stream_event: &mut F,
+        tool_budget: ToolBudgetSnapshot,
+    ) -> Result<ContextRetryChatResult>
+    where
+        F: FnMut(StreamEvent) + Send,
+    {
+        let tools = request.tools.clone();
+        let json_mode = request.json_mode;
+        let mut messages = request.messages;
+        let mut recovery_state = AgentRecoveryState::new();
+        let mut recoveries: Vec<AgentRecoveryEvent> = Vec::new();
+        let mut early_tool_results = BTreeMap::new();
+
+        loop {
+            let current_request = ChatRequest {
+                messages: messages.clone(),
+                tools: tools.clone(),
+                json_mode,
+            };
+            match self
+                .provider_chat_with_streaming_tools(
+                    provider,
+                    current_request,
+                    provider_turn_timeout,
+                    on_stream_event,
+                    tool_budget,
+                    &mut early_tool_results,
+                )
+                .await
+            {
+                Ok(response) => {
+                    let retried_after_context_error = recoveries
+                        .iter()
+                        .any(|event| event.kind == AgentRecoveryKind::PromptTooLong);
+                    return Ok(ContextRetryChatResult {
+                        response,
+                        messages,
+                        retried_after_context_error,
+                        recoveries,
+                        early_tool_results,
+                    });
+                }
+                Err(error) => {
+                    let Some(kind) = agent_recovery_kind_for_error(&error) else {
+                        return Err(error);
+                    };
+                    let Some(attempt) = recovery_state.register_attempt(kind) else {
+                        return Err(error);
+                    };
+                    let recovered_messages = recover_messages_after_provider_error(kind, &messages);
+                    if recovered_messages == messages {
+                        return Err(error);
+                    }
+                    messages = recovered_messages;
+                    recoveries.push(AgentRecoveryEvent {
+                        kind,
+                        attempt,
+                        message_count: messages.len(),
+                    });
+                }
+            }
+        }
+    }
+
+    async fn provider_chat_with_streaming_tools<F>(
+        &mut self,
+        provider: &dyn ProviderClient,
+        request: ChatRequest,
+        provider_turn_timeout: Duration,
+        on_stream_event: &mut F,
+        tool_budget: ToolBudgetSnapshot,
+        early_tool_results: &mut BTreeMap<String, EarlyToolResult>,
+    ) -> Result<ChatResponse>
+    where
+        F: FnMut(StreamEvent) + Send,
+    {
+        let (stream_tx, stream_rx) = mpsc::channel::<StreamEvent>();
+        let mut callback = |event: StreamEvent| {
+            on_stream_event(event.clone());
+            if event.tool_call_completed.is_some() {
+                let _ = stream_tx.send(event);
+            }
+        };
+        let provider_future = timeout(
+            provider_turn_timeout,
+            provider.chat_with_stream_events(request, Some(&mut callback)),
+        );
+        tokio::pin!(provider_future);
+        let mut early_counts = StreamingToolBudgetCounters::default();
+
+        loop {
+            while let Ok(event) = stream_rx.try_recv() {
+                self.handle_streaming_tool_event(
+                    event,
+                    early_tool_results,
+                    tool_budget,
+                    &mut early_counts,
+                )
+                .await?;
+            }
+
+            tokio::select! {
+                result = &mut provider_future => {
+                    while let Ok(event) = stream_rx.try_recv() {
+                        self.handle_streaming_tool_event(
+                            event,
+                            early_tool_results,
+                            tool_budget,
+                            &mut early_counts,
+                        ).await?;
+                    }
+                    return match result {
+                        Ok(response) => response,
+                        Err(_) => Err(anyhow!(
+                            "provider chat timed out after {} seconds",
+                            provider_turn_timeout.as_secs()
+                        )),
+                    };
+                }
+                _ = tokio::time::sleep(Duration::from_millis(1)) => {}
+            }
+        }
+    }
+
+    async fn handle_streaming_tool_event(
+        &mut self,
+        event: StreamEvent,
+        early_tool_results: &mut BTreeMap<String, EarlyToolResult>,
+        tool_budget: ToolBudgetSnapshot,
+        early_counts: &mut StreamingToolBudgetCounters,
+    ) -> Result<()> {
+        let Some(call) = event.tool_call_completed else {
+            return Ok(());
+        };
+        if early_tool_results.contains_key(&call.id)
+            || !is_parallel_safe_call(&self.registry, &call)
+        {
+            return Ok(());
+        }
+        if is_context_gathering_call(&call)
+            && tool_budget.context_tool_calls_before_action + early_counts.context_calls
+                >= tool_budget.context_tool_limit
+        {
+            return Ok(());
+        }
+        if is_verification_call(&call)
+            && tool_budget.verification_calls_before_action + early_counts.verification_calls
+                >= tool_budget.verification_tool_limit
+        {
+            return Ok(());
+        }
+
+        self.session.append_audit_event(
+            "streaming_tool_execution_started",
+            json!({
+                "tool": call.function.name,
+                "tool_call_id": call.id
+            }),
+        )?;
+        let output = self.execute_tool_call(&call).await?;
+        let tool_failed = tool_output_indicates_failure(&output);
+        update_tool_budget_counters(
+            &call,
+            tool_failed,
+            &mut early_counts.context_calls,
+            &mut early_counts.verification_calls,
+        );
+        self.session.append_audit_event(
+            "streaming_tool_execution_completed",
+            json!({
+                "tool": call.function.name,
+                "tool_call_id": call.id,
+                "failed": tool_failed
+            }),
+        )?;
+        early_tool_results.insert(call.id.clone(), EarlyToolResult { call, output });
+        Ok(())
     }
 
     async fn execute_tool_call(&mut self, call: &ToolCall) -> Result<String> {
@@ -1688,6 +2221,80 @@ struct ContextRetryChatResult {
     response: ChatResponse,
     messages: Vec<ProviderMessage>,
     retried_after_context_error: bool,
+    recoveries: Vec<AgentRecoveryEvent>,
+    early_tool_results: BTreeMap<String, EarlyToolResult>,
+}
+
+#[derive(Debug, Clone)]
+struct EarlyToolResult {
+    call: ToolCall,
+    output: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ToolBudgetSnapshot {
+    context_tool_calls_before_action: usize,
+    verification_calls_before_action: usize,
+    context_tool_limit: usize,
+    verification_tool_limit: usize,
+}
+
+#[derive(Debug, Clone, Default)]
+struct StreamingToolBudgetCounters {
+    context_calls: usize,
+    verification_calls: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AgentRecoveryKind {
+    PromptTooLong,
+    MaxOutputTokens,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AgentRecoveryEvent {
+    kind: AgentRecoveryKind,
+    attempt: usize,
+    message_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct AgentRecoveryState {
+    prompt_too_long_attempts: usize,
+    max_output_tokens_attempts: usize,
+    prompt_too_long_limit: usize,
+    max_output_tokens_limit: usize,
+}
+
+impl AgentRecoveryState {
+    fn new() -> Self {
+        Self {
+            prompt_too_long_attempts: 0,
+            max_output_tokens_attempts: 0,
+            prompt_too_long_limit: env_usize("DEEPCLI_PROMPT_TOO_LONG_RECOVERY_LIMIT", 1, 1),
+            max_output_tokens_limit: env_usize("DEEPCLI_MAX_OUTPUT_RECOVERY_LIMIT", 1, 3),
+        }
+    }
+
+    fn register_attempt(&mut self, kind: AgentRecoveryKind) -> Option<usize> {
+        match kind {
+            AgentRecoveryKind::PromptTooLong => {
+                if self.prompt_too_long_attempts >= self.prompt_too_long_limit {
+                    return None;
+                }
+                self.prompt_too_long_attempts += 1;
+                Some(self.prompt_too_long_attempts)
+            }
+            AgentRecoveryKind::MaxOutputTokens => {
+                if self.max_output_tokens_attempts >= self.max_output_tokens_limit {
+                    return None;
+                }
+                self.max_output_tokens_attempts += 1;
+                Some(self.max_output_tokens_attempts)
+            }
+        }
+    }
 }
 
 async fn prepare_messages_for_provider(
@@ -1994,6 +2601,7 @@ fn full_compact_summary_prompt() -> String {
     .join("\n")
 }
 
+#[cfg(test)]
 async fn chat_with_context_retry<F>(
     provider: &dyn ProviderClient,
     request: ChatRequest,
@@ -2003,50 +2611,61 @@ async fn chat_with_context_retry<F>(
 where
     F: FnMut(StreamEvent) + Send,
 {
-    let original_messages = request.messages.clone();
-    let (response, retry_messages) = match provider_chat_with_timeout(
-        provider,
-        request.clone(),
-        provider_turn_timeout,
-        on_stream_event,
-    )
-    .await
-    {
-        Ok(response) => {
-            return Ok(ContextRetryChatResult {
-                response,
-                messages: original_messages,
-                retried_after_context_error: false,
-            });
-        }
-        Err(error) if is_context_length_error(&error) => {
-            let retry_messages = compact_messages_for_context_retry(&original_messages);
-            if retry_messages == original_messages {
-                return Err(error);
-            }
-            let retry_request = ChatRequest {
-                messages: retry_messages.clone(),
-                ..request
-            };
-            let response = provider_chat_with_timeout(
-                provider,
-                retry_request,
-                provider_turn_timeout,
-                on_stream_event,
-            )
-            .await?;
-            (response, retry_messages)
-        }
-        Err(error) => return Err(error),
-    };
+    let tools = request.tools.clone();
+    let json_mode = request.json_mode;
+    let mut messages = request.messages;
+    let mut recovery_state = AgentRecoveryState::new();
+    let mut recoveries: Vec<AgentRecoveryEvent> = Vec::new();
 
-    Ok(ContextRetryChatResult {
-        response,
-        messages: retry_messages,
-        retried_after_context_error: true,
-    })
+    loop {
+        let current_request = ChatRequest {
+            messages: messages.clone(),
+            tools: tools.clone(),
+            json_mode,
+        };
+        match provider_chat_with_timeout(
+            provider,
+            current_request,
+            provider_turn_timeout,
+            on_stream_event,
+        )
+        .await
+        {
+            Ok(response) => {
+                let retried_after_context_error = recoveries
+                    .iter()
+                    .any(|event| event.kind == AgentRecoveryKind::PromptTooLong);
+                return Ok(ContextRetryChatResult {
+                    response,
+                    messages,
+                    retried_after_context_error,
+                    recoveries,
+                    early_tool_results: BTreeMap::new(),
+                });
+            }
+            Err(error) => {
+                let Some(kind) = agent_recovery_kind_for_error(&error) else {
+                    return Err(error);
+                };
+                let Some(attempt) = recovery_state.register_attempt(kind) else {
+                    return Err(error);
+                };
+                let recovered_messages = recover_messages_after_provider_error(kind, &messages);
+                if recovered_messages == messages {
+                    return Err(error);
+                }
+                messages = recovered_messages;
+                recoveries.push(AgentRecoveryEvent {
+                    kind,
+                    attempt,
+                    message_count: messages.len(),
+                });
+            }
+        }
+    }
 }
 
+#[cfg(test)]
 async fn provider_chat_with_timeout<F>(
     provider: &dyn ProviderClient,
     request: ChatRequest,
@@ -2081,6 +2700,42 @@ fn compact_messages_for_context_retry(messages: &[ProviderMessage]) -> Vec<Provi
         4,
         "[deepcli context retry compacted: provider rejected the previous request as too long. Older completed assistant/tool exchange groups were omitted. Re-read specific files or rerun focused commands if exact omitted output is needed.]",
     )
+}
+
+fn recover_messages_after_provider_error(
+    kind: AgentRecoveryKind,
+    messages: &[ProviderMessage],
+) -> Vec<ProviderMessage> {
+    match kind {
+        AgentRecoveryKind::PromptTooLong => compact_messages_for_context_retry(messages),
+        AgentRecoveryKind::MaxOutputTokens => append_output_recovery_prompt(messages),
+    }
+}
+
+fn append_output_recovery_prompt(messages: &[ProviderMessage]) -> Vec<ProviderMessage> {
+    let mut recovered = messages.to_vec();
+    recovered.push(ProviderMessage {
+        role: "user".to_string(),
+        content: Some(
+            "[deepcli output recovery]\nThe previous provider turn exceeded the output limit before completion. Continue with a concise response, preserve critical facts, and prefer focused tool calls over long prose if more work is required."
+                .to_string(),
+        ),
+        reasoning_content: None,
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+    recovered
+}
+
+fn agent_recovery_kind_for_error(error: &anyhow::Error) -> Option<AgentRecoveryKind> {
+    if is_context_length_error(error) {
+        return Some(AgentRecoveryKind::PromptTooLong);
+    }
+    if is_max_output_tokens_error(error) {
+        return Some(AgentRecoveryKind::MaxOutputTokens);
+    }
+    None
 }
 
 fn compact_messages_to_recent_groups(
@@ -2124,6 +2779,17 @@ fn is_context_length_error(error: &anyhow::Error) -> bool {
         || text.contains("too many tokens")
         || text.contains("request too large")
         || (text.contains("context") && text.contains("length") && text.contains("exceed"))
+}
+
+fn is_max_output_tokens_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:?}").to_ascii_lowercase();
+    text.contains("max_output_tokens")
+        || text.contains("maximum output tokens")
+        || text.contains("output limit")
+        || text.contains("output too long")
+        || text.contains("finish_reason")
+            && text.contains("length")
+            && (text.contains("output") || text.contains("completion"))
 }
 
 fn is_provider_chat_timeout_error(error: &anyhow::Error) -> bool {
@@ -2253,6 +2919,14 @@ fn budget_skip_turn_limit() -> usize {
         .unwrap_or(3)
 }
 
+fn completion_hook_continuation_limit() -> usize {
+    std::env::var("DEEPCLI_MAX_COMPLETION_HOOK_CONTINUATIONS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(3)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ToolCallBatch {
     Parallel(Range<usize>),
@@ -2319,6 +2993,27 @@ fn update_tool_budget_counters(
     } else if is_verification_call(call) {
         *verification_calls_before_action += 1;
     }
+}
+
+fn early_tool_result_matches(
+    early_tool_results: &BTreeMap<String, EarlyToolResult>,
+    call: &ToolCall,
+) -> bool {
+    early_tool_results
+        .get(&call.id)
+        .is_some_and(|result| result.call == *call)
+}
+
+fn take_matching_early_tool_output(
+    early_tool_results: &mut BTreeMap<String, EarlyToolResult>,
+    call: &ToolCall,
+) -> Option<String> {
+    if !early_tool_result_matches(early_tool_results, call) {
+        return None;
+    }
+    early_tool_results
+        .remove(&call.id)
+        .map(|result| result.output)
 }
 
 fn tool_provider_message(call: &ToolCall, output: String) -> ProviderMessage {
@@ -3351,6 +4046,83 @@ mod tests {
         );
     }
 
+    #[test]
+    fn agent_loop_tracker_records_structured_transitions() {
+        let mut tracker = AgentLoopTracker::new();
+
+        let transition = tracker.transition(
+            Some(1),
+            AgentLoopState::PreparingRequest,
+            AgentLoopTransitionReason::StartIteration,
+            json!({"message_count": 2}),
+        );
+
+        assert_eq!(transition.iteration, Some(1));
+        assert_eq!(transition.from, AgentLoopState::Initialized);
+        assert_eq!(transition.to, AgentLoopState::PreparingRequest);
+        assert_eq!(transition.reason, AgentLoopTransitionReason::StartIteration);
+        assert_eq!(transition.detail["message_count"], 2);
+
+        let value = serde_json::to_value(&transition).unwrap();
+        assert_eq!(value["from"], "initialized");
+        assert_eq!(value["to"], "preparing_request");
+        assert_eq!(value["reason"], "start_iteration");
+    }
+
+    #[test]
+    fn completion_hooks_accept_clean_final_response() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let decision = runtime
+            .evaluate_completion_hooks("final answer", 1, 0)
+            .unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Accept);
+        assert!(decision.follow_up_prompt.is_none());
+    }
+
+    #[test]
+    fn completion_hooks_block_open_user_questions() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .enqueue_side_question("Which target should I verify?")
+            .unwrap();
+
+        let decision = runtime
+            .evaluate_completion_hooks("final answer", 1, 0)
+            .unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Continue);
+        let prompt = decision.follow_up_prompt.unwrap();
+        assert!(prompt.contains("completion blocked"));
+        assert!(prompt.contains("open user question"));
+    }
+
     fn test_provider_message(role: &str, content: &str) -> ProviderMessage {
         ProviderMessage {
             role: role.to_string(),
@@ -3706,6 +4478,220 @@ mod tests {
         let counts = provider.message_counts.lock().unwrap().clone();
         assert_eq!(counts.len(), 2);
         assert!(counts[1] < counts[0]);
+        assert_eq!(result.recoveries.len(), 1);
+        assert_eq!(result.recoveries[0].kind, AgentRecoveryKind::PromptTooLong);
+    }
+
+    #[derive(Clone, Default)]
+    struct OutputLimitRecoveryProvider {
+        calls: Arc<AtomicUsize>,
+        last_messages: Arc<Mutex<Vec<ProviderMessage>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderClient for OutputLimitRecoveryProvider {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+            self.chat_with_stream_events(request, None).await
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            request: ChatRequest,
+            _on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            *self.last_messages.lock().unwrap() = request.messages.clone();
+            let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call_index == 0 {
+                return Err(anyhow!(
+                    "max_output_tokens exceeded before the provider could finish"
+                ));
+            }
+            Ok(ChatResponse {
+                content: Some("after output recovery".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, _messages: &[ProviderMessage]) -> usize {
+            1
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            false
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "output-limit-recovery".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_recovery_retries_output_limit_with_bounded_nudge() {
+        let provider = OutputLimitRecoveryProvider::default();
+        let request = ChatRequest {
+            messages: vec![
+                test_provider_message("system", "system"),
+                test_provider_message("user", "task"),
+            ],
+            tools: Vec::new(),
+            json_mode: false,
+        };
+        let mut noop = |_event: StreamEvent| {};
+
+        let result = chat_with_context_retry(&provider, request, Duration::from_secs(1), &mut noop)
+            .await
+            .unwrap();
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(result.recoveries.len(), 1);
+        assert_eq!(
+            result.recoveries[0].kind,
+            AgentRecoveryKind::MaxOutputTokens
+        );
+        assert_eq!(
+            result.response.content.as_deref(),
+            Some("after output recovery")
+        );
+        let last_messages = provider.last_messages.lock().unwrap().clone();
+        assert!(last_messages
+            .last()
+            .and_then(|message| message.content.as_deref())
+            .is_some_and(|content| content.contains("deepcli output recovery")));
+    }
+
+    #[derive(Clone)]
+    struct StreamingToolCompletionProvider {
+        call: ToolCall,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderClient for StreamingToolCompletionProvider {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+            self.chat_with_stream_events(request, None).await
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            _request: ChatRequest,
+            mut on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            if let Some(callback) = on_event.as_mut() {
+                callback(StreamEvent {
+                    content_delta: None,
+                    reasoning_delta: None,
+                    tool_call_delta: None,
+                    tool_call_completed: Some(self.call.clone()),
+                    done: false,
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            Ok(ChatResponse {
+                content: None,
+                reasoning_content: None,
+                tool_calls: vec![self.call.clone()],
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, _messages: &[ProviderMessage]) -> usize {
+            1
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            true
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "streaming-tool-completion".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_tool_completion_executes_read_only_tool_before_turn_finishes() {
+        let dir = tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"demo\"\n",
+        )
+        .unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        let call = ToolCall {
+            id: "call_read".to_string(),
+            call_type: "function".to_string(),
+            function: crate::providers::ToolCallFunction {
+                name: "read_file".to_string(),
+                arguments: json!({"path": "Cargo.toml"}),
+            },
+        };
+        let provider = StreamingToolCompletionProvider { call: call.clone() };
+        let request = ChatRequest {
+            messages: vec![test_provider_message("user", "read cargo")],
+            tools: runtime.registry.tool_specs(),
+            json_mode: false,
+        };
+        let mut noop = |_event: StreamEvent| {};
+
+        let result = runtime
+            .chat_with_context_retry_and_streaming_tools(
+                &provider,
+                request,
+                Duration::from_secs(1),
+                &mut noop,
+                ToolBudgetSnapshot {
+                    context_tool_calls_before_action: 0,
+                    verification_calls_before_action: 0,
+                    context_tool_limit: 12,
+                    verification_tool_limit: 12,
+                },
+            )
+            .await
+            .unwrap();
+
+        let early = result
+            .early_tool_results
+            .get("call_read")
+            .expect("read_file should execute during provider stream");
+        assert_eq!(early.call, call);
+        assert!(early.output.contains("[package]"));
+        let succeeded = runtime
+            .session
+            .load_tool_calls()
+            .unwrap()
+            .into_iter()
+            .filter(|record| record.status == ToolCallStatus::Succeeded)
+            .count();
+        assert_eq!(succeeded, 1);
     }
 
     #[test]

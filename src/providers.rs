@@ -102,7 +102,56 @@ pub struct ChatResponse {
 pub struct StreamEvent {
     pub content_delta: Option<String>,
     pub reasoning_delta: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_delta: Option<StreamToolCallDelta>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_completed: Option<ToolCall>,
     pub done: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StreamToolCallDelta {
+    pub index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments_delta: Option<String>,
+}
+
+impl StreamEvent {
+    fn text(content_delta: Option<String>, reasoning_delta: Option<String>, done: bool) -> Self {
+        Self {
+            content_delta,
+            reasoning_delta,
+            tool_call_delta: None,
+            tool_call_completed: None,
+            done,
+        }
+    }
+
+    fn tool_delta(delta: StreamToolCallDelta) -> Self {
+        Self {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: Some(delta),
+            tool_call_completed: None,
+            done: false,
+        }
+    }
+
+    fn tool_completed(call: ToolCall) -> Self {
+        Self {
+            content_delta: None,
+            reasoning_delta: None,
+            tool_call_delta: None,
+            tool_call_completed: Some(call),
+            done: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1021,6 +1070,15 @@ fn parse_kimi_anthropic_sse_line(
             if let Some(thinking) = content_block.get("thinking").and_then(Value::as_str) {
                 block.thinking.push_str(thinking);
             }
+            if block.block_type == "tool_use" {
+                emitted.push(StreamEvent::tool_delta(StreamToolCallDelta {
+                    index,
+                    id: block.id.clone(),
+                    call_type: Some("function".to_string()),
+                    name: block.name.clone(),
+                    arguments_delta: block.input.as_ref().map(Value::to_string),
+                }));
+            }
         }
         "content_block_delta" => {
             let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -1054,9 +1112,25 @@ fn parse_kimi_anthropic_sse_line(
                     }
                     if let Some(partial_json) = delta.get("partial_json").and_then(Value::as_str) {
                         block.input_json.push_str(partial_json);
+                        emitted.push(StreamEvent::tool_delta(StreamToolCallDelta {
+                            index,
+                            id: block.id.clone(),
+                            call_type: Some("function".to_string()),
+                            name: block.name.clone(),
+                            arguments_delta: Some(partial_json.to_string()),
+                        }));
                     }
                 }
                 _ => {}
+            }
+        }
+        "content_block_stop" => {
+            let index = value.get("index").and_then(Value::as_u64).unwrap_or(0) as usize;
+            let block = events.ensure_block(index);
+            if block.block_type == "tool_use" {
+                if let Some(call) = kimi_streaming_block_tool_call(index, block)? {
+                    emitted.push(StreamEvent::tool_completed(call));
+                }
             }
         }
         "message_delta" => {
@@ -1069,6 +1143,36 @@ fn parse_kimi_anthropic_sse_line(
     }
 
     Ok(false)
+}
+
+fn kimi_streaming_block_tool_call(
+    index: usize,
+    block: &KimiStreamingBlock,
+) -> Result<Option<ToolCall>> {
+    if block.block_type != "tool_use" {
+        return Ok(None);
+    }
+    let Some(name) = block.name.as_ref().filter(|name| !name.is_empty()) else {
+        return Ok(None);
+    };
+    let arguments = if !block.input_json.trim().is_empty() {
+        serde_json::from_str(&block.input_json).with_context(|| {
+            format!("failed to parse streamed input for Kimi tool call `{name}`")
+        })?
+    } else {
+        block
+            .input
+            .clone()
+            .unwrap_or_else(|| Value::Object(Default::default()))
+    };
+    Ok(Some(ToolCall {
+        id: block.id.clone().unwrap_or_else(|| format!("toolu_{index}")),
+        call_type: "function".to_string(),
+        function: ToolCallFunction {
+            name: name.clone(),
+            arguments,
+        },
+    }))
 }
 
 async fn collect_kimi_anthropic_stream_events(
@@ -1101,11 +1205,7 @@ fn parse_kimi_anthropic_stream_event_line(line: &str) -> Result<Option<StreamEve
     }
     let payload = line.trim_start_matches("data:").trim();
     if payload == "[DONE]" {
-        return Ok(Some(StreamEvent {
-            content_delta: None,
-            reasoning_delta: None,
-            done: true,
-        }));
+        return Ok(Some(StreamEvent::text(None, None, true)));
     }
 
     let value: Value =
@@ -1133,20 +1233,16 @@ fn parse_kimi_anthropic_stream_event_line(line: &str) -> Result<Option<StreamEve
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
             if content_delta.is_some() || reasoning_delta.is_some() {
-                Ok(Some(StreamEvent {
+                Ok(Some(StreamEvent::text(
                     content_delta,
                     reasoning_delta,
-                    done: false,
-                }))
+                    false,
+                )))
             } else {
                 Ok(None)
             }
         }
-        "message_stop" => Ok(Some(StreamEvent {
-            content_delta: None,
-            reasoning_delta: None,
-            done: true,
-        })),
+        "message_stop" => Ok(Some(StreamEvent::text(None, None, true))),
         _ => Ok(None),
     }
 }
@@ -1314,6 +1410,23 @@ fn parse_sse_chat_line(
                 events.tool_calls.push(StreamingToolCall::default());
             }
             let target = &mut events.tool_calls[index];
+            let id = call
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let call_type = call
+                .get("type")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            let name = call
+                .pointer("/function/name")
+                .and_then(Value::as_str)
+                .filter(|name| !name.is_empty())
+                .map(ToString::to_string);
+            let arguments_delta = call
+                .pointer("/function/arguments")
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
             if let Some(id) = call.get("id").and_then(Value::as_str) {
                 target.id = id.to_string();
             }
@@ -1328,6 +1441,13 @@ fn parse_sse_chat_line(
             if let Some(arguments) = call.pointer("/function/arguments").and_then(Value::as_str) {
                 target.arguments.push_str(arguments);
             }
+            emitted.push(StreamEvent::tool_delta(StreamToolCallDelta {
+                index,
+                id,
+                call_type,
+                name,
+                arguments_delta,
+            }));
         }
     }
     Ok(false)
@@ -1360,11 +1480,7 @@ fn parse_sse_line(line: &str) -> Result<Option<StreamEvent>> {
     }
     let payload = line.trim_start_matches("data:").trim();
     if payload == "[DONE]" {
-        return Ok(Some(StreamEvent {
-            content_delta: None,
-            reasoning_delta: None,
-            done: true,
-        }));
+        return Ok(Some(StreamEvent::text(None, None, true)));
     }
     let value: Value =
         serde_json::from_str(payload).context("failed to parse provider SSE chunk")?;
@@ -1376,11 +1492,7 @@ fn parse_sse_line(line: &str) -> Result<Option<StreamEvent>> {
         .pointer("/choices/0/delta/reasoning_content")
         .and_then(Value::as_str)
         .map(ToString::to_string);
-    Ok(Some(StreamEvent {
-        content_delta: delta,
-        reasoning_delta,
-        done: false,
-    }))
+    Ok(Some(StreamEvent::text(delta, reasoning_delta, false)))
 }
 
 fn emit_stream_event(
@@ -1394,11 +1506,7 @@ fn emit_stream_event(
     if content_delta.is_none() && reasoning_delta.is_none() && !done {
         return;
     }
-    emitted.push(StreamEvent {
-        content_delta,
-        reasoning_delta,
-        done,
-    });
+    emitted.push(StreamEvent::text(content_delta, reasoning_delta, done));
 }
 
 fn redact_secret(value: &str) -> String {
@@ -1648,13 +1756,37 @@ mod tests {
         )
         .unwrap();
         assert!(parse_sse_chat_line("data: [DONE]", &mut acc, &mut emitted).unwrap());
-        assert!(emitted.is_empty());
+        assert!(emitted.iter().all(|event| event.content_delta.is_none()));
         let response = acc.into_response().unwrap();
         assert_eq!(response.tool_calls[0].id, "call_1");
         assert_eq!(response.tool_calls[0].function.name, "read_file");
         assert_eq!(
             response.tool_calls[0].function.arguments["path"],
             "Cargo.toml"
+        );
+    }
+
+    #[test]
+    fn streamed_tool_call_chunks_emit_protocol_events() {
+        let mut acc = StreamingChatAccumulator::default();
+        let mut emitted = Vec::new();
+        parse_sse_chat_line(
+            r#"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"Cargo.toml\"}"}}]}}]}"#,
+            &mut acc,
+            &mut emitted,
+        )
+        .unwrap();
+
+        let tool_delta = emitted
+            .iter()
+            .find_map(|event| event.tool_call_delta.as_ref())
+            .expect("stream should expose tool call delta");
+        assert_eq!(tool_delta.index, 0);
+        assert_eq!(tool_delta.id.as_deref(), Some("call_1"));
+        assert_eq!(tool_delta.name.as_deref(), Some("read_file"));
+        assert_eq!(
+            tool_delta.arguments_delta.as_deref(),
+            Some("{\"path\":\"Cargo.toml\"}")
         );
     }
 
@@ -1755,7 +1887,19 @@ mod tests {
             })
         );
         parse_kimi_anthropic_sse_line(&second_delta, &mut acc, &mut emitted).unwrap();
-        assert!(emitted.is_empty());
+        parse_kimi_anthropic_sse_line(
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            &mut acc,
+            &mut emitted,
+        )
+        .unwrap();
+        assert!(emitted.iter().all(|event| event.content_delta.is_none()));
+        let completed = emitted
+            .iter()
+            .find_map(|event| event.tool_call_completed.as_ref())
+            .expect("tool_use block stop should emit completed tool call");
+        assert_eq!(completed.id, "toolu_1");
+        assert_eq!(completed.function.name, "read_file");
 
         let response = acc.into_response().unwrap();
         assert_eq!(response.tool_calls[0].id, "toolu_1");
