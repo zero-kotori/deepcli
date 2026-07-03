@@ -16,6 +16,8 @@
 
 `src/ui/session_projection.rs` 拥有 active session / header / task monitor projection owner：`ActiveSessionRef`、`HeaderStatus`、`active_session_ref`、`sync_active_session_ref`、`session_monitor_for_state`、`header_status_for_state`、`load_active_session_header`、`load_active_session_monitor`、`session_monitor_from_session`、`summarize_plan_for_tui` 和 `workspace_for_state`。`src/ui.rs` 只保存当前 active session 引用，并在启动、worker 完成、runtime rebuild 和 monitor 渲染时消费该 owner。
 
+`src/ui/native_terminal.rs` 拥有默认原生终端聊天渲染：session header、行式输入提示、assistant delta 流式输出、provider turn 状态线，以及工具开始/完成的单行进度摘要；该路径不进入 alternate screen，也不恢复旧的 Messages/Message Box/Task Monitor 面板。
+
 `src/ui/message_box.rs` 拥有 message box input owner：`MessageBoxAction`、`MessageBox`、`handle_prompt_input_key`、`handle_key` 和 `insert_str`。`src/ui.rs`、credential prompt、approval prompt 和 command palette 只消费该输入状态机，不直接维护 buffer/cursor/history 编辑规则。
 
 `src/ui/dashboard.rs` 拥有 dashboard snapshot owner：`TuiSnapshot` 和 `render_dashboard`。`src/ui.rs` 只注册该 owner 并 re-export 公开 API，不直接维护非交互 dashboard 布局或渲染。
