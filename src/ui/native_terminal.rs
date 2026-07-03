@@ -1,12 +1,20 @@
 use crate::runtime::{AgentRuntime, RuntimeProgress};
 use anyhow::{anyhow, Result};
+use crossterm::{
+    cursor::{MoveToColumn, MoveUp},
+    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
+    queue,
+    terminal::{self, disable_raw_mode, enable_raw_mode, Clear, ClearType},
+};
 use std::io::{self, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
+use unicode_width::UnicodeWidthChar;
 
 use super::worker::WorkerDone;
 
-const INPUT_PROMPT: &str = "> ";
+const NATIVE_INPUT_PROMPT_LABEL: &str = "user ";
+const NATIVE_INPUT_PROMPT: &str = "\x1b[36muser\x1b[0m ";
 const NATIVE_PROGRESS_DETAIL_CHARS: usize = 120;
 
 #[derive(Default)]
@@ -20,17 +28,11 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
     println!("Type /help for commands, /quit to exit.");
 
     let (progress_tx, progress_rx) = mpsc::channel();
-    let stdin = io::stdin();
+    let mut stdout = io::stdout();
     loop {
-        print!("{INPUT_PROMPT}");
-        io::stdout().flush()?;
-        let mut line = String::new();
-        let bytes = stdin.read_line(&mut line)?;
-        if bytes == 0 {
+        let Some(input) = read_native_input(&mut stdout)? else {
             break;
-        }
-
-        let input = line.trim_end().to_string();
+        };
         if input.trim().is_empty() {
             continue;
         }
@@ -58,6 +60,472 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
     }
 
     Ok(())
+}
+
+#[derive(Default)]
+struct NativeInputEditor {
+    buffer: String,
+    cursor: usize,
+    preferred_column: Option<usize>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum NativeInputAction {
+    Edited,
+    Submitted(String),
+    Exit,
+    Noop,
+}
+
+impl NativeInputEditor {
+    fn buffer(&self) -> &str {
+        &self.buffer
+    }
+
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    #[cfg(test)]
+    fn set_cursor(&mut self, cursor: usize) {
+        self.cursor = self.clamp_to_char_boundary(cursor);
+        self.preferred_column = None;
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) -> NativeInputAction {
+        match key.code {
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                NativeInputAction::Exit
+            }
+            KeyCode::Char('d')
+                if key.modifiers.contains(KeyModifiers::CONTROL) && self.buffer.is_empty() =>
+            {
+                NativeInputAction::Exit
+            }
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.delete_at_cursor();
+                NativeInputAction::Edited
+            }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                NativeInputAction::Submitted(self.buffer.trim_end().to_string())
+            }
+            KeyCode::Char('\n') | KeyCode::Char('\r') => {
+                NativeInputAction::Submitted(self.buffer.trim_end().to_string())
+            }
+            KeyCode::Enter
+                if key.modifiers.contains(KeyModifiers::SHIFT)
+                    || key.modifiers.contains(KeyModifiers::ALT) =>
+            {
+                self.insert_char('\n');
+                NativeInputAction::Edited
+            }
+            KeyCode::Enter => NativeInputAction::Submitted(self.buffer.trim_end().to_string()),
+            KeyCode::Char(ch)
+                if !key.modifiers.intersects(
+                    KeyModifiers::CONTROL
+                        | KeyModifiers::ALT
+                        | KeyModifiers::SUPER
+                        | KeyModifiers::HYPER
+                        | KeyModifiers::META,
+                ) =>
+            {
+                self.insert_char(ch);
+                NativeInputAction::Edited
+            }
+            KeyCode::Backspace => {
+                self.delete_before_cursor();
+                NativeInputAction::Edited
+            }
+            KeyCode::Delete => {
+                self.delete_at_cursor();
+                NativeInputAction::Edited
+            }
+            KeyCode::Left => {
+                self.cursor = self.previous_char_boundary();
+                self.preferred_column = None;
+                NativeInputAction::Edited
+            }
+            KeyCode::Right => {
+                self.cursor = self.next_char_boundary();
+                self.preferred_column = None;
+                NativeInputAction::Edited
+            }
+            KeyCode::Up => {
+                self.move_up();
+                NativeInputAction::Edited
+            }
+            KeyCode::Down => {
+                self.move_down();
+                NativeInputAction::Edited
+            }
+            KeyCode::Home => {
+                self.cursor = self.current_line_start();
+                self.preferred_column = None;
+                NativeInputAction::Edited
+            }
+            KeyCode::End => {
+                self.cursor = self.current_line_end();
+                self.preferred_column = None;
+                NativeInputAction::Edited
+            }
+            _ => NativeInputAction::Noop,
+        }
+    }
+
+    fn insert_char(&mut self, ch: char) {
+        self.buffer.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+        self.preferred_column = None;
+    }
+
+    fn insert_str(&mut self, value: &str) {
+        if value.is_empty() {
+            return;
+        }
+        self.buffer.insert_str(self.cursor, value);
+        self.cursor += value.len();
+        self.preferred_column = None;
+    }
+
+    fn delete_before_cursor(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        let previous = self.previous_char_boundary();
+        self.buffer.drain(previous..self.cursor);
+        self.cursor = previous;
+        self.preferred_column = None;
+    }
+
+    fn delete_at_cursor(&mut self) {
+        if self.cursor >= self.buffer.len() {
+            return;
+        }
+        let next = self.next_char_boundary();
+        self.buffer.drain(self.cursor..next);
+        self.preferred_column = None;
+    }
+
+    fn move_up(&mut self) {
+        let target_column = self
+            .preferred_column
+            .unwrap_or_else(|| visual_column(&self.buffer, self.current_line_start(), self.cursor));
+        let current_start = self.current_line_start();
+        if current_start == 0 {
+            self.cursor = 0;
+            self.preferred_column = Some(target_column);
+            return;
+        }
+
+        let previous_end = current_start.saturating_sub(1);
+        let previous_start = self.line_start_at(previous_end);
+        self.cursor =
+            byte_index_for_visual_column(&self.buffer, previous_start, previous_end, target_column);
+        self.preferred_column = Some(target_column);
+    }
+
+    fn move_down(&mut self) {
+        let target_column = self
+            .preferred_column
+            .unwrap_or_else(|| visual_column(&self.buffer, self.current_line_start(), self.cursor));
+        let current_end = self.current_line_end();
+        if current_end >= self.buffer.len() {
+            self.cursor = current_end;
+            self.preferred_column = Some(target_column);
+            return;
+        }
+
+        let next_start = current_end + 1;
+        let next_end = self.line_end_at(next_start);
+        self.cursor =
+            byte_index_for_visual_column(&self.buffer, next_start, next_end, target_column);
+        self.preferred_column = Some(target_column);
+    }
+
+    fn current_line_start(&self) -> usize {
+        self.line_start_at(self.cursor)
+    }
+
+    fn current_line_end(&self) -> usize {
+        self.line_end_at(self.cursor)
+    }
+
+    fn line_start_at(&self, cursor: usize) -> usize {
+        let cursor = self.clamp_to_char_boundary(cursor);
+        self.buffer[..cursor]
+            .rfind('\n')
+            .map(|index| index + 1)
+            .unwrap_or(0)
+    }
+
+    fn line_end_at(&self, cursor: usize) -> usize {
+        let cursor = self.clamp_to_char_boundary(cursor);
+        self.buffer[cursor..]
+            .find('\n')
+            .map(|index| cursor + index)
+            .unwrap_or(self.buffer.len())
+    }
+
+    fn previous_char_boundary(&self) -> usize {
+        self.buffer[..self.cursor]
+            .char_indices()
+            .last()
+            .map(|(index, _)| index)
+            .unwrap_or(0)
+    }
+
+    fn next_char_boundary(&self) -> usize {
+        self.buffer[self.cursor..]
+            .chars()
+            .next()
+            .map(|ch| self.cursor + ch.len_utf8())
+            .unwrap_or(self.buffer.len())
+    }
+
+    fn clamp_to_char_boundary(&self, cursor: usize) -> usize {
+        let mut cursor = cursor.min(self.buffer.len());
+        while cursor > 0 && !self.buffer.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        cursor
+    }
+}
+
+#[derive(Default)]
+struct NativeInputRenderState {
+    rendered: bool,
+    cursor_row: u16,
+}
+
+struct NativeInputMetrics {
+    total_rows: u16,
+    cursor_row: u16,
+    cursor_col: u16,
+}
+
+fn native_input_prompt() -> &'static str {
+    NATIVE_INPUT_PROMPT
+}
+
+fn read_native_input(stdout: &mut io::Stdout) -> io::Result<Option<String>> {
+    enable_raw_mode()?;
+    let result = read_native_input_raw(stdout);
+    let disable_raw = disable_raw_mode();
+    match result {
+        Ok(value) => {
+            disable_raw?;
+            Ok(value)
+        }
+        Err(error) => {
+            let _ = disable_raw;
+            Err(error)
+        }
+    }
+}
+
+fn read_native_input_raw(stdout: &mut io::Stdout) -> io::Result<Option<String>> {
+    let mut editor = NativeInputEditor::default();
+    let mut render_state = NativeInputRenderState::default();
+    render_native_input(stdout, &editor, &mut render_state)?;
+
+    loop {
+        match event::read()? {
+            Event::Key(key) => match editor.handle_key(key) {
+                NativeInputAction::Edited => {
+                    render_native_input(stdout, &editor, &mut render_state)?
+                }
+                NativeInputAction::Submitted(input) => {
+                    commit_native_input(stdout, &editor, &mut render_state)?;
+                    return Ok(Some(input));
+                }
+                NativeInputAction::Exit => {
+                    cancel_native_input(stdout, &mut render_state)?;
+                    return Ok(None);
+                }
+                NativeInputAction::Noop => {}
+            },
+            Event::Paste(text) => {
+                editor.insert_str(&normalize_native_paste(&text));
+                render_native_input(stdout, &editor, &mut render_state)?;
+            }
+            Event::Resize(_, _) => render_native_input(stdout, &editor, &mut render_state)?,
+            _ => {}
+        }
+    }
+}
+
+fn render_native_input(
+    stdout: &mut io::Stdout,
+    editor: &NativeInputEditor,
+    state: &mut NativeInputRenderState,
+) -> io::Result<()> {
+    reset_native_input_area(stdout, state)?;
+    write!(
+        stdout,
+        "{}{}",
+        native_input_prompt(),
+        render_input_buffer(editor.buffer())
+    )?;
+    let metrics = native_input_metrics(editor.buffer(), editor.cursor(), terminal_width());
+    move_to_native_input_cursor(stdout, &metrics)?;
+    stdout.flush()?;
+    state.rendered = true;
+    state.cursor_row = metrics.cursor_row;
+    Ok(())
+}
+
+fn commit_native_input(
+    stdout: &mut io::Stdout,
+    editor: &NativeInputEditor,
+    state: &mut NativeInputRenderState,
+) -> io::Result<()> {
+    reset_native_input_area(stdout, state)?;
+    write!(
+        stdout,
+        "{}{}\r\n",
+        native_input_prompt(),
+        render_input_buffer(editor.buffer())
+    )?;
+    stdout.flush()?;
+    state.rendered = false;
+    state.cursor_row = 0;
+    Ok(())
+}
+
+fn cancel_native_input(
+    stdout: &mut io::Stdout,
+    state: &mut NativeInputRenderState,
+) -> io::Result<()> {
+    reset_native_input_area(stdout, state)?;
+    write!(stdout, "\r\n")?;
+    stdout.flush()?;
+    state.rendered = false;
+    state.cursor_row = 0;
+    Ok(())
+}
+
+fn reset_native_input_area(
+    stdout: &mut io::Stdout,
+    state: &NativeInputRenderState,
+) -> io::Result<()> {
+    if state.rendered && state.cursor_row > 0 {
+        queue!(stdout, MoveUp(state.cursor_row))?;
+    }
+    if state.rendered {
+        queue!(stdout, MoveToColumn(0), Clear(ClearType::FromCursorDown))?;
+    }
+    Ok(())
+}
+
+fn move_to_native_input_cursor(
+    stdout: &mut io::Stdout,
+    metrics: &NativeInputMetrics,
+) -> io::Result<()> {
+    let rows_below = metrics
+        .total_rows
+        .saturating_sub(1)
+        .saturating_sub(metrics.cursor_row);
+    if rows_below > 0 {
+        queue!(stdout, MoveUp(rows_below))?;
+    }
+    queue!(stdout, MoveToColumn(metrics.cursor_col))?;
+    Ok(())
+}
+
+fn render_input_buffer(buffer: &str) -> String {
+    buffer.replace('\n', "\r\n")
+}
+
+fn normalize_native_paste(value: &str) -> String {
+    value.replace("\r\n", "\n").replace('\r', "\n")
+}
+
+fn terminal_width() -> usize {
+    terminal::size()
+        .map(|(width, _)| usize::from(width.max(1)))
+        .unwrap_or(80)
+}
+
+fn native_input_metrics(buffer: &str, cursor: usize, width: usize) -> NativeInputMetrics {
+    let cursor = clamp_str_boundary(buffer, cursor);
+    let cursor_position = native_input_position(&buffer[..cursor], width);
+    let end_position = native_input_position(buffer, width);
+    NativeInputMetrics {
+        total_rows: end_position.row.saturating_add(1),
+        cursor_row: cursor_position.row,
+        cursor_col: cursor_position.col,
+    }
+}
+
+#[derive(Clone, Copy)]
+struct NativeInputPosition {
+    row: u16,
+    col: u16,
+}
+
+fn native_input_position(buffer: &str, width: usize) -> NativeInputPosition {
+    let mut row = 0u16;
+    let mut col = 0u16;
+    advance_position(&mut row, &mut col, NATIVE_INPUT_PROMPT_LABEL, width);
+    advance_position(&mut row, &mut col, buffer, width);
+    NativeInputPosition { row, col }
+}
+
+fn advance_position(row: &mut u16, col: &mut u16, value: &str, width: usize) {
+    let width = width.max(1) as u16;
+    for ch in value.chars() {
+        if ch == '\n' {
+            *row = row.saturating_add(1);
+            *col = 0;
+            continue;
+        }
+        let char_width = ch.width().unwrap_or(0).max(1) as u16;
+        let char_width = char_width.min(width);
+        if col.saturating_add(char_width) > width {
+            *row = row.saturating_add(1);
+            *col = 0;
+        }
+        *col = col.saturating_add(char_width);
+        if *col >= width {
+            *row = row.saturating_add(*col / width);
+            *col %= width;
+        }
+    }
+}
+
+fn visual_column(buffer: &str, start: usize, end: usize) -> usize {
+    buffer[start..end]
+        .chars()
+        .map(|ch| ch.width().unwrap_or(0).max(1))
+        .sum()
+}
+
+fn byte_index_for_visual_column(
+    buffer: &str,
+    start: usize,
+    end: usize,
+    target_column: usize,
+) -> usize {
+    let mut column = 0usize;
+    for (offset, ch) in buffer[start..end].char_indices() {
+        let width = ch.width().unwrap_or(0).max(1);
+        if column + width > target_column {
+            return start + offset;
+        }
+        column += width;
+        if column == target_column {
+            return start + offset + ch.len_utf8();
+        }
+    }
+    end
+}
+
+fn clamp_str_boundary(value: &str, cursor: usize) -> usize {
+    let mut cursor = cursor.min(value.len());
+    while cursor > 0 && !value.is_char_boundary(cursor) {
+        cursor -= 1;
+    }
+    cursor
 }
 
 async fn wait_for_native_task(
@@ -207,6 +675,7 @@ fn finish_native_stream_line(render_state: &mut NativeRenderState) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[test]
     fn native_provider_progress_uses_compact_status_lines() {
@@ -256,5 +725,86 @@ mod tests {
             native_progress_line(&completed),
             Some("deepcli | tool ok | git_diff | diff --git a/README.md b/README.md".to_string())
         );
+    }
+
+    #[test]
+    fn native_input_prompt_uses_user_label_without_angle_prompt() {
+        let prompt = native_input_prompt();
+        let plain = strip_ansi_for_test(prompt);
+
+        assert_eq!(plain, "user ");
+        assert!(prompt.contains("\x1b["));
+        assert!(!plain.contains('>'));
+    }
+
+    #[test]
+    fn native_input_editor_moves_left_and_right_by_character() {
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str("abc");
+
+        assert_eq!(editor.cursor(), 3);
+        editor.handle_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
+        assert_eq!(editor.cursor(), 2);
+        editor.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(editor.cursor(), 3);
+    }
+
+    #[test]
+    fn native_input_editor_moves_up_and_down_between_lines() {
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str("abc\ndefg\nhi");
+        editor.set_cursor("abc\ndef".len());
+
+        editor.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(editor.cursor(), "abc".len());
+
+        editor.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(editor.cursor(), "abc\ndef".len());
+    }
+
+    #[test]
+    fn native_input_editor_up_on_first_line_moves_to_line_start() {
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str("abc\ndef");
+        editor.set_cursor(2);
+
+        editor.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(editor.cursor(), 0);
+    }
+
+    #[test]
+    fn native_input_editor_submits_raw_newline_char_from_pty_pipe() {
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str("/quit");
+
+        assert_eq!(
+            editor.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL)),
+            NativeInputAction::Submitted("/quit".to_string())
+        );
+        assert_eq!(
+            editor.handle_key(KeyEvent::new(KeyCode::Char('\n'), KeyModifiers::NONE)),
+            NativeInputAction::Submitted("/quit".to_string())
+        );
+        assert_eq!(
+            editor.handle_key(KeyEvent::new(KeyCode::Char('\r'), KeyModifiers::NONE)),
+            NativeInputAction::Submitted("/quit".to_string())
+        );
+    }
+
+    fn strip_ansi_for_test(value: &str) -> String {
+        let mut stripped = String::new();
+        let mut chars = value.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\x1b' {
+                for next in chars.by_ref() {
+                    if next == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                stripped.push(ch);
+            }
+        }
+        stripped
     }
 }
