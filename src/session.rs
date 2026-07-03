@@ -57,6 +57,54 @@ pub struct ToolCallRecord {
     pub created_at: DateTime<Utc>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTranscriptToolCall {
+    pub id: String,
+    #[serde(rename = "type")]
+    pub call_type: String,
+    pub name: String,
+    pub arguments: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderTranscriptRecord {
+    pub role: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_content: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ProviderTranscriptToolCall>,
+    #[serde(default)]
+    pub synthetic: bool,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CompactBoundaryRecord {
+    pub id: Uuid,
+    pub reason: String,
+    pub summary: String,
+    pub omitted_group_count: usize,
+    pub message_count_before: usize,
+    pub message_count_after: usize,
+    pub retained_segment: Vec<ProviderTranscriptRecord>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FileHistorySnapshot {
+    pub tool: String,
+    pub target: String,
+    pub summary: String,
+    pub data: Value,
+    pub created_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AuditEvent {
     pub session_id: Uuid,
@@ -404,6 +452,72 @@ impl Session {
         self.append_jsonl("tools.jsonl", record)?;
         self.append_audit_event("tool_call", serde_json::to_value(record)?)?;
         self.touch_metadata()
+    }
+
+    pub fn append_provider_transcript(&self, record: &ProviderTranscriptRecord) -> Result<()> {
+        self.append_jsonl("provider_transcript.jsonl", record)?;
+        self.touch_metadata()
+    }
+
+    pub fn load_provider_transcript(&self) -> Result<Vec<ProviderTranscriptRecord>> {
+        self.read_jsonl_if_exists("provider_transcript.jsonl")
+    }
+
+    pub fn load_recent_provider_transcript(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<ProviderTranscriptRecord>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_provider_transcript()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
+    }
+
+    pub fn append_compact_boundary(&self, record: &CompactBoundaryRecord) -> Result<()> {
+        self.append_jsonl("compact_boundaries.jsonl", record)?;
+        self.append_audit_event(
+            "compact_boundary",
+            serde_json::json!({
+                "id": record.id,
+                "reason": record.reason,
+                "omitted_group_count": record.omitted_group_count,
+                "message_count_before": record.message_count_before,
+                "message_count_after": record.message_count_after,
+                "retained_segment_count": record.retained_segment.len(),
+            }),
+        )?;
+        self.touch_metadata()
+    }
+
+    pub fn load_compact_boundaries(&self) -> Result<Vec<CompactBoundaryRecord>> {
+        self.read_jsonl_if_exists("compact_boundaries.jsonl")
+    }
+
+    pub fn load_latest_compact_boundary(&self) -> Result<Option<CompactBoundaryRecord>> {
+        Ok(self.load_compact_boundaries()?.into_iter().last())
+    }
+
+    pub fn append_file_history_snapshot(&self, record: &FileHistorySnapshot) -> Result<()> {
+        self.append_jsonl("file_history.jsonl", record)?;
+        self.touch_metadata()
+    }
+
+    pub fn load_file_history_snapshots(&self) -> Result<Vec<FileHistorySnapshot>> {
+        self.read_jsonl_if_exists("file_history.jsonl")
+    }
+
+    pub fn load_recent_file_history_snapshots(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<FileHistorySnapshot>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let records = self.load_file_history_snapshots()?;
+        let skip = records.len().saturating_sub(limit);
+        Ok(records.into_iter().skip(skip).collect())
     }
 
     pub fn append_test_run(&self, record: &TestRunRecord) -> Result<()> {
@@ -1080,6 +1194,75 @@ mod tests {
             loaded.load_plan().unwrap().unwrap().steps[0].status,
             PlanStepStatus::Completed
         );
+    }
+
+    #[test]
+    fn stores_recovery_context_records() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let now = Utc::now();
+        let tool_call = ProviderTranscriptToolCall {
+            id: "call_read".to_string(),
+            call_type: "function".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/lib.rs"}),
+        };
+        let assistant = ProviderTranscriptRecord {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            name: None,
+            tool_call_id: None,
+            tool_calls: vec![tool_call],
+            synthetic: false,
+            created_at: now,
+        };
+        let tool = ProviderTranscriptRecord {
+            role: "tool".to_string(),
+            content: Some("file content".to_string()),
+            reasoning_content: None,
+            name: Some("read_file".to_string()),
+            tool_call_id: Some("call_read".to_string()),
+            tool_calls: Vec::new(),
+            synthetic: false,
+            created_at: now,
+        };
+        session.append_provider_transcript(&assistant).unwrap();
+        session.append_provider_transcript(&tool).unwrap();
+        session
+            .append_compact_boundary(&CompactBoundaryRecord {
+                id: Uuid::new_v4(),
+                reason: "full_compact".to_string(),
+                summary: "kept the current bug and latest test failure".to_string(),
+                omitted_group_count: 3,
+                message_count_before: 12,
+                message_count_after: 6,
+                retained_segment: vec![assistant.clone(), tool.clone()],
+                created_at: now,
+            })
+            .unwrap();
+        session
+            .append_file_history_snapshot(&FileHistorySnapshot {
+                tool: "read_file".to_string(),
+                target: "src/lib.rs".to_string(),
+                summary: "loaded parser entrypoint".to_string(),
+                data: serde_json::json!({"path": "src/lib.rs"}),
+                created_at: now,
+            })
+            .unwrap();
+
+        let transcript = session.load_provider_transcript().unwrap();
+        assert_eq!(transcript, vec![assistant, tool]);
+        let boundary = session.load_latest_compact_boundary().unwrap().unwrap();
+        assert_eq!(boundary.omitted_group_count, 3);
+        assert_eq!(boundary.retained_segment.len(), 2);
+        let snapshots = session.load_recent_file_history_snapshots(5).unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].tool, "read_file");
+        assert_eq!(snapshots[0].target, "src/lib.rs");
     }
 
     #[test]

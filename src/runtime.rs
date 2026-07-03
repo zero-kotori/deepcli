@@ -10,10 +10,12 @@ use crate::providers::{
     ToolCall, ToolSpec, Usage,
 };
 use crate::session::{
-    ApprovalStatus, AuditEvent, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
-    SessionMessage, SessionState, SessionStore, SideQuestionStatus, ToolCallRecord, ToolCallStatus,
+    ApprovalRequest, ApprovalStatus, AuditEvent, CompactBoundaryRecord, FileHistorySnapshot,
+    GoalContract, GoalStatus, Plan, PlanStep, PlanStepStatus, ProviderTranscriptRecord,
+    ProviderTranscriptToolCall, Session, SessionMessage, SessionState, SessionStore, SideQuestion,
+    SideQuestionStatus, TestRunRecord, ToolCallRecord, ToolCallStatus,
 };
-use crate::tools::{ToolExecutor, ToolRegistry};
+use crate::tools::{StructuredToolResult, ToolExecution, ToolExecutor, ToolRegistry};
 use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
@@ -1086,10 +1088,14 @@ impl AgentRuntime {
             let microcompacted_tool_results = prepared_context.microcompacted_tool_results;
             let full_compacted = prepared_context.full_compacted;
             let tail_compacted = prepared_context.tail_compacted;
+            let compact_boundary = prepared_context.compact_boundary.clone();
             messages = prepared_context.messages;
             let compacted_messages = messages.clone();
             let request_stats = provider_request_stats(&compacted_messages, &tool_specs);
             let full_compact_error = prepared_context.full_compact_error.clone();
+            if let Some(boundary) = &compact_boundary {
+                self.session.append_compact_boundary(boundary)?;
+            }
             self.record_agent_loop_transition(
                 &mut loop_tracker,
                 Some(iteration_number),
@@ -1130,7 +1136,8 @@ impl AgentRuntime {
                             "microcompacted_tool_results": microcompacted_tool_results,
                             "full_compacted": full_compacted,
                             "tail_compacted": tail_compacted,
-                            "full_compact_error": full_compact_error
+                            "full_compact_error": full_compact_error,
+                            "compact_boundary_id": compact_boundary.as_ref().map(|boundary| boundary.id.to_string())
                         }
                     }
                 }),
@@ -1297,14 +1304,16 @@ impl AgentRuntime {
                 AgentLoopTransitionReason::ToolCallsRequested,
                 json!({ "tool_calls": response.tool_calls.len() }),
             )?;
-            messages.push(ProviderMessage {
+            let assistant_tool_message = ProviderMessage {
                 role: "assistant".to_string(),
                 content: response.content.clone(),
                 reasoning_content: response.reasoning_content.clone(),
                 name: None,
                 tool_call_id: None,
                 tool_calls: Some(response.tool_calls.clone()),
-            });
+            };
+            self.record_provider_message_transcript(&assistant_tool_message)?;
+            messages.push(assistant_tool_message);
 
             let mut budget_skipped_this_turn = 0usize;
             let turn_tool_calls = response.tool_calls;
@@ -1350,7 +1359,7 @@ impl AgentRuntime {
                                 &mut context_tool_calls_before_action,
                                 &mut verification_calls_before_action,
                             );
-                            messages.push(tool_provider_message(call, tool_output));
+                            self.push_tool_provider_message(&mut messages, call, tool_output)?;
                         }
                     }
                     ToolCallBatch::Parallel(range) => {
@@ -1377,7 +1386,7 @@ impl AgentRuntime {
                                 &mut context_tool_calls_before_action,
                                 &mut verification_calls_before_action,
                             );
-                            messages.push(tool_provider_message(call, tool_output));
+                            self.push_tool_provider_message(&mut messages, call, tool_output)?;
                         }
                     }
                     ToolCallBatch::Serial(index) => {
@@ -1404,7 +1413,7 @@ impl AgentRuntime {
                             &mut context_tool_calls_before_action,
                             &mut verification_calls_before_action,
                         );
-                        messages.push(tool_provider_message(call, tool_output));
+                        self.push_tool_provider_message(&mut messages, call, tool_output)?;
                     }
                 }
             }
@@ -1464,91 +1473,7 @@ impl AgentRuntime {
     }
 
     fn build_session_context(&self) -> Result<Option<String>> {
-        let mut sections = Vec::new();
-
-        if let Some(summary) = self.session.load_summary()? {
-            let summary = summary.trim();
-            if !summary.is_empty() {
-                sections.push(format!(
-                    "Last saved summary:\n{}",
-                    truncate_chars(summary, SESSION_CONTEXT_MESSAGE_CHARS)
-                ));
-            }
-        }
-
-        if let Some(plan) = self.session.load_plan()? {
-            if !plan.steps.is_empty() {
-                let steps = plan
-                    .steps
-                    .iter()
-                    .map(|step| format!("- {:?}: {} ({})", step.status, step.description, step.id))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                sections.push(format!("Current saved plan: {}\n{steps}", plan.title));
-            }
-        }
-
-        if let Some(goal) = self.session.load_goal()? {
-            if goal.status == GoalStatus::Active {
-                let sources = goal
-                    .source_requirements
-                    .iter()
-                    .map(|item| format!("- {item}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let stop_conditions = goal
-                    .stop_conditions
-                    .iter()
-                    .map(|item| format!("- {item}"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                let acceptance = goal
-                    .acceptance_commands
-                    .iter()
-                    .map(|item| format!("- `{item}`"))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                sections.push(format!(
-                    "Active goal contract:\nObjective: {}\nRequirement sources:\n{}\nStop conditions:\n{}\nAcceptance commands:\n{}\nYou must not claim this goal is complete or stop the implementation loop until the objective is achieved, all explicit requirements are verified, all acceptance commands pass, and residual risks are reported.",
-                    truncate_chars(&goal.objective, SESSION_CONTEXT_MESSAGE_CHARS),
-                    if sources.is_empty() { "- <none>".to_string() } else { sources },
-                    if stop_conditions.is_empty() { "- <none>".to_string() } else { stop_conditions },
-                    if acceptance.is_empty() { "- <none>".to_string() } else { acceptance }
-                ));
-            }
-        }
-
-        let messages = self
-            .session
-            .load_recent_messages(SESSION_CONTEXT_MESSAGE_LIMIT)?;
-        let recent = messages
-            .into_iter()
-            .filter(|message| !message.content.trim().is_empty())
-            .map(|message| {
-                format!(
-                    "- {} at {}:\n{}",
-                    message.role,
-                    message.created_at.to_rfc3339(),
-                    indent_multiline(
-                        &truncate_chars(&message.content, SESSION_CONTEXT_MESSAGE_CHARS),
-                        "  "
-                    )
-                )
-            })
-            .collect::<Vec<_>>();
-        if !recent.is_empty() {
-            sections.push(format!(
-                "Recent conversation messages:\n{}",
-                recent.join("\n")
-            ));
-        }
-
-        if sections.is_empty() {
-            return Ok(None);
-        }
-
-        let context = sections.join("\n\n");
-        Ok(Some(truncate_chars(&context, SESSION_CONTEXT_TOTAL_CHARS)))
+        SessionContextManager::new(&self.session).render()
     }
 
     fn emit_progress(&self, event: RuntimeProgress) {
@@ -1570,6 +1495,43 @@ impl AgentRuntime {
         let transition = tracker.transition(iteration, to, reason, detail);
         self.session
             .append_audit_event("agent_loop_transition", serde_json::to_value(transition)?)?;
+        Ok(())
+    }
+
+    fn record_provider_message_transcript(&self, message: &ProviderMessage) -> Result<()> {
+        let is_assistant_tool_call = message.role == "assistant"
+            && message
+                .tool_calls
+                .as_ref()
+                .is_some_and(|calls| !calls.is_empty());
+        let is_tool_result = message.role == "tool";
+        if !is_assistant_tool_call && !is_tool_result {
+            return Ok(());
+        }
+        self.session
+            .append_provider_transcript(&provider_message_to_transcript_record(message))
+    }
+
+    fn push_tool_provider_message(
+        &self,
+        messages: &mut Vec<ProviderMessage>,
+        call: &ToolCall,
+        output: String,
+    ) -> Result<()> {
+        let message = tool_provider_message(call, output);
+        self.record_provider_message_transcript(&message)?;
+        messages.push(message);
+        Ok(())
+    }
+
+    fn record_tool_execution_recovery_context(
+        &self,
+        call: &ToolCall,
+        execution: &ToolExecution,
+    ) -> Result<()> {
+        if let Some(snapshot) = file_history_snapshot_from_execution(call, execution) {
+            self.session.append_file_history_snapshot(&snapshot)?;
+        }
         Ok(())
     }
 
@@ -1686,6 +1648,25 @@ impl AgentRuntime {
                     let recovered_messages = recover_messages_after_provider_error(kind, &messages);
                     if recovered_messages == messages {
                         return Err(error);
+                    }
+                    if kind == AgentRecoveryKind::PromptTooLong {
+                        self.session
+                            .append_compact_boundary(&CompactBoundaryRecord {
+                                id: uuid::Uuid::new_v4(),
+                                reason: "context_retry_prompt_too_long".to_string(),
+                                summary: "The provider rejected the request as too long, so older completed assistant/tool exchange groups were omitted before retrying."
+                                    .to_string(),
+                                omitted_group_count: message_groups_omitted_after_compaction(
+                                    &messages,
+                                    &recovered_messages,
+                                ),
+                                message_count_before: messages.len(),
+                                message_count_after: recovered_messages.len(),
+                                retained_segment: provider_messages_to_retained_segment(
+                                    &recovered_messages,
+                                ),
+                                created_at: Utc::now(),
+                            })?;
                     }
                     messages = recovered_messages;
                     recoveries.push(AgentRecoveryEvent {
@@ -1869,6 +1850,7 @@ impl AgentRuntime {
             &call.function.name,
             execution.raw.get("passed").and_then(|v| v.as_bool()),
         )?;
+        self.record_tool_execution_recovery_context(call, &execution)?;
         self.emit_progress(RuntimeProgress::ToolCompleted {
             tool: call.function.name.clone(),
             ok: true,
@@ -1946,6 +1928,7 @@ impl AgentRuntime {
                         &call.function.name,
                         execution.raw.get("passed").and_then(|v| v.as_bool()),
                     )?;
+                    self.record_tool_execution_recovery_context(call, &execution)?;
                     self.emit_progress(RuntimeProgress::ToolCompleted {
                         tool: call.function.name.clone(),
                         ok: true,
@@ -2034,6 +2017,639 @@ impl AgentRuntime {
                 .map(|step| step.status)
         }))
     }
+}
+
+struct SessionContextManager<'a> {
+    session: &'a Session,
+}
+
+impl<'a> SessionContextManager<'a> {
+    fn new(session: &'a Session) -> Self {
+        Self { session }
+    }
+
+    fn render(&self) -> Result<Option<String>> {
+        let boundary = self.session.load_latest_compact_boundary()?;
+        let mut sections = Vec::new();
+
+        if let Some(section) = self.render_summary(boundary.as_ref())? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_goal()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_plan()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_open_questions()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_pending_approvals()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_compact_boundary(boundary.as_ref()) {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_provider_transcript(boundary.as_ref())? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_recent_tool_findings()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_file_history()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_latest_tests()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_diff_summary()? {
+            sections.push(section);
+        }
+        if let Some(section) = self.render_recent_conversation(boundary.as_ref())? {
+            sections.push(section);
+        }
+
+        if sections.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(truncate_chars(
+            &sections.join("\n\n"),
+            SESSION_CONTEXT_TOTAL_CHARS,
+        )))
+    }
+
+    fn render_summary(&self, boundary: Option<&CompactBoundaryRecord>) -> Result<Option<String>> {
+        if let Some(boundary) = boundary.filter(|boundary| !boundary.summary.trim().is_empty()) {
+            return Ok(Some(format!(
+                "Summary:\nLast saved summary:\n{}",
+                truncate_chars(&boundary.summary, SESSION_CONTEXT_MESSAGE_CHARS)
+            )));
+        }
+        let Some(summary) = self.session.load_summary()? else {
+            return Ok(None);
+        };
+        let summary = summary.trim();
+        if summary.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Summary:\nLast saved summary:\n{}",
+            truncate_chars(summary, SESSION_CONTEXT_MESSAGE_CHARS)
+        )))
+    }
+
+    fn render_goal(&self) -> Result<Option<String>> {
+        let Some(goal) = self.session.load_goal()? else {
+            return Ok(None);
+        };
+        if goal.status != GoalStatus::Active {
+            return Ok(None);
+        }
+        Ok(Some(render_goal_context(&goal)))
+    }
+
+    fn render_plan(&self) -> Result<Option<String>> {
+        let Some(plan) = self.session.load_plan()? else {
+            return Ok(None);
+        };
+        if plan.steps.is_empty() {
+            return Ok(None);
+        }
+        let steps = plan
+            .steps
+            .iter()
+            .map(|step| format!("- {:?}: {} ({})", step.status, step.description, step.id))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(Some(format!(
+            "Plan:\nCurrent saved plan: {}\n{steps}",
+            plan.title
+        )))
+    }
+
+    fn render_open_questions(&self) -> Result<Option<String>> {
+        let questions = self
+            .session
+            .load_side_questions()?
+            .into_iter()
+            .filter(|question| question.status == SideQuestionStatus::Open)
+            .collect::<Vec<_>>();
+        if questions.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Open questions:\n{}",
+            questions
+                .iter()
+                .map(format_side_question_context)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_pending_approvals(&self) -> Result<Option<String>> {
+        let approvals = self
+            .session
+            .load_approval_requests()?
+            .into_iter()
+            .filter(|approval| approval.status == ApprovalStatus::Pending)
+            .collect::<Vec<_>>();
+        if approvals.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Pending approvals:\n{}",
+            approvals
+                .iter()
+                .map(format_approval_context)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_compact_boundary(&self, boundary: Option<&CompactBoundaryRecord>) -> Option<String> {
+        let boundary = boundary?;
+        let retained = boundary
+            .retained_segment
+            .iter()
+            .take(8)
+            .map(format_provider_transcript_record)
+            .collect::<Vec<_>>();
+        Some(format!(
+            "Compact boundary:\nreason={}\nomitted_groups={}\nmessages_before={}\nmessages_after={}\ncreated_at={}\nretained_segment:\n{}",
+            boundary.reason,
+            boundary.omitted_group_count,
+            boundary.message_count_before,
+            boundary.message_count_after,
+            boundary.created_at.to_rfc3339(),
+            if retained.is_empty() {
+                "- <none>".to_string()
+            } else {
+                retained.join("\n")
+            }
+        ))
+    }
+
+    fn render_provider_transcript(
+        &self,
+        boundary: Option<&CompactBoundaryRecord>,
+    ) -> Result<Option<String>> {
+        let mut records = boundary
+            .map(|boundary| boundary.retained_segment.clone())
+            .unwrap_or_default();
+        records.extend(
+            self.session
+                .load_provider_transcript()?
+                .into_iter()
+                .filter(|record| {
+                    boundary.is_none_or(|boundary| record.created_at > boundary.created_at)
+                }),
+        );
+        if records.is_empty() {
+            return Ok(None);
+        }
+        let recovered = recovered_provider_transcript(records);
+        let skip = recovered.len().saturating_sub(24);
+        Ok(Some(format!(
+            "Provider transcript:\n{}",
+            recovered
+                .into_iter()
+                .skip(skip)
+                .map(|record| format_provider_transcript_record(&record))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_recent_tool_findings(&self) -> Result<Option<String>> {
+        let records = self.session.load_recent_tool_calls(10)?;
+        let findings = records
+            .iter()
+            .filter(|record| {
+                matches!(
+                    record.status,
+                    ToolCallStatus::Succeeded | ToolCallStatus::Failed | ToolCallStatus::Denied
+                )
+            })
+            .map(format_tool_finding_context)
+            .collect::<Vec<_>>();
+        if findings.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Recent tool findings:\n{}",
+            findings.join("\n")
+        )))
+    }
+
+    fn render_file_history(&self) -> Result<Option<String>> {
+        let snapshots = self.session.load_recent_file_history_snapshots(12)?;
+        if snapshots.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "File history snapshots:\n{}",
+            snapshots
+                .iter()
+                .map(format_file_history_context)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_latest_tests(&self) -> Result<Option<String>> {
+        let tests = self.session.load_recent_test_runs(6)?;
+        if tests.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Latest tests:\n{}",
+            tests
+                .iter()
+                .map(format_test_context)
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_diff_summary(&self) -> Result<Option<String>> {
+        let diffs = self.session.load_recent_diffs(6)?;
+        if diffs.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Diff summary:\n{}",
+            diffs
+                .iter()
+                .map(|diff| {
+                    let additions = diff
+                        .content
+                        .lines()
+                        .filter(|line| line.starts_with('+'))
+                        .count();
+                    let deletions = diff
+                        .content
+                        .lines()
+                        .filter(|line| line.starts_with('-'))
+                        .count();
+                    format!(
+                        "- {} at {} (+{} -{})",
+                        diff.name,
+                        diff.modified_at.to_rfc3339(),
+                        additions,
+                        deletions
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        )))
+    }
+
+    fn render_recent_conversation(
+        &self,
+        boundary: Option<&CompactBoundaryRecord>,
+    ) -> Result<Option<String>> {
+        let mut messages = if let Some(boundary) = boundary {
+            self.session
+                .load_messages()?
+                .into_iter()
+                .filter(|message| message.created_at > boundary.created_at)
+                .collect::<Vec<_>>()
+        } else {
+            self.session
+                .load_recent_messages(SESSION_CONTEXT_MESSAGE_LIMIT)?
+        };
+        let skip = messages.len().saturating_sub(SESSION_CONTEXT_MESSAGE_LIMIT);
+        messages = messages.into_iter().skip(skip).collect();
+        let recent = messages
+            .into_iter()
+            .filter(|message| !message.content.trim().is_empty())
+            .map(format_session_message_context)
+            .collect::<Vec<_>>();
+        if recent.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(format!(
+            "Recent conversation messages:\n{}",
+            recent.join("\n")
+        )))
+    }
+}
+
+fn render_goal_context(goal: &GoalContract) -> String {
+    let sources = goal
+        .source_requirements
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let stop_conditions = goal
+        .stop_conditions
+        .iter()
+        .map(|item| format!("- {item}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let acceptance = goal
+        .acceptance_commands
+        .iter()
+        .map(|item| format!("- `{item}`"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "Goal:\nActive goal contract:\nObjective: {}\nRequirement sources:\n{}\nStop conditions:\n{}\nAcceptance commands:\n{}\nYou must not claim this goal is complete or stop the implementation loop until the objective is achieved, all explicit requirements are verified, all acceptance commands pass, and residual risks are reported.",
+        truncate_chars(&goal.objective, SESSION_CONTEXT_MESSAGE_CHARS),
+        if sources.is_empty() { "- <none>".to_string() } else { sources },
+        if stop_conditions.is_empty() { "- <none>".to_string() } else { stop_conditions },
+        if acceptance.is_empty() { "- <none>".to_string() } else { acceptance }
+    )
+}
+
+fn format_side_question_context(question: &SideQuestion) -> String {
+    format!(
+        "- {} at {}: {}",
+        question.id,
+        question.created_at.to_rfc3339(),
+        truncate_chars(&question.question, 600)
+    )
+}
+
+fn format_approval_context(approval: &ApprovalRequest) -> String {
+    format!(
+        "- {} tool={} risk={:?}: {}",
+        approval.id,
+        approval.tool,
+        approval.decision.risk,
+        truncate_chars(&approval.decision.reason, 600)
+    )
+}
+
+fn format_session_message_context(message: SessionMessage) -> String {
+    format!(
+        "- {} at {}:\n{}",
+        message.role,
+        message.created_at.to_rfc3339(),
+        indent_multiline(
+            &truncate_chars(&message.content, SESSION_CONTEXT_MESSAGE_CHARS),
+            "  "
+        )
+    )
+}
+
+fn format_provider_transcript_record(record: &ProviderTranscriptRecord) -> String {
+    match record.role.as_str() {
+        "assistant" if !record.tool_calls.is_empty() => {
+            let calls = record
+                .tool_calls
+                .iter()
+                .map(|call| {
+                    format!(
+                        "{} id={} args={}",
+                        call.name,
+                        call.id,
+                        compact_json(&call.arguments, 600)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            format!(
+                "- assistant tool_calls at {}: {calls}",
+                record.created_at.to_rfc3339()
+            )
+        }
+        "tool" => format!(
+            "- {}tool_result {} id={} at {}:\n{}",
+            if record.synthetic { "synthetic " } else { "" },
+            record.name.as_deref().unwrap_or("<unknown>"),
+            record.tool_call_id.as_deref().unwrap_or("<unknown>"),
+            record.created_at.to_rfc3339(),
+            indent_multiline(
+                &truncate_chars(record.content.as_deref().unwrap_or_default(), 1_200),
+                "  "
+            )
+        ),
+        _ => format!(
+            "- {} at {}:\n{}",
+            record.role,
+            record.created_at.to_rfc3339(),
+            indent_multiline(
+                &truncate_chars(record.content.as_deref().unwrap_or_default(), 800),
+                "  "
+            )
+        ),
+    }
+}
+
+fn recovered_provider_transcript(
+    records: Vec<ProviderTranscriptRecord>,
+) -> Vec<ProviderTranscriptRecord> {
+    let mut recovered = Vec::new();
+    let mut pending = BTreeMap::<String, ProviderTranscriptToolCall>::new();
+    for record in records {
+        if record.role == "assistant" {
+            for call in &record.tool_calls {
+                pending.insert(call.id.clone(), call.clone());
+            }
+        } else if record.role == "tool" {
+            if let Some(id) = &record.tool_call_id {
+                pending.remove(id);
+            }
+        }
+        recovered.push(record);
+    }
+    for (id, call) in pending {
+        recovered.push(ProviderTranscriptRecord {
+            role: "tool".to_string(),
+            content: Some(format!(
+                "synthetic tool_result: tool call `{}` ({}) was interrupted before deepcli persisted a result during the previous run.",
+                call.name, id
+            )),
+            reasoning_content: None,
+            name: Some(call.name),
+            tool_call_id: Some(id),
+            tool_calls: Vec::new(),
+            synthetic: true,
+            created_at: Utc::now(),
+        });
+    }
+    recovered
+}
+
+fn format_tool_finding_context(record: &ToolCallRecord) -> String {
+    format!(
+        "- {} {:?} at {} input={} output={}",
+        record.tool,
+        record.status,
+        record.created_at.to_rfc3339(),
+        compact_json(&record.input, 500),
+        compact_json(&record.output, 700)
+    )
+}
+
+fn format_file_history_context(snapshot: &FileHistorySnapshot) -> String {
+    format!(
+        "- {} {} at {}: {} data={}",
+        snapshot.tool,
+        snapshot.target,
+        snapshot.created_at.to_rfc3339(),
+        truncate_chars(&snapshot.summary, 500),
+        compact_json(&snapshot.data, 700)
+    )
+}
+
+fn format_test_context(test: &TestRunRecord) -> String {
+    format!(
+        "- `{}` passed={} exit={:?} at {} stdout={} stderr={}",
+        test.command,
+        test.passed,
+        test.exit_code,
+        test.created_at.to_rfc3339(),
+        truncate_chars(&test.stdout, 500),
+        truncate_chars(&test.stderr, 500)
+    )
+}
+
+fn compact_json(value: &Value, limit: usize) -> String {
+    serde_json::to_string(value)
+        .map(|value| truncate_chars(&value, limit))
+        .unwrap_or_else(|_| "<unserializable>".to_string())
+}
+
+fn file_history_snapshot_from_execution(
+    call: &ToolCall,
+    execution: &ToolExecution,
+) -> Option<FileHistorySnapshot> {
+    match call.function.name.as_str() {
+        "read_file" => Some(file_history_snapshot(
+            "read_file",
+            file_history_target(call, &execution.raw, "path"),
+            execution.structured.summary.clone(),
+            read_file_history_data(&execution.structured),
+        )),
+        "list_files" => Some(file_history_snapshot(
+            "list_files",
+            list_files_history_target(call, &execution.raw),
+            execution.structured.summary.clone(),
+            list_files_history_data(&execution.structured),
+        )),
+        "search" => Some(file_history_snapshot(
+            "search",
+            search_history_target(call, &execution.raw),
+            execution.structured.summary.clone(),
+            search_history_data(&execution.structured),
+        )),
+        _ => None,
+    }
+}
+
+fn file_history_snapshot(
+    tool: &str,
+    target: String,
+    summary: String,
+    data: Value,
+) -> FileHistorySnapshot {
+    FileHistorySnapshot {
+        tool: tool.to_string(),
+        target,
+        summary: truncate_chars(&summary, 800),
+        data,
+        created_at: Utc::now(),
+    }
+}
+
+fn file_history_target(call: &ToolCall, raw: &Value, key: &str) -> String {
+    raw.get(key)
+        .and_then(Value::as_str)
+        .or_else(|| call.function.arguments.get(key).and_then(Value::as_str))
+        .unwrap_or("<unknown>")
+        .to_string()
+}
+
+fn list_files_history_target(call: &ToolCall, raw: &Value) -> String {
+    let path = file_history_target(call, raw, "path");
+    let glob = raw
+        .get("glob")
+        .and_then(Value::as_str)
+        .or_else(|| call.function.arguments.get("glob").and_then(Value::as_str));
+    glob.map(|glob| format!("{path} glob={glob}"))
+        .unwrap_or(path)
+}
+
+fn search_history_target(call: &ToolCall, raw: &Value) -> String {
+    let query = call
+        .function
+        .arguments
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or("<unknown>");
+    let glob = raw
+        .get("glob")
+        .and_then(Value::as_str)
+        .or_else(|| call.function.arguments.get("glob").and_then(Value::as_str));
+    glob.map(|glob| format!("query={query} glob={glob}"))
+        .unwrap_or_else(|| format!("query={query}"))
+}
+
+fn read_file_history_data(result: &StructuredToolResult) -> Value {
+    let path = result
+        .data
+        .get("path")
+        .cloned()
+        .unwrap_or(Value::String("<unknown>".to_string()));
+    let content_chars = result
+        .data
+        .get("content")
+        .and_then(Value::as_str)
+        .map(|content| content.chars().count())
+        .unwrap_or_default();
+    json!({
+        "path": path,
+        "content_chars": content_chars,
+        "truncated": result.truncated,
+    })
+}
+
+fn list_files_history_data(result: &StructuredToolResult) -> Value {
+    json!({
+        "path": result.data.get("path").cloned().unwrap_or(Value::Null),
+        "glob": result.data.get("glob").cloned().unwrap_or(Value::Null),
+        "count": result.data.get("count").cloned().unwrap_or(Value::Null),
+        "truncated": result.data.get("truncated").cloned().unwrap_or(Value::Bool(result.truncated)),
+        "sample": result.data
+            .get("files")
+            .and_then(Value::as_array)
+            .map(|files| files.iter().take(12).cloned().collect::<Vec<_>>())
+            .unwrap_or_default(),
+    })
+}
+
+fn search_history_data(result: &StructuredToolResult) -> Value {
+    json!({
+        "count": result.data.get("count").cloned().unwrap_or(Value::Null),
+        "searched_files": result.data.get("searched_files").cloned().unwrap_or(Value::Null),
+        "glob": result.data.get("glob").cloned().unwrap_or(Value::Null),
+        "truncated": result.data.get("truncated").cloned().unwrap_or(Value::Bool(result.truncated)),
+        "matches": result.data
+            .get("matches")
+            .and_then(Value::as_array)
+            .map(|matches| {
+                matches
+                    .iter()
+                    .take(8)
+                    .map(|item| {
+                        json!({
+                            "path": item.get("path").cloned().unwrap_or(Value::Null),
+                            "line": item.get("line").cloned().unwrap_or(Value::Null),
+                            "text": item
+                                .get("text")
+                                .and_then(Value::as_str)
+                                .map(|text| truncate_chars(text, 240))
+                                .unwrap_or_default(),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default(),
+    })
 }
 
 fn timeout_args_change_project_config(args: &[String]) -> bool {
@@ -2196,6 +2812,7 @@ struct ContextPreparation {
     full_compacted: bool,
     tail_compacted: bool,
     full_compact_error: Option<String>,
+    compact_boundary: Option<CompactBoundaryRecord>,
 }
 
 impl ContextPreparation {
@@ -2214,6 +2831,14 @@ struct MicrocompactOutcome {
 struct FullCompactAttempt {
     messages: Option<Vec<ProviderMessage>>,
     error: Option<String>,
+    summary: Option<String>,
+    omitted_group_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct TailCompactOutcome {
+    messages: Vec<ProviderMessage>,
+    omitted_group_count: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -2312,6 +2937,10 @@ async fn prepare_messages_for_provider(
     let mut full_compacted = false;
     let mut tail_compacted = false;
     let mut full_compact_error = None;
+    let mut compact_boundary_summary = None;
+    let mut compact_boundary_omitted_groups = 0usize;
+    let mut compact_boundary_reasons = Vec::new();
+    let message_count_before = messages.len();
 
     if estimated_tokens > threshold_tokens {
         let attempt = full_compact_messages_with_provider(
@@ -2321,8 +2950,11 @@ async fn prepare_messages_for_provider(
             provider_turn_timeout,
         )
         .await;
-        full_compact_error = attempt.error;
+        full_compact_error = attempt.error.clone();
         if let Some(compacted) = attempt.messages {
+            compact_boundary_summary = attempt.summary;
+            compact_boundary_omitted_groups += attempt.omitted_group_count;
+            compact_boundary_reasons.push("full_compact");
             prepared_messages = compacted;
             full_compacted = true;
             estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
@@ -2330,13 +2962,33 @@ async fn prepare_messages_for_provider(
     }
 
     if estimated_tokens > threshold_tokens {
-        let compacted = compact_messages_for_provider(&prepared_messages);
-        if compacted.len() != prepared_messages.len() {
-            prepared_messages = compacted;
+        let compacted = compact_messages_for_provider_with_details(&prepared_messages);
+        if compacted.messages.len() != prepared_messages.len() {
+            compact_boundary_omitted_groups += compacted.omitted_group_count;
+            compact_boundary_reasons.push("tail_compact");
+            prepared_messages = compacted.messages;
             tail_compacted = true;
             estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
         }
     }
+
+    let compact_boundary = if compact_boundary_reasons.is_empty() {
+        None
+    } else {
+        Some(CompactBoundaryRecord {
+            id: uuid::Uuid::new_v4(),
+            reason: compact_boundary_reasons.join("+"),
+            summary: compact_boundary_summary.unwrap_or_else(|| {
+                "Older completed assistant/tool exchange groups were omitted to keep the provider request within the context budget."
+                    .to_string()
+            }),
+            omitted_group_count: compact_boundary_omitted_groups,
+            message_count_before,
+            message_count_after: prepared_messages.len(),
+            retained_segment: provider_messages_to_retained_segment(&prepared_messages),
+            created_at: Utc::now(),
+        })
+    };
 
     Ok(ContextPreparation {
         messages: prepared_messages,
@@ -2346,6 +2998,7 @@ async fn prepare_messages_for_provider(
         full_compacted,
         tail_compacted,
         full_compact_error,
+        compact_boundary,
     })
 }
 
@@ -2465,6 +3118,66 @@ fn compact_tool_output_content(message: &ProviderMessage, content: &str, limit: 
     )
 }
 
+fn provider_messages_to_retained_segment(
+    messages: &[ProviderMessage],
+) -> Vec<ProviderTranscriptRecord> {
+    let limit = env_usize("DEEPCLI_COMPACT_BOUNDARY_RETAINED_MESSAGES", 1, 16);
+    let skip = messages.len().saturating_sub(limit);
+    messages
+        .iter()
+        .skip(skip)
+        .filter(|message| message.role != "system")
+        .map(provider_message_to_transcript_record)
+        .collect()
+}
+
+fn provider_message_to_transcript_record(message: &ProviderMessage) -> ProviderTranscriptRecord {
+    let reasoning_limit = provider_transcript_reasoning_limit();
+    ProviderTranscriptRecord {
+        role: message.role.clone(),
+        content: message
+            .content
+            .as_deref()
+            .map(|content| truncate_chars(content, provider_transcript_content_limit())),
+        reasoning_content: if reasoning_limit == 0 {
+            None
+        } else {
+            message
+                .reasoning_content
+                .as_deref()
+                .map(|content| truncate_chars(content, reasoning_limit))
+        },
+        name: message.name.clone(),
+        tool_call_id: message.tool_call_id.clone(),
+        tool_calls: message
+            .tool_calls
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(provider_tool_call_to_transcript)
+            .collect(),
+        synthetic: false,
+        created_at: Utc::now(),
+    }
+}
+
+fn provider_tool_call_to_transcript(call: &ToolCall) -> ProviderTranscriptToolCall {
+    ProviderTranscriptToolCall {
+        id: call.id.clone(),
+        call_type: call.call_type.clone(),
+        name: call.function.name.clone(),
+        arguments: call.function.arguments.clone(),
+    }
+}
+
+fn provider_transcript_content_limit() -> usize {
+    env_usize("DEEPCLI_PROVIDER_TRANSCRIPT_CONTENT_CHARS", 200, 4_000)
+}
+
+fn provider_transcript_reasoning_limit() -> usize {
+    env_usize("DEEPCLI_PROVIDER_TRANSCRIPT_REASONING_CHARS", 0, 0)
+}
+
 async fn full_compact_messages_with_provider(
     provider: &dyn ProviderClient,
     messages: &[ProviderMessage],
@@ -2477,6 +3190,8 @@ async fn full_compact_messages_with_provider(
         return FullCompactAttempt {
             messages: None,
             error: None,
+            summary: None,
+            omitted_group_count: 0,
         };
     }
 
@@ -2505,6 +3220,8 @@ async fn full_compact_messages_with_provider(
             return FullCompactAttempt {
                 messages: None,
                 error: Some(error.to_string()),
+                summary: None,
+                omitted_group_count: 0,
             };
         }
         Err(_) => {
@@ -2514,6 +3231,8 @@ async fn full_compact_messages_with_provider(
                     "provider compact summary timed out after {} seconds",
                     provider_turn_timeout.as_secs()
                 )),
+                summary: None,
+                omitted_group_count: 0,
             };
         }
     };
@@ -2522,6 +3241,8 @@ async fn full_compact_messages_with_provider(
         return FullCompactAttempt {
             messages: None,
             error: Some("provider compact summary returned empty content".to_string()),
+            summary: None,
+            omitted_group_count: 0,
         };
     }
 
@@ -2532,6 +3253,8 @@ async fn full_compact_messages_with_provider(
             options.full_compact_keep_recent_groups,
         )),
         error: None,
+        summary: Some(summary.trim().to_string()),
+        omitted_group_count: omitted_groups,
     }
 }
 
@@ -2770,6 +3493,27 @@ fn compact_messages_to_recent_groups(
     compacted
 }
 
+fn message_groups_omitted_after_compaction(
+    before: &[ProviderMessage],
+    after: &[ProviderMessage],
+) -> usize {
+    let before_base_count = before.len().min(2);
+    let after_base_count = after.len().min(2);
+    let before_groups = message_groups(&before[before_base_count..]).len();
+    let after_groups = message_groups(&after[after_base_count..])
+        .into_iter()
+        .filter(|group| {
+            !group.first().is_some_and(|message| {
+                message
+                    .content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("[deepcli context"))
+            })
+        })
+        .count();
+    before_groups.saturating_sub(after_groups)
+}
+
 fn is_context_length_error(error: &anyhow::Error) -> bool {
     let text = format!("{error:?}").to_ascii_lowercase();
     text.contains("context_length_exceeded")
@@ -2824,6 +3568,10 @@ fn env_usize(name: &str, min: usize, default: usize) -> usize {
 }
 
 fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMessage> {
+    compact_messages_for_provider_with_details(messages).messages
+}
+
+fn compact_messages_for_provider_with_details(messages: &[ProviderMessage]) -> TailCompactOutcome {
     let limit = std::env::var("DEEPCLI_MAX_PROVIDER_REQUEST_BYTES")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -2833,7 +3581,10 @@ fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMe
         .map(|value| value.len())
         .unwrap_or_default();
     if current <= limit || messages.len() <= 4 {
-        return messages.to_vec();
+        return TailCompactOutcome {
+            messages: messages.to_vec(),
+            omitted_group_count: 0,
+        };
     }
 
     let base_count = messages.len().min(2);
@@ -2860,7 +3611,10 @@ fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMe
 
     let omitted = groups.len().saturating_sub(kept_groups.len());
     if omitted == 0 {
-        return messages.to_vec();
+        return TailCompactOutcome {
+            messages: messages.to_vec(),
+            omitted_group_count: 0,
+        };
     }
 
     let mut compacted = base;
@@ -2877,7 +3631,10 @@ fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMe
     for group in kept_groups {
         compacted.extend(group);
     }
-    compacted
+    TailCompactOutcome {
+        messages: compacted,
+        omitted_group_count: omitted,
+    }
 }
 
 fn message_groups(messages: &[ProviderMessage]) -> Vec<Vec<ProviderMessage>> {
@@ -4146,6 +4903,189 @@ mod tests {
     }
 
     #[test]
+    fn recovery_context_manager_uses_boundary_transcript_and_structured_sections() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .append_message("user", "before compact boundary")
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        let boundary_created_at = Utc::now();
+        runtime
+            .session
+            .append_compact_boundary(&crate::session::CompactBoundaryRecord {
+                id: uuid::Uuid::new_v4(),
+                reason: "full_compact".to_string(),
+                summary: "summary from compact boundary".to_string(),
+                omitted_group_count: 4,
+                message_count_before: 14,
+                message_count_after: 7,
+                retained_segment: vec![crate::session::ProviderTranscriptRecord {
+                    role: "assistant".to_string(),
+                    content: Some("retained assistant note".to_string()),
+                    reasoning_content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                    synthetic: false,
+                    created_at: boundary_created_at,
+                }],
+                created_at: boundary_created_at,
+            })
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        runtime
+            .session
+            .append_message("assistant", "after compact boundary")
+            .unwrap();
+        runtime.session.write_summary("older summary file").unwrap();
+        runtime
+            .session
+            .save_plan(&Plan {
+                title: "resume plan".to_string(),
+                updated_at: Utc::now(),
+                steps: vec![PlanStep {
+                    id: "context".to_string(),
+                    description: "recover state".to_string(),
+                    status: PlanStepStatus::InProgress,
+                }],
+            })
+            .unwrap();
+        runtime
+            .session
+            .save_goal(&crate::session::GoalContract {
+                objective: "finish recovery context".to_string(),
+                source_requirements: vec!["user request".to_string()],
+                stop_conditions: vec!["tests pass".to_string()],
+                acceptance_commands: vec!["cargo test --lib".to_string()],
+                status: GoalStatus::Active,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        runtime
+            .session
+            .enqueue_side_question("which branch should resume use?")
+            .unwrap();
+        runtime
+            .session
+            .enqueue_approval_request(
+                "write_file",
+                PermissionDecision {
+                    outcome: DecisionOutcome::RequiresUserApproval,
+                    risk: RiskLevel::Medium,
+                    reason: "needs write approval".to_string(),
+                },
+            )
+            .unwrap();
+        runtime
+            .session
+            .append_provider_transcript(&crate::session::ProviderTranscriptRecord {
+                role: "assistant".to_string(),
+                content: None,
+                reasoning_content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: vec![crate::session::ProviderTranscriptToolCall {
+                    id: "call_missing".to_string(),
+                    call_type: "function".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: json!({"path": "src/runtime.rs"}),
+                }],
+                synthetic: false,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        runtime
+            .session
+            .append_file_history_snapshot(&crate::session::FileHistorySnapshot {
+                tool: "read_file".to_string(),
+                target: "src/runtime.rs".to_string(),
+                summary: "runtime contains build_session_context".to_string(),
+                data: json!({"path": "src/runtime.rs"}),
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        runtime
+            .session
+            .append_test_run(&TestRunRecord {
+                command: "cargo test --lib".to_string(),
+                exit_code: Some(101),
+                stdout: String::new(),
+                stderr: "failed".to_string(),
+                passed: false,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+        runtime
+            .session
+            .save_diff("src/runtime.rs", "-old\n+new\n")
+            .unwrap();
+
+        let context = runtime.build_session_context().unwrap().unwrap();
+
+        assert!(context.contains("Summary"));
+        assert!(context.contains("summary from compact boundary"));
+        assert!(context.contains("Compact boundary"));
+        assert!(context.contains("omitted_groups=4"));
+        assert!(context.contains("Provider transcript"));
+        assert!(context.contains("synthetic tool_result"));
+        assert!(context.contains("File history snapshots"));
+        assert!(context.contains("runtime contains build_session_context"));
+        assert!(context.contains("Latest tests"));
+        assert!(context.contains("cargo test --lib"));
+        assert!(context.contains("Diff summary"));
+        assert!(context.contains("Open questions"));
+        assert!(context.contains("Pending approvals"));
+        assert!(context.contains("after compact boundary"));
+        assert!(!context.contains("before compact boundary"));
+    }
+
+    #[test]
+    fn recovered_provider_transcript_closes_missing_tool_results() {
+        let now = Utc::now();
+        let transcript = vec![crate::session::ProviderTranscriptRecord {
+            role: "assistant".to_string(),
+            content: None,
+            reasoning_content: None,
+            name: None,
+            tool_call_id: None,
+            tool_calls: vec![crate::session::ProviderTranscriptToolCall {
+                id: "call_missing".to_string(),
+                call_type: "function".to_string(),
+                name: "search".to_string(),
+                arguments: json!({"query": "build_session_context"}),
+            }],
+            synthetic: false,
+            created_at: now,
+        }];
+
+        let recovered = recovered_provider_transcript(transcript);
+
+        assert_eq!(recovered.len(), 2);
+        assert_eq!(recovered[1].role, "tool");
+        assert_eq!(recovered[1].tool_call_id.as_deref(), Some("call_missing"));
+        assert!(recovered[1].synthetic);
+        assert!(recovered[1]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("interrupted before deepcli persisted a result"));
+    }
+
+    #[test]
     fn microcompact_tool_outputs_preserves_high_value_old_tool_results() {
         let failed_test_output = json!({
             "tool": "run_tests",
@@ -4346,6 +5286,54 @@ mod tests {
         }
     }
 
+    struct SuccessfulSummaryProvider;
+
+    #[async_trait::async_trait]
+    impl ProviderClient for SuccessfulSummaryProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: Some("provider generated compact summary".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            _request: ChatRequest,
+            _on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, _messages: &[ProviderMessage]) -> usize {
+            1_000_000
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            false
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "successful-summary".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn prepare_messages_falls_back_when_full_compact_summary_fails() {
         let mut messages = vec![
@@ -4379,6 +5367,59 @@ mod tests {
 
         assert!(prepared.tail_compacted);
         assert!(prepared.messages.len() < messages.len());
+    }
+
+    #[tokio::test]
+    async fn prepare_messages_returns_compact_boundary_snapshot() {
+        let mut messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+        ];
+        for index in 0..8 {
+            messages.push(ProviderMessage {
+                role: "assistant".to_string(),
+                content: Some(format!("assistant {index}")),
+                reasoning_content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: format!("call_{index}"),
+                    call_type: "function".to_string(),
+                    function: crate::providers::ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: json!({"path": "src/lib.rs"}),
+                    },
+                }]),
+            });
+            messages.push(test_tool_message(
+                &format!("call_{index}"),
+                "read_file",
+                &"large output ".repeat(1_000),
+            ));
+        }
+        let mut config = AppConfig::default();
+        config.agent.max_context_tokens = 10_000;
+        config.agent.reserved_output_tokens = 1_000;
+
+        let prepared = prepare_messages_for_provider(
+            &SuccessfulSummaryProvider,
+            &messages,
+            &[],
+            &config,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        let boundary = prepared
+            .compact_boundary
+            .expect("full compaction should create a compact boundary snapshot");
+        assert!(boundary.reason.contains("full_compact"));
+        assert_eq!(boundary.summary, "provider generated compact summary");
+        assert!(boundary.omitted_group_count > 0);
+        assert_eq!(boundary.message_count_before, messages.len());
+        assert_eq!(boundary.message_count_after, prepared.messages.len());
+        assert!(!boundary.retained_segment.is_empty());
     }
 
     #[derive(Clone, Default)]
