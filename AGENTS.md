@@ -21,6 +21,7 @@ Continue iterating deepcli toward a SOTA local-first AI coding CLI:
 - Keep credentials, logs, sessions, and generated local evidence out of commits.
 - Expected Git commit identity: `zero-kotori <kotorizero8@gmail.com>`.
 - Before committing, run relevant tests plus privacy/name scans described in `docs/ai/CONTEXT.md`.
+- After each completed task round, sync the local work by creating a Git commit once verification and privacy checks pass, unless the user explicitly asks not to commit or a blocker prevents a safe commit.
 
 ## Product Context
 

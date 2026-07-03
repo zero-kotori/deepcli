@@ -6,8 +6,8 @@ use crate::commands::{
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::providers::{
-    create_provider, ChatRequest, ProviderClient, ProviderMessage, StreamEvent, ToolCall, ToolSpec,
-    Usage,
+    create_provider, ChatRequest, ChatResponse, ProviderClient, ProviderMessage, StreamEvent,
+    ToolCall, ToolSpec, Usage,
 };
 use crate::session::{
     ApprovalStatus, AuditEvent, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
@@ -966,6 +966,7 @@ impl AgentRuntime {
             messages = prepared_context.messages;
             let compacted_messages = messages.clone();
             let request_stats = provider_request_stats(&compacted_messages, &tool_specs);
+            let full_compact_error = prepared_context.full_compact_error.clone();
             self.emit_progress(RuntimeProgress::ProviderTurnStarted {
                 iteration: iteration + 1,
                 max_iterations: self.config.agent.max_tool_iterations,
@@ -991,7 +992,8 @@ impl AgentRuntime {
                             "threshold_tokens": context_threshold_tokens,
                             "microcompacted_tool_results": microcompacted_tool_results,
                             "full_compacted": full_compacted,
-                            "tail_compacted": tail_compacted
+                            "tail_compacted": tail_compacted,
+                            "full_compact_error": full_compact_error
                         }
                     }
                 }),
@@ -1005,28 +1007,37 @@ impl AgentRuntime {
                     }
                 }
             };
-            let response = match timeout(
+            let chat_result = match chat_with_context_retry(
+                provider.as_ref(),
+                ChatRequest {
+                    messages: compacted_messages,
+                    tools: tool_specs,
+                    json_mode: false,
+                },
                 provider_turn_timeout,
-                provider.chat_with_stream_events(
-                    ChatRequest {
-                        messages: compacted_messages,
-                        tools: tool_specs,
-                        json_mode: false,
-                    },
-                    Some(&mut on_stream_event),
-                ),
+                &mut on_stream_event,
             )
             .await
             {
-                Ok(result) => result?,
-                Err(_) => {
-                    self.session.set_state(SessionState::Failed)?;
-                    return Err(anyhow!(
-                        "provider chat timed out after {} seconds",
-                        provider_turn_timeout.as_secs()
-                    ));
+                Ok(result) => result,
+                Err(error) => {
+                    if is_provider_chat_timeout_error(&error) {
+                        self.session.set_state(SessionState::Failed)?;
+                    }
+                    return Err(error);
                 }
             };
+            if chat_result.retried_after_context_error {
+                messages = chat_result.messages.clone();
+                self.session.append_audit_event(
+                    "provider_context_retry",
+                    json!({
+                        "reason": "context_length_error",
+                        "message_count": chat_result.messages.len()
+                    }),
+                )?;
+            }
+            let response = chat_result.response;
             let elapsed = started.elapsed();
             self.emit_progress(RuntimeProgress::ProviderTurnCompleted {
                 elapsed_ms: elapsed.as_millis(),
@@ -1651,6 +1662,7 @@ struct ContextPreparation {
     microcompacted_tool_results: usize,
     full_compacted: bool,
     tail_compacted: bool,
+    full_compact_error: Option<String>,
 }
 
 impl ContextPreparation {
@@ -1663,6 +1675,19 @@ impl ContextPreparation {
 struct MicrocompactOutcome {
     messages: Vec<ProviderMessage>,
     compacted_tool_results: usize,
+}
+
+#[derive(Debug, Clone)]
+struct FullCompactAttempt {
+    messages: Option<Vec<ProviderMessage>>,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ContextRetryChatResult {
+    response: ChatResponse,
+    messages: Vec<ProviderMessage>,
+    retried_after_context_error: bool,
 }
 
 async fn prepare_messages_for_provider(
@@ -1679,16 +1704,18 @@ async fn prepare_messages_for_provider(
     let mut estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
     let mut full_compacted = false;
     let mut tail_compacted = false;
+    let mut full_compact_error = None;
 
     if estimated_tokens > threshold_tokens {
-        if let Some(compacted) = full_compact_messages_with_provider(
+        let attempt = full_compact_messages_with_provider(
             provider,
             &prepared_messages,
             &options,
             provider_turn_timeout,
         )
-        .await?
-        {
+        .await;
+        full_compact_error = attempt.error;
+        if let Some(compacted) = attempt.messages {
             prepared_messages = compacted;
             full_compacted = true;
             estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
@@ -1711,6 +1738,7 @@ async fn prepare_messages_for_provider(
         microcompacted_tool_results: microcompact.compacted_tool_results,
         full_compacted,
         tail_compacted,
+        full_compact_error,
     })
 }
 
@@ -1736,6 +1764,9 @@ fn microcompact_tool_outputs(
         let Some(content) = compacted[index].content.clone() else {
             continue;
         };
+        if should_preserve_tool_output_for_microcompact(&compacted[index], &content) {
+            continue;
+        }
         if content.chars().count() <= options.microcompact_tool_output_chars {
             continue;
         }
@@ -1751,6 +1782,59 @@ fn microcompact_tool_outputs(
         messages: compacted,
         compacted_tool_results,
     }
+}
+
+fn should_preserve_tool_output_for_microcompact(message: &ProviderMessage, content: &str) -> bool {
+    if matches!(
+        message.name.as_deref(),
+        Some(
+            "write_file"
+                | "apply_patch_or_write"
+                | "run_tests"
+                | "git_commit"
+                | "git_create_branch"
+                | "todo_write"
+                | "ask_user_question"
+        )
+    ) {
+        return true;
+    }
+
+    let Ok(value) = serde_json::from_str::<Value>(content) else {
+        return false;
+    };
+    if value.get("ok").and_then(Value::as_bool) == Some(false) {
+        return true;
+    }
+    if value.pointer("/data/passed").and_then(Value::as_bool) == Some(false) {
+        return true;
+    }
+    if matches!(
+        value.get("kind").and_then(Value::as_str),
+        Some(
+            "file_diff"
+                | "git_diff"
+                | "git_commit_message"
+                | "todo_list"
+                | "question"
+                | "subagent_task"
+                | "environment_setup"
+        )
+    ) {
+        return true;
+    }
+    matches!(
+        value.get("tool").and_then(Value::as_str),
+        Some(
+            "write_file"
+                | "apply_patch_or_write"
+                | "run_tests"
+                | "git_commit"
+                | "git_create_branch"
+                | "todo_write"
+                | "ask_user_question"
+        )
+    )
 }
 
 fn compact_tool_output_content(message: &ProviderMessage, content: &str, limit: usize) -> String {
@@ -1779,11 +1863,14 @@ async fn full_compact_messages_with_provider(
     messages: &[ProviderMessage],
     options: &ContextCompactionOptions,
     provider_turn_timeout: Duration,
-) -> Result<Option<Vec<ProviderMessage>>> {
+) -> FullCompactAttempt {
     let (summary_source, omitted_groups) =
         full_compact_summary_source(messages, options.full_compact_keep_recent_groups);
     if omitted_groups == 0 {
-        return Ok(None);
+        return FullCompactAttempt {
+            messages: None,
+            error: None,
+        };
     }
 
     let mut summary_messages = summary_source;
@@ -1806,24 +1893,39 @@ async fn full_compact_messages_with_provider(
     )
     .await
     {
-        Ok(result) => result?,
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => {
+            return FullCompactAttempt {
+                messages: None,
+                error: Some(error.to_string()),
+            };
+        }
         Err(_) => {
-            return Err(anyhow!(
-                "provider compact summary timed out after {} seconds",
-                provider_turn_timeout.as_secs()
-            ));
+            return FullCompactAttempt {
+                messages: None,
+                error: Some(format!(
+                    "provider compact summary timed out after {} seconds",
+                    provider_turn_timeout.as_secs()
+                )),
+            };
         }
     };
     let summary = response.content.unwrap_or_default();
     if summary.trim().is_empty() {
-        return Ok(None);
+        return FullCompactAttempt {
+            messages: None,
+            error: Some("provider compact summary returned empty content".to_string()),
+        };
     }
 
-    Ok(Some(build_full_compacted_messages(
-        messages,
-        summary.trim(),
-        options.full_compact_keep_recent_groups,
-    )))
+    FullCompactAttempt {
+        messages: Some(build_full_compacted_messages(
+            messages,
+            summary.trim(),
+            options.full_compact_keep_recent_groups,
+        )),
+        error: None,
+    }
 }
 
 fn full_compact_summary_source(
@@ -1878,11 +1980,156 @@ fn build_full_compacted_messages(
 
 fn full_compact_summary_prompt() -> String {
     [
-        "Create a compact but complete summary of the conversation so far.",
-        "Preserve the user's explicit requests, current goal, files inspected or changed, important tool findings, errors and fixes, pending tasks, and the exact next step needed to continue.",
+        "Create a compact recovery summary of the conversation so far.",
+        "Use these exact section labels:",
+        "User goal:",
+        "Changed files:",
+        "Tool findings:",
+        "Errors and fixes:",
+        "Pending work:",
+        "Next step:",
+        "Preserve explicit user requests, important constraints, files inspected or changed, failing and passing verification evidence, open questions, and the exact next action needed to continue.",
         "Do not call tools. Return only the summary text.",
     ]
     .join("\n")
+}
+
+async fn chat_with_context_retry<F>(
+    provider: &dyn ProviderClient,
+    request: ChatRequest,
+    provider_turn_timeout: Duration,
+    on_stream_event: &mut F,
+) -> Result<ContextRetryChatResult>
+where
+    F: FnMut(StreamEvent) + Send,
+{
+    let original_messages = request.messages.clone();
+    let (response, retry_messages) = match provider_chat_with_timeout(
+        provider,
+        request.clone(),
+        provider_turn_timeout,
+        on_stream_event,
+    )
+    .await
+    {
+        Ok(response) => {
+            return Ok(ContextRetryChatResult {
+                response,
+                messages: original_messages,
+                retried_after_context_error: false,
+            });
+        }
+        Err(error) if is_context_length_error(&error) => {
+            let retry_messages = compact_messages_for_context_retry(&original_messages);
+            if retry_messages == original_messages {
+                return Err(error);
+            }
+            let retry_request = ChatRequest {
+                messages: retry_messages.clone(),
+                ..request
+            };
+            let response = provider_chat_with_timeout(
+                provider,
+                retry_request,
+                provider_turn_timeout,
+                on_stream_event,
+            )
+            .await?;
+            (response, retry_messages)
+        }
+        Err(error) => return Err(error),
+    };
+
+    Ok(ContextRetryChatResult {
+        response,
+        messages: retry_messages,
+        retried_after_context_error: true,
+    })
+}
+
+async fn provider_chat_with_timeout<F>(
+    provider: &dyn ProviderClient,
+    request: ChatRequest,
+    provider_turn_timeout: Duration,
+    on_stream_event: &mut F,
+) -> Result<ChatResponse>
+where
+    F: FnMut(StreamEvent) + Send,
+{
+    let callback: &mut (dyn FnMut(StreamEvent) + Send) = on_stream_event;
+    match timeout(
+        provider_turn_timeout,
+        provider.chat_with_stream_events(request, Some(callback)),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow!(
+            "provider chat timed out after {} seconds",
+            provider_turn_timeout.as_secs()
+        )),
+    }
+}
+
+fn compact_messages_for_context_retry(messages: &[ProviderMessage]) -> Vec<ProviderMessage> {
+    let compacted = compact_messages_for_provider(messages);
+    if compacted != messages {
+        return compacted;
+    }
+    compact_messages_to_recent_groups(
+        messages,
+        4,
+        "[deepcli context retry compacted: provider rejected the previous request as too long. Older completed assistant/tool exchange groups were omitted. Re-read specific files or rerun focused commands if exact omitted output is needed.]",
+    )
+}
+
+fn compact_messages_to_recent_groups(
+    messages: &[ProviderMessage],
+    keep_recent_groups: usize,
+    marker: &str,
+) -> Vec<ProviderMessage> {
+    if messages.len() <= 4 {
+        return messages.to_vec();
+    }
+    let base_count = messages.len().min(2);
+    let base = messages[..base_count].to_vec();
+    let groups = message_groups(&messages[base_count..]);
+    let keep_count = keep_recent_groups.min(groups.len());
+    let omitted = groups.len().saturating_sub(keep_count);
+    if omitted == 0 {
+        return messages.to_vec();
+    }
+
+    let mut compacted = base;
+    compacted.push(ProviderMessage {
+        role: "user".to_string(),
+        content: Some(format!("{marker}\nomitted_groups={omitted}")),
+        reasoning_content: None,
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+    for group in groups.into_iter().skip(omitted) {
+        compacted.extend(group);
+    }
+    compacted
+}
+
+fn is_context_length_error(error: &anyhow::Error) -> bool {
+    let text = format!("{error:?}").to_ascii_lowercase();
+    text.contains("context_length_exceeded")
+        || text.contains("maximum context")
+        || text.contains("prompt too long")
+        || text.contains("input too long")
+        || text.contains("too many tokens")
+        || text.contains("request too large")
+        || (text.contains("context") && text.contains("length") && text.contains("exceed"))
+}
+
+fn is_provider_chat_timeout_error(error: &anyhow::Error) -> bool {
+    error
+        .to_string()
+        .starts_with("provider chat timed out after ")
 }
 
 fn estimate_request_tokens(
@@ -2490,8 +2737,13 @@ mod tests {
     use super::*;
     use crate::config::{AppConfig, ProviderConfig};
     use crate::permissions::{DecisionOutcome, PermissionDecision, RiskLevel};
+    use crate::providers::{ChatResponse, ProviderCapability, ProviderMetadata};
     use crate::session::{TestRunRecord, ToolCallRecord};
     use std::fs;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
     use tempfile::tempdir;
 
     #[test]
@@ -3122,6 +3374,71 @@ mod tests {
     }
 
     #[test]
+    fn microcompact_tool_outputs_preserves_high_value_old_tool_results() {
+        let failed_test_output = json!({
+            "tool": "run_tests",
+            "ok": false,
+            "kind": "command_output",
+            "summary": "tests failed",
+            "content": "failed ".repeat(100),
+            "data": {"passed": false},
+            "truncated": false
+        })
+        .to_string();
+        let file_diff_output = json!({
+            "tool": "apply_patch_or_write",
+            "ok": true,
+            "kind": "file_diff",
+            "summary": "patch applied",
+            "content": "diff ".repeat(100),
+            "data": {},
+            "truncated": false
+        })
+        .to_string();
+        let ordinary_read_output = json!({
+            "tool": "read_file",
+            "ok": true,
+            "kind": "file_content",
+            "summary": "large file",
+            "content": "source ".repeat(100),
+            "data": {},
+            "truncated": false
+        })
+        .to_string();
+        let messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+            test_tool_message("failed", "run_tests", &failed_test_output),
+            test_tool_message("diff", "apply_patch_or_write", &file_diff_output),
+            test_tool_message("read", "read_file", &ordinary_read_output),
+        ];
+        let options = ContextCompactionOptions {
+            max_context_tokens: 1_000_000,
+            reserved_output_tokens: 384_000,
+            microcompact_keep_recent_tool_results: 0,
+            microcompact_tool_output_chars: 120,
+            full_compact_keep_recent_groups: 4,
+        };
+
+        let outcome = microcompact_tool_outputs(&messages, &options);
+
+        assert_eq!(outcome.compacted_tool_results, 1);
+        assert_eq!(
+            outcome.messages[2].content.as_deref(),
+            Some(failed_test_output.as_str())
+        );
+        assert_eq!(
+            outcome.messages[3].content.as_deref(),
+            Some(file_diff_output.as_str())
+        );
+        assert!(outcome.messages[4]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("deepcli compacted tool output"));
+    }
+
+    #[test]
     fn microcompact_tool_outputs_preserves_recent_results_and_compacts_older_large_outputs() {
         let messages = vec![
             test_provider_message("system", "system"),
@@ -3201,6 +3518,194 @@ mod tests {
         assert!(compacted
             .iter()
             .any(|message| message.content.as_deref() == Some("assistant 4")));
+    }
+
+    #[test]
+    fn full_compact_summary_prompt_has_stable_recovery_sections() {
+        let prompt = full_compact_summary_prompt();
+
+        assert!(prompt.contains("User goal"));
+        assert!(prompt.contains("Changed files"));
+        assert!(prompt.contains("Tool findings"));
+        assert!(prompt.contains("Pending work"));
+        assert!(prompt.contains("Next step"));
+    }
+
+    struct FailingSummaryProvider;
+
+    #[async_trait::async_trait]
+    impl ProviderClient for FailingSummaryProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
+            Err(anyhow!("summary provider unavailable"))
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            _request: ChatRequest,
+            _on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, _messages: &[ProviderMessage]) -> usize {
+            1_000_000
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            false
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "failing-summary".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_messages_falls_back_when_full_compact_summary_fails() {
+        let mut messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+        ];
+        for index in 0..20 {
+            messages.push(test_provider_message(
+                "assistant",
+                &format!("assistant {index}"),
+            ));
+            messages.push(test_tool_message(
+                &format!("call_{index}"),
+                "read_file",
+                &"large output ".repeat(1_000),
+            ));
+        }
+        let mut config = AppConfig::default();
+        config.agent.max_context_tokens = 10_000;
+        config.agent.reserved_output_tokens = 1_000;
+
+        let prepared = prepare_messages_for_provider(
+            &FailingSummaryProvider,
+            &messages,
+            &[],
+            &config,
+            Duration::from_secs(1),
+        )
+        .await
+        .expect("summary failure should degrade to tail compaction");
+
+        assert!(prepared.tail_compacted);
+        assert!(prepared.messages.len() < messages.len());
+    }
+
+    #[derive(Clone, Default)]
+    struct ContextRetryProvider {
+        calls: Arc<AtomicUsize>,
+        message_counts: Arc<Mutex<Vec<usize>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderClient for ContextRetryProvider {
+        async fn chat(&self, request: ChatRequest) -> Result<ChatResponse> {
+            self.chat_with_stream_events(request, None).await
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            request: ChatRequest,
+            _on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            self.message_counts
+                .lock()
+                .unwrap()
+                .push(request.messages.len());
+            let call_index = self.calls.fetch_add(1, Ordering::SeqCst);
+            if call_index == 0 {
+                return Err(anyhow!(
+                    "context_length_exceeded: maximum context length exceeded"
+                ));
+            }
+            Ok(ChatResponse {
+                content: Some("after retry".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, messages: &[ProviderMessage]) -> usize {
+            messages
+                .iter()
+                .filter_map(|message| message.content.as_ref())
+                .map(|content| content.len() / 4)
+                .sum()
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            false
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "context-retry".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_with_context_retry_compacts_and_retries_once() {
+        let mut messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+        ];
+        for index in 0..10 {
+            messages.push(test_provider_message(
+                "assistant",
+                &format!("assistant {index}"),
+            ));
+            messages.push(test_tool_message(
+                &format!("call_{index}"),
+                "read_file",
+                &format!("tool result {index}"),
+            ));
+        }
+        let provider = ContextRetryProvider::default();
+        let request = ChatRequest {
+            messages: messages.clone(),
+            tools: Vec::new(),
+            json_mode: false,
+        };
+        let mut noop = |_event: StreamEvent| {};
+
+        let result = chat_with_context_retry(&provider, request, Duration::from_secs(1), &mut noop)
+            .await
+            .unwrap();
+
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert!(result.retried_after_context_error);
+        assert!(result.messages.len() < messages.len());
+        assert_eq!(result.response.content.as_deref(), Some("after retry"));
+        let counts = provider.message_counts.lock().unwrap().clone();
+        assert_eq!(counts.len(), 2);
+        assert!(counts[1] < counts[0]);
     }
 
     #[test]
