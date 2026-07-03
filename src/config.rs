@@ -142,6 +142,13 @@ pub struct AgentConfig {
         default = "default_provider_turn_timeout_seconds"
     )]
     pub provider_turn_timeout_seconds: u64,
+    #[serde(rename = "maxContextTokens", default = "default_max_context_tokens")]
+    pub max_context_tokens: usize,
+    #[serde(
+        rename = "reservedOutputTokens",
+        default = "default_reserved_output_tokens"
+    )]
+    pub reserved_output_tokens: usize,
     #[serde(default = "default_locale")]
     pub language: String,
 }
@@ -320,6 +327,20 @@ impl AppConfig {
                 }
             }
         }
+        if let Ok(tokens) = env::var("DEEPCLI_MAX_CONTEXT_TOKENS") {
+            if let Ok(value) = tokens.parse::<usize>() {
+                if value > 0 {
+                    self.agent.max_context_tokens = value;
+                }
+            }
+        }
+        if let Ok(tokens) = env::var("DEEPCLI_RESERVED_OUTPUT_TOKENS") {
+            if let Ok(value) = tokens.parse::<usize>() {
+                if value > 0 {
+                    self.agent.reserved_output_tokens = value;
+                }
+            }
+        }
     }
 }
 
@@ -390,6 +411,8 @@ impl Default for AgentConfig {
             max_subagent_depth: default_subagent_depth(),
             max_tool_iterations: default_tool_iterations(),
             provider_turn_timeout_seconds: default_provider_turn_timeout_seconds(),
+            max_context_tokens: default_max_context_tokens(),
+            reserved_output_tokens: default_reserved_output_tokens(),
             language: default_locale(),
         }
     }
@@ -558,6 +581,14 @@ fn default_provider_turn_timeout_seconds() -> u64 {
     600
 }
 
+fn default_max_context_tokens() -> usize {
+    1_000_000
+}
+
+fn default_reserved_output_tokens() -> usize {
+    384_000
+}
+
 fn default_token_warning_threshold() -> usize {
     160_000
 }
@@ -698,5 +729,28 @@ mod tests {
 
         env::remove_var("DEEPCLI_MAX_TOOL_ITERATIONS");
         assert_eq!(config.agent.max_tool_iterations, 128);
+    }
+
+    #[test]
+    fn context_budget_defaults_match_large_context_policy() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.agent.max_context_tokens, 1_000_000);
+        assert_eq!(config.agent.reserved_output_tokens, 384_000);
+    }
+
+    #[test]
+    fn context_budget_can_be_overridden_by_env() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let dir = tempdir().unwrap();
+        env::set_var("DEEPCLI_MAX_CONTEXT_TOKENS", "200000");
+        env::set_var("DEEPCLI_RESERVED_OUTPUT_TOKENS", "64000");
+
+        let config = AppConfig::load_effective(dir.path(), None).unwrap();
+
+        env::remove_var("DEEPCLI_MAX_CONTEXT_TOKENS");
+        env::remove_var("DEEPCLI_RESERVED_OUTPUT_TOKENS");
+        assert_eq!(config.agent.max_context_tokens, 200_000);
+        assert_eq!(config.agent.reserved_output_tokens, 64_000);
     }
 }

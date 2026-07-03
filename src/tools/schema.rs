@@ -10,8 +10,22 @@ pub(super) fn schema_for(name: &str) -> Value {
             ],
             &["path"],
         ),
-        "list_files" => object_schema(vec![("limit", "integer")], &[]),
-        "search" => object_schema(vec![("query", "string"), ("limit", "integer")], &["query"]),
+        "list_files" => object_schema(
+            vec![("path", "string"), ("glob", "string"), ("limit", "integer")],
+            &[],
+        ),
+        "search" => object_schema(
+            vec![
+                ("query", "string"),
+                ("path", "string"),
+                ("glob", "string"),
+                ("limit", "integer"),
+                ("case_sensitive", "boolean"),
+                ("context_lines", "integer"),
+                ("max_file_bytes", "integer"),
+            ],
+            &["query"],
+        ),
         "write_file" => object_schema(
             vec![
                 ("path", "string"),
@@ -61,7 +75,13 @@ pub(super) fn schema_for(name: &str) -> Value {
             ],
             &[],
         ),
+        "todo_write" => todo_write_schema(),
+        "ask_user_question" => object_schema(
+            vec![("question", "string"), ("context", "string")],
+            &["question"],
+        ),
         "web_search" => object_schema(vec![("query", "string")], &["query"]),
+        "web_fetch" => object_schema(vec![("url", "string"), ("max_chars", "integer")], &["url"]),
         "prompt_get" => object_schema(vec![("name", "string")], &["name"]),
         "prompt_render" => object_schema(
             vec![
@@ -87,11 +107,41 @@ pub(super) fn schema_for(name: &str) -> Value {
                 ("task", "string"),
                 ("depth", "integer"),
                 ("write_scope", "array"),
+                ("read_scope", "array"),
+                ("allowed_tools", "array"),
+                ("context", "string"),
             ],
             &["task"],
         ),
         _ => object_schema(Vec::new(), &[]),
     }
+}
+
+fn todo_write_schema() -> Value {
+    json!({
+        "type": "object",
+        "properties": {
+            "title": {"type": "string"},
+            "todos": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "content": {"type": "string"},
+                        "status": {
+                            "type": "string",
+                            "enum": ["pending", "in_progress", "completed", "failed"]
+                        }
+                    },
+                    "required": ["content"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["todos"],
+        "additionalProperties": false
+    })
 }
 
 fn object_schema(properties: Vec<(&str, &str)>, required: &[&str]) -> Value {

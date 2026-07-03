@@ -4,14 +4,17 @@ use crate::permissions::{
 };
 use crate::privacy::{looks_sensitive, redact_sensitive_value};
 use crate::prompts::{render_prompt_body, Prompt, PromptRenderContext, PromptStore};
-use crate::session::{Session, TestRunRecord, ToolCallRecord, ToolCallStatus};
+use crate::session::{
+    Plan, PlanStep, PlanStepStatus, Session, TestRunRecord, ToolCallRecord, ToolCallStatus,
+};
 use crate::skills::{SkillMetadata, SkillStore};
 use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
+use globset::{Glob, GlobSet};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -23,9 +26,10 @@ mod git;
 mod process;
 mod schema;
 mod test_discovery;
+mod validation;
 mod web;
 
-pub use declarations::{ToolDeclaration, ToolPermissionContext, ToolRegistry};
+pub use declarations::{ToolDeclaration, ToolObject, ToolPermissionContext, ToolRegistry};
 use environment::{
     check_environment_in, environment_target_arg, format_environment_report,
     format_environment_setup, setup_environment_in,
@@ -50,14 +54,78 @@ pub use process::{
 };
 use test_discovery::format_discovered_test_command;
 pub use test_discovery::{discover_tests_in, DiscoveredTestCommand};
-use web::format_web_search_result;
+use validation::validate_tool_arguments;
+use web::{format_web_fetch_text, format_web_search_result};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolExecution {
     pub tool: String,
     pub content: String,
     pub raw: Value,
+    pub structured: StructuredToolResult,
     pub decision: PermissionDecision,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct StructuredToolResult {
+    pub kind: String,
+    pub summary: String,
+    pub data: Value,
+    pub truncated: bool,
+}
+
+impl ToolExecution {
+    fn new(
+        tool: impl Into<String>,
+        content: impl Into<String>,
+        raw: Value,
+        decision: PermissionDecision,
+    ) -> Self {
+        let tool = tool.into();
+        let content = content.into();
+        let summary = first_line(&content).to_string();
+        Self {
+            tool,
+            content,
+            structured: StructuredToolResult {
+                kind: "text".to_string(),
+                summary,
+                data: raw.clone(),
+                truncated: false,
+            },
+            raw,
+            decision,
+        }
+    }
+
+    fn with_structured(
+        mut self,
+        kind: impl Into<String>,
+        summary: impl Into<String>,
+        data: Value,
+        truncated: bool,
+    ) -> Self {
+        self.structured = StructuredToolResult {
+            kind: kind.into(),
+            summary: summary.into(),
+            data,
+            truncated,
+        };
+        self
+    }
+
+    pub fn prompt_content(&self) -> String {
+        serde_json::to_string(&json!({
+            "tool": self.tool,
+            "ok": true,
+            "kind": self.structured.kind,
+            "summary": self.structured.summary,
+            "content": self.content,
+            "data": self.structured.data,
+            "truncated": self.structured.truncated,
+        }))
+        .unwrap_or_else(|_| self.content.clone())
+    }
 }
 
 pub struct ToolExecutor {
@@ -183,41 +251,53 @@ impl ToolExecutor {
                 ToolCallStatus::Running,
             )?;
         }
-        let result = match name {
-            "read_file" => self.read_file(args).await,
-            "list_files" => self.list_files(args).await,
-            "search" => self.search(args).await,
-            "write_file" => self.write_file(name, args).await,
-            "apply_patch_or_write" => {
-                if args.get("patch").is_some() {
-                    self.apply_patch(args).await
-                } else if args.get("old").is_some() && args.get("new").is_some() {
-                    self.replace_in_file(name, args).await
-                } else {
-                    self.write_file(name, args).await
+        let validation = if let Some(tool) = ToolRegistry::mvp().tool(name) {
+            tool.validate_arguments(&args)
+        } else {
+            validate_tool_arguments(name, &args)
+        };
+        let result = if let Err(error) = validation {
+            Err(error)
+        } else {
+            match name {
+                "read_file" => self.read_file(args).await,
+                "list_files" => self.list_files(args).await,
+                "search" => self.search(args).await,
+                "write_file" => self.write_file(name, args).await,
+                "apply_patch_or_write" => {
+                    if args.get("patch").is_some() {
+                        self.apply_patch(args).await
+                    } else if args.get("old").is_some() && args.get("new").is_some() {
+                        self.replace_in_file(name, args).await
+                    } else {
+                        self.write_file(name, args).await
+                    }
                 }
+                "run_shell" => self.run_shell(args).await,
+                "git_status" => self.git_status().await,
+                "git_diff" => self.git_diff(args).await,
+                "git_branch" => self.git_branch().await,
+                "git_create_branch" => self.git_create_branch(args).await,
+                "git_commit_message" => self.git_commit_message().await,
+                "git_commit" => self.git_commit(args).await,
+                "discover_tests" => self.discover_tests_tool().await,
+                "run_tests" => self.run_tests(args).await,
+                "check_environment" => self.check_environment(args).await,
+                "setup_environment" => self.setup_environment(args).await,
+                "todo_write" => self.todo_write(args).await,
+                "ask_user_question" => self.ask_user_question(args).await,
+                "web_search" => self.web_search(args).await,
+                "web_fetch" => self.web_fetch(args).await,
+                "open_terminal" => self.open_terminal().await,
+                "prompt_list" => self.prompt_list().await,
+                "prompt_get" => self.prompt_get(args).await,
+                "prompt_render" => self.prompt_render(args).await,
+                "skill_list" => self.skill_list().await,
+                "skill_generate" => self.skill_generate(args).await,
+                "skill_run" => self.skill_run(args).await,
+                "spawn_subagent" => self.spawn_subagent(args).await,
+                other => Err(anyhow!("unknown tool `{other}`")),
             }
-            "run_shell" => self.run_shell(args).await,
-            "git_status" => self.git_status().await,
-            "git_diff" => self.git_diff(args).await,
-            "git_branch" => self.git_branch().await,
-            "git_create_branch" => self.git_create_branch(args).await,
-            "git_commit_message" => self.git_commit_message().await,
-            "git_commit" => self.git_commit(args).await,
-            "discover_tests" => self.discover_tests_tool().await,
-            "run_tests" => self.run_tests(args).await,
-            "check_environment" => self.check_environment(args).await,
-            "setup_environment" => self.setup_environment(args).await,
-            "web_search" => self.web_search(args).await,
-            "open_terminal" => self.open_terminal().await,
-            "prompt_list" => self.prompt_list().await,
-            "prompt_get" => self.prompt_get(args).await,
-            "prompt_render" => self.prompt_render(args).await,
-            "skill_list" => self.skill_list().await,
-            "skill_generate" => self.skill_generate(args).await,
-            "skill_run" => self.skill_run(args).await,
-            "spawn_subagent" => self.spawn_subagent(args).await,
-            other => Err(anyhow!("unknown tool `{other}`")),
         };
 
         if let Some(session) = &self.session {
@@ -282,22 +362,30 @@ impl ToolExecutor {
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let content = slice_text_by_line(&content, start_line.max(1), limit);
-        Ok(ToolExecution {
-            tool: "read_file".to_string(),
-            content: content.clone(),
-            raw: json!({"path": path, "content": content}),
-            decision,
-        })
+        let raw = json!({"path": path, "content": content});
+        Ok(
+            ToolExecution::new("read_file", content.clone(), raw.clone(), decision)
+                .with_structured("file_content", first_line(&content), raw, false),
+        )
     }
 
     async fn list_files(&self, args: Value) -> Result<ToolExecution> {
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(256) as usize;
-        let decision = self.evaluate_filesystem("list_files", &self.workspace, false)?;
+        let base_path = self
+            .resolve_optional_path(&args)?
+            .unwrap_or(self.workspace.clone());
+        let decision = self.evaluate_filesystem("list_files", &base_path, false)?;
         self.ensure_allowed("list_files", &decision, false)?;
         let manager = WorkspaceManager::new(&self.workspace)?;
+        let glob = optional_glob(&args)?;
+        let walk_limit = limit
+            .saturating_mul(20)
+            .max(limit.saturating_add(1))
+            .min(4096);
         let files = manager
-            .walk_files(limit)?
+            .walk_files_from(&base_path, walk_limit)?
             .into_iter()
+            .filter(|entry| path_matches_glob(entry.path(), &self.workspace, glob.as_ref()))
             .map(|entry| {
                 entry
                     .path()
@@ -306,38 +394,95 @@ impl ToolExecutor {
                     .to_string_lossy()
                     .to_string()
             })
+            .take(limit.saturating_add(1))
             .collect::<Vec<_>>();
-        Ok(ToolExecution {
-            tool: "list_files".to_string(),
-            content: files.join("\n"),
-            raw: json!({ "files": files }),
-            decision,
-        })
+        let truncated = files.len() > limit;
+        let files = files.into_iter().take(limit).collect::<Vec<_>>();
+        let count = files.len();
+        let content = files.join("\n");
+        let raw = json!({
+            "files": files.clone(),
+            "count": count,
+            "truncated": truncated,
+            "path": relative_path_string(&self.workspace, &base_path),
+            "glob": args.get("glob").and_then(Value::as_str)
+        });
+        Ok(
+            ToolExecution::new("list_files", content.clone(), raw.clone(), decision)
+                .with_structured("file_list", format!("{count} file(s)"), raw, truncated),
+        )
     }
 
     async fn search(&self, args: Value) -> Result<ToolExecution> {
         let query = required_str(&args, "query")?;
         let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100) as usize;
-        let decision = self.evaluate_filesystem("search", &self.workspace, false)?;
+        let base_path = self
+            .resolve_optional_path(&args)?
+            .unwrap_or(self.workspace.clone());
+        let decision = self.evaluate_filesystem("search", &base_path, false)?;
         self.ensure_allowed("search", &decision, false)?;
         let manager = WorkspaceManager::new(&self.workspace)?;
+        let glob = optional_glob(&args)?;
+        let case_sensitive = args
+            .get("case_sensitive")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let context_lines = args
+            .get("context_lines")
+            .and_then(Value::as_u64)
+            .unwrap_or(0) as usize;
+        let max_file_bytes = args
+            .get("max_file_bytes")
+            .and_then(Value::as_u64)
+            .unwrap_or(1_000_000) as u64;
+        let needle = if case_sensitive {
+            query.to_string()
+        } else {
+            query.to_ascii_lowercase()
+        };
         let mut matches = Vec::new();
-        for entry in manager.walk_files(512)? {
+        let mut searched_files = 0usize;
+        for entry in manager.walk_files_from(&base_path, 4096)? {
+            if !path_matches_glob(entry.path(), &self.workspace, glob.as_ref()) {
+                continue;
+            }
+            if entry.metadata().map(|meta| meta.len()).unwrap_or(0) > max_file_bytes {
+                continue;
+            }
             let Ok(content) = fs::read_to_string(entry.path()) else {
                 continue;
             };
-            for (line_number, line) in content.lines().enumerate() {
-                if line.contains(query) {
+            searched_files += 1;
+            let lines = content.lines().collect::<Vec<_>>();
+            for (line_number, line) in lines.iter().enumerate() {
+                let haystack = if case_sensitive {
+                    (*line).to_string()
+                } else {
+                    line.to_ascii_lowercase()
+                };
+                if haystack.contains(&needle) {
                     let path = entry
                         .path()
                         .strip_prefix(&self.workspace)
                         .unwrap_or(entry.path())
                         .to_string_lossy()
                         .to_string();
+                    let before_start = line_number.saturating_sub(context_lines);
+                    let before = lines[before_start..line_number]
+                        .iter()
+                        .map(|line| (*line).to_string())
+                        .collect::<Vec<_>>();
+                    let after_end = (line_number + 1 + context_lines).min(lines.len());
+                    let after = lines[line_number + 1..after_end]
+                        .iter()
+                        .map(|line| (*line).to_string())
+                        .collect::<Vec<_>>();
                     matches.push(json!({
                         "path": path,
                         "line": line_number + 1,
-                        "text": line
+                        "text": *line,
+                        "before": before,
+                        "after": after
                     }));
                     if matches.len() >= limit {
                         break;
@@ -348,12 +493,25 @@ impl ToolExecutor {
                 break;
             }
         }
-        Ok(ToolExecution {
-            tool: "search".to_string(),
-            content: serde_json::to_string_pretty(&matches)?,
-            raw: json!({ "matches": matches }),
-            decision,
-        })
+        let content = format_search_matches(&matches)?;
+        let count = matches.len();
+        let truncated = count >= limit;
+        let raw = json!({
+            "matches": matches.clone(),
+            "count": count,
+            "searched_files": searched_files,
+            "truncated": truncated,
+            "case_sensitive": case_sensitive,
+            "glob": args.get("glob").and_then(Value::as_str)
+        });
+        Ok(
+            ToolExecution::new("search", content, raw.clone(), decision).with_structured(
+                "search_matches",
+                format!("{count} match(es)"),
+                raw,
+                truncated,
+            ),
+        )
     }
 
     async fn write_file(&self, name: &str, args: Value) -> Result<ToolExecution> {
@@ -387,12 +545,15 @@ impl ToolExecutor {
             session.save_diff(&rel, &diff)?;
         }
 
-        Ok(ToolExecution {
-            tool: name.to_string(),
-            content: diff.clone(),
-            raw: json!({"path": path, "diff": diff}),
-            decision,
-        })
+        let raw = json!({"path": path, "diff": diff});
+        Ok(
+            ToolExecution::new(name, diff.clone(), raw.clone(), decision).with_structured(
+                "file_diff",
+                "file written",
+                raw,
+                false,
+            ),
+        )
     }
 
     async fn apply_patch(&self, args: Value) -> Result<ToolExecution> {
@@ -415,12 +576,14 @@ impl ToolExecutor {
         if let Some(session) = &self.session {
             session.save_diff("applied_patch", &patch_to_apply)?;
         }
-        Ok(ToolExecution {
-            tool: "apply_patch_or_write".to_string(),
-            content: patch_to_apply.clone(),
-            raw: json!({"patch": patch_to_apply, "output": output}),
+        let raw = json!({"patch": patch_to_apply, "output": output});
+        Ok(ToolExecution::new(
+            "apply_patch_or_write",
+            patch_to_apply.clone(),
+            raw.clone(),
             decision,
-        })
+        )
+        .with_structured("file_diff", "patch applied", raw, false))
     }
 
     async fn replace_in_file(&self, name: &str, args: Value) -> Result<ToolExecution> {
@@ -460,12 +623,15 @@ impl ToolExecutor {
             session.save_diff(&rel, &diff)?;
         }
 
-        Ok(ToolExecution {
-            tool: name.to_string(),
-            content: diff.clone(),
-            raw: json!({"path": path, "diff": diff}),
-            decision,
-        })
+        let raw = json!({"path": path, "diff": diff});
+        Ok(
+            ToolExecution::new(name, diff.clone(), raw.clone(), decision).with_structured(
+                "file_diff",
+                "file edited",
+                raw,
+                false,
+            ),
+        )
     }
 
     async fn run_shell(&self, args: Value) -> Result<ToolExecution> {
@@ -495,12 +661,12 @@ impl ToolExecutor {
             Duration::from_secs(timeout_seconds),
         )
         .await?;
-        Ok(ToolExecution {
-            tool: "run_shell".to_string(),
-            content: output_text(&output),
-            raw: json!(output),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("run_shell", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false),
+        )
     }
 
     async fn git_status(&self) -> Result<ToolExecution> {
@@ -542,12 +708,12 @@ impl ToolExecutor {
         )?;
         self.ensure_allowed("git_create_branch", &decision, approved)?;
         let output = run_command(&self.workspace, &command).await?;
-        Ok(ToolExecution {
-            tool: "git_create_branch".to_string(),
-            content: output_text(&output),
-            raw: json!(output),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("git_create_branch", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false),
+        )
     }
 
     async fn git_commit_message(&self) -> Result<ToolExecution> {
@@ -565,17 +731,16 @@ impl ToolExecutor {
         let names = run_command(&self.workspace, "git diff --name-only").await?;
         let stat = run_command(&self.workspace, "git diff --stat").await?;
         let message = generate_commit_message(&status.stdout, &names.stdout);
-        Ok(ToolExecution {
-            tool: "git_commit_message".to_string(),
-            content: message.clone(),
-            raw: json!({
-                "message": message,
-                "status": status,
-                "changed_files": names.stdout.lines().collect::<Vec<_>>(),
-                "stat": stat.stdout
-            }),
-            decision,
-        })
+        let raw = json!({
+            "message": message,
+            "status": status,
+            "changed_files": names.stdout.lines().collect::<Vec<_>>(),
+            "stat": stat.stdout
+        });
+        Ok(
+            ToolExecution::new("git_commit_message", message.clone(), raw.clone(), decision)
+                .with_structured("git_commit_message", message, raw, false),
+        )
     }
 
     async fn git_commit(&self, args: Value) -> Result<ToolExecution> {
@@ -594,12 +759,12 @@ impl ToolExecutor {
         )?;
         self.ensure_allowed("git_commit", &decision, approved)?;
         let output = run_command(&self.workspace, &command).await?;
-        Ok(ToolExecution {
-            tool: "git_commit".to_string(),
-            content: output_text(&output),
-            raw: json!(output),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("git_commit", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false),
+        )
     }
 
     async fn git_read_tool(&self, name: &str, command: &str) -> Result<ToolExecution> {
@@ -614,28 +779,32 @@ impl ToolExecutor {
         )?;
         self.ensure_allowed(name, &decision, false)?;
         let output = run_command(&self.workspace, command).await?;
-        Ok(ToolExecution {
-            tool: name.to_string(),
-            content: output_text(&output),
-            raw: json!(output),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new(name, content.clone(), raw.clone(), decision).with_structured(
+                "command_output",
+                first_line(&content),
+                raw,
+                false,
+            ),
+        )
     }
 
     async fn discover_tests_tool(&self) -> Result<ToolExecution> {
         let decision = self.evaluate_filesystem("discover_tests", &self.workspace, false)?;
         self.ensure_allowed("discover_tests", &decision, false)?;
         let commands = self.discover_tests()?;
-        Ok(ToolExecution {
-            tool: "discover_tests".to_string(),
-            content: commands
-                .iter()
-                .map(format_discovered_test_command)
-                .collect::<Vec<_>>()
-                .join("\n"),
-            raw: json!({ "commands": commands }),
-            decision,
-        })
+        let content = commands
+            .iter()
+            .map(format_discovered_test_command)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let raw = json!({ "commands": commands });
+        Ok(
+            ToolExecution::new("discover_tests", content.clone(), raw.clone(), decision)
+                .with_structured("test_commands", first_line(&content), raw, false),
+        )
     }
 
     async fn run_tests(&self, args: Value) -> Result<ToolExecution> {
@@ -671,12 +840,21 @@ impl ToolExecutor {
                 created_at: Utc::now(),
             })?;
         }
-        Ok(ToolExecution {
-            tool: "run_tests".to_string(),
-            content: output_text(&output),
-            raw: json!({"passed": passed, "output": output}),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!({"passed": passed, "output": output});
+        Ok(
+            ToolExecution::new("run_tests", content.clone(), raw.clone(), decision)
+                .with_structured(
+                    "test_output",
+                    if passed {
+                        "tests passed"
+                    } else {
+                        "tests failed"
+                    },
+                    raw,
+                    false,
+                ),
+        )
     }
 
     async fn check_environment(&self, args: Value) -> Result<ToolExecution> {
@@ -692,12 +870,12 @@ impl ToolExecutor {
         )?;
         self.ensure_allowed("check_environment", &decision, false)?;
         let report = check_environment_in(&self.workspace, &target).await?;
-        Ok(ToolExecution {
-            tool: "check_environment".to_string(),
-            content: format_environment_report(&report),
-            raw: json!(report),
-            decision,
-        })
+        let content = format_environment_report(&report);
+        let raw = json!(report);
+        Ok(
+            ToolExecution::new("check_environment", content.clone(), raw.clone(), decision)
+                .with_structured("environment_report", first_line(&content), raw, false),
+        )
     }
 
     async fn setup_environment(&self, args: Value) -> Result<ToolExecution> {
@@ -719,12 +897,80 @@ impl ToolExecutor {
         self.ensure_allowed("setup_environment", &decision, approved)?;
         let setup =
             setup_environment_in(&self.workspace, &target, install_missing, smoke_test).await?;
-        Ok(ToolExecution {
-            tool: "setup_environment".to_string(),
-            content: format_environment_setup(&setup),
-            raw: json!(setup),
-            decision,
-        })
+        let content = format_environment_setup(&setup);
+        let raw = json!(setup);
+        Ok(
+            ToolExecution::new("setup_environment", content.clone(), raw.clone(), decision)
+                .with_structured("environment_setup", first_line(&content), raw, false),
+        )
+    }
+
+    async fn todo_write(&self, args: Value) -> Result<ToolExecution> {
+        let decision = self.evaluate_declared_tool(
+            "todo_write",
+            ToolPermissionContext {
+                path: Some(self.workspace.clone()),
+                ..ToolPermissionContext::default()
+            },
+        )?;
+        self.ensure_allowed("todo_write", &decision, false)?;
+        let title = args
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or("Session todo list")
+            .trim()
+            .to_string();
+        let steps = todo_steps_from_args(&args)?;
+        if let Some(session) = &self.session {
+            session.save_plan(&Plan {
+                title: title.clone(),
+                steps: steps.clone(),
+                updated_at: Utc::now(),
+            })?;
+        }
+        let todos = steps.iter().map(plan_step_json).collect::<Vec<_>>();
+        let content = format_todo_steps(&steps);
+        let raw = json!({
+            "title": title,
+            "todos": todos,
+            "count": steps.len()
+        });
+        Ok(
+            ToolExecution::new("todo_write", content, raw.clone(), decision).with_structured(
+                "todo_list",
+                format!("{} todo(s) updated", steps.len()),
+                raw,
+                false,
+            ),
+        )
+    }
+
+    async fn ask_user_question(&self, args: Value) -> Result<ToolExecution> {
+        let question = required_str(&args, "question")?.trim();
+        let decision = self.evaluate_declared_tool(
+            "ask_user_question",
+            ToolPermissionContext {
+                path: Some(self.workspace.clone()),
+                ..ToolPermissionContext::default()
+            },
+        )?;
+        self.ensure_allowed("ask_user_question", &decision, false)?;
+        let session = self
+            .session
+            .as_ref()
+            .ok_or_else(|| anyhow!("ask_user_question requires an active session"))?;
+        let item = session.enqueue_side_question(question)?;
+        let content = format!(
+            "queued user question {}: {}",
+            short_id(&item.id),
+            item.question
+        );
+        let raw = json!({ "question": item });
+        Ok(
+            ToolExecution::new("ask_user_question", content, raw.clone(), decision)
+                .with_structured("question", "user question queued", raw, false),
+        )
     }
 
     async fn web_search(&self, args: Value) -> Result<ToolExecution> {
@@ -746,12 +992,79 @@ impl ToolExecutor {
         )?;
         let value: Value = reqwest::get(url).await?.json().await?;
         let content = format_web_search_result(query, &value);
-        Ok(ToolExecution {
-            tool: "web_search".to_string(),
-            content,
-            raw: value,
-            decision,
-        })
+        let raw = value;
+        Ok(
+            ToolExecution::new("web_search", content.clone(), raw.clone(), decision)
+                .with_structured("web_search", first_line(&content), raw, false),
+        )
+    }
+
+    async fn web_fetch(&self, args: Value) -> Result<ToolExecution> {
+        let raw_url = required_str(&args, "url")?.trim();
+        if looks_sensitive(raw_url) {
+            bail!("web_fetch URL appears to contain sensitive content");
+        }
+        let url = reqwest::Url::parse(raw_url)?;
+        if !matches!(url.scheme(), "http" | "https") {
+            bail!("web_fetch only supports http or https URLs");
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| anyhow!("web_fetch URL must include a host"))?
+            .to_string();
+        let decision = self.evaluate_declared_tool(
+            "web_fetch",
+            ToolPermissionContext {
+                network_target: Some(host),
+                ..ToolPermissionContext::default()
+            },
+        )?;
+        self.ensure_allowed("web_fetch", &decision, false)?;
+        let max_chars = args
+            .get("max_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(20_000) as usize;
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(20))
+            .user_agent("deepcli-web-fetch/0.1")
+            .build()?;
+        let response = client.get(url.clone()).send().await?;
+        let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = response.text().await?;
+        let extracted = format_web_fetch_text(&body, &content_type);
+        let original_chars = extracted.chars().count();
+        let truncated = original_chars > max_chars;
+        let text = if truncated {
+            truncate_display(&extracted, max_chars)
+        } else {
+            extracted
+        };
+        let content = format!(
+            "url: {}\nstatus: {}\ncontent_type: {}\n\n{}",
+            url, status, content_type, text
+        );
+        let raw = json!({
+            "url": url.as_str(),
+            "status": status,
+            "content_type": content_type,
+            "text": text,
+            "truncated": truncated,
+            "original_chars": original_chars
+        });
+        Ok(
+            ToolExecution::new("web_fetch", content, raw.clone(), decision).with_structured(
+                "web_fetch",
+                format!("fetched {} status {}", url, status),
+                raw,
+                truncated,
+            ),
+        )
     }
 
     async fn open_terminal(&self) -> Result<ToolExecution> {
@@ -783,12 +1096,12 @@ impl ToolExecutor {
             stdout: String::new(),
             stderr: "open_terminal is only implemented for macOS".to_string(),
         };
-        Ok(ToolExecution {
-            tool: "open_terminal".to_string(),
-            content: output_text(&output),
-            raw: json!(output),
-            decision,
-        })
+        let content = output_text(&output);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("open_terminal", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false),
+        )
     }
 
     async fn prompt_list(&self) -> Result<ToolExecution> {
@@ -800,12 +1113,12 @@ impl ToolExecutor {
         self.ensure_allowed("prompt_list", &decision, false)?;
         let store = PromptStore::new(&self.workspace);
         let prompts = store.list()?;
-        Ok(ToolExecution {
-            tool: "prompt_list".to_string(),
-            content: format_prompt_tool_list(&prompts),
-            raw: json!(prompts),
-            decision,
-        })
+        let content = format_prompt_tool_list(&prompts);
+        let raw = json!(prompts);
+        Ok(
+            ToolExecution::new("prompt_list", content.clone(), raw.clone(), decision)
+                .with_structured("prompt_list", first_line(&content), raw, false),
+        )
     }
 
     async fn prompt_get(&self, args: Value) -> Result<ToolExecution> {
@@ -818,12 +1131,14 @@ impl ToolExecutor {
         self.ensure_allowed("prompt_get", &decision, false)?;
         let store = PromptStore::new(&self.workspace);
         let prompt = store.get(name)?;
-        Ok(ToolExecution {
-            tool: "prompt_get".to_string(),
-            content: prompt.body.clone(),
-            raw: json!(prompt),
+        let raw = json!(prompt);
+        Ok(ToolExecution::new(
+            "prompt_get",
+            raw["body"].as_str().unwrap_or_default().to_string(),
+            raw.clone(),
             decision,
-        })
+        )
+        .with_structured("prompt", name, raw, false))
     }
 
     async fn prompt_render(&self, args: Value) -> Result<ToolExecution> {
@@ -843,17 +1158,19 @@ impl ToolExecutor {
         let prompt = store.get(name)?;
         let context = self.prompt_render_context(&args).await?;
         let rendered = render_prompt_body(&prompt.body, &context);
-        Ok(ToolExecution {
-            tool: "prompt_render".to_string(),
-            content: rendered.clone(),
-            raw: json!({
-                "name": prompt.name,
-                "description": prompt.description,
-                "context": context,
-                "rendered": rendered
-            }),
+        let raw = json!({
+            "name": prompt.name,
+            "description": prompt.description,
+            "context": context,
+            "rendered": rendered
+        });
+        Ok(ToolExecution::new(
+            "prompt_render",
+            raw["rendered"].as_str().unwrap_or_default().to_string(),
+            raw.clone(),
             decision,
-        })
+        )
+        .with_structured("prompt_render", name, raw, false))
     }
 
     async fn skill_list(&self) -> Result<ToolExecution> {
@@ -862,12 +1179,12 @@ impl ToolExecutor {
         self.ensure_allowed("skill_list", &decision, false)?;
         let store = SkillStore::new(&self.workspace);
         let skills = store.discover()?;
-        Ok(ToolExecution {
-            tool: "skill_list".to_string(),
-            content: format_skill_tool_list(&skills),
-            raw: json!(skills),
-            decision,
-        })
+        let content = format_skill_tool_list(&skills);
+        let raw = json!(skills);
+        Ok(
+            ToolExecution::new("skill_list", content.clone(), raw.clone(), decision)
+                .with_structured("skill_list", first_line(&content), raw, false),
+        )
     }
 
     async fn prompt_render_context(&self, args: &Value) -> Result<PromptRenderContext> {
@@ -932,12 +1249,12 @@ impl ToolExecutor {
         self.ensure_allowed("skill_generate", &decision, approved)?;
         let store = SkillStore::new(&self.workspace);
         let skill = store.generate(name, description)?;
-        Ok(ToolExecution {
-            tool: "skill_generate".to_string(),
-            content: skill.instruction_path.display().to_string(),
-            raw: json!(skill),
-            decision,
-        })
+        let content = skill.instruction_path.display().to_string();
+        let raw = json!(skill);
+        Ok(
+            ToolExecution::new("skill_generate", content.clone(), raw.clone(), decision)
+                .with_structured("skill", content, raw, false),
+        )
     }
 
     async fn skill_run(&self, args: Value) -> Result<ToolExecution> {
@@ -947,28 +1264,30 @@ impl ToolExecutor {
         self.ensure_allowed("skill_run", &decision, false)?;
         let store = SkillStore::new(&self.workspace);
         let loaded = store.load(name)?;
-        Ok(ToolExecution {
-            tool: "skill_run".to_string(),
-            content: loaded.instructions.clone(),
-            raw: json!(loaded),
-            decision,
-        })
+        let content = loaded.instructions.clone();
+        let raw = json!(loaded);
+        Ok(
+            ToolExecution::new("skill_run", content, raw.clone(), decision)
+                .with_structured("skill", name, raw, false),
+        )
     }
 
     async fn spawn_subagent(&self, args: Value) -> Result<ToolExecution> {
         let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(1) as u8;
         let task = required_str(&args, "task")?;
-        let write_scope = args
-            .get("write_scope")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(Value::as_str)
-                    .map(PathBuf::from)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let write_scope = string_array_arg(&args, "write_scope");
+        let read_scope = string_array_arg(&args, "read_scope");
+        let allowed_tools = string_array_arg(&args, "allowed_tools")
+            .into_iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let context = args
+            .get("context")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        validate_allowed_subagent_tools(&allowed_tools)?;
         let decision = self.evaluate_declared_tool(
             "spawn_subagent",
             ToolPermissionContext {
@@ -985,16 +1304,25 @@ impl ToolExecutor {
         }
         let store = AgentStore::new(&self.workspace);
         let parent_session_id = self.session.as_ref().map(|session| session.id());
-        let subagent = store.create_subagent_task(parent_session_id, task, depth, write_scope)?;
-        Ok(ToolExecution {
-            tool: "spawn_subagent".to_string(),
-            content: format!(
-                "sub-agent queued at depth {depth}: {task} ({})",
-                subagent.id
-            ),
-            raw: json!(subagent),
-            decision,
-        })
+        let subagent =
+            store.create_subagent_task_with_options(crate::agents::SubagentTaskOptions {
+                parent_session_id,
+                task: task.to_string(),
+                depth,
+                write_scope,
+                read_scope,
+                allowed_tools,
+                context,
+            })?;
+        let content = format!(
+            "sub-agent queued at depth {depth}: {task} ({})",
+            subagent.id
+        );
+        let raw = json!(subagent);
+        Ok(
+            ToolExecution::new("spawn_subagent", content.clone(), raw.clone(), decision)
+                .with_structured("subagent_task", content, raw, false),
+        )
     }
 
     fn evaluate_declared_tool(
@@ -1093,6 +1421,14 @@ impl ToolExecutor {
         let raw = required_str(args, "path")?;
         resolve_workspace_path(&self.workspace, raw)
     }
+
+    fn resolve_optional_path(&self, args: &Value) -> Result<Option<PathBuf>> {
+        args.get("path")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .map(|raw| resolve_workspace_path(&self.workspace, raw))
+            .transpose()
+    }
 }
 
 fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
@@ -1111,6 +1447,159 @@ fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
         ),
         _ => default,
     }
+}
+
+fn optional_glob(args: &Value) -> Result<Option<GlobSet>> {
+    let Some(pattern) = args
+        .get("glob")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let mut builder = globset::GlobSetBuilder::new();
+    builder.add(Glob::new(pattern)?);
+    Ok(Some(builder.build()?))
+}
+
+fn path_matches_glob(path: &Path, workspace: &Path, glob: Option<&GlobSet>) -> bool {
+    let Some(glob) = glob else {
+        return true;
+    };
+    let relative = path.strip_prefix(workspace).unwrap_or(path);
+    glob.is_match(relative)
+}
+
+fn relative_path_string(workspace: &Path, path: &Path) -> String {
+    path.strip_prefix(workspace)
+        .unwrap_or(path)
+        .to_string_lossy()
+        .trim_start_matches("./")
+        .to_string()
+}
+
+fn format_search_matches(matches: &[Value]) -> Result<String> {
+    if matches.is_empty() {
+        return Ok("no matches".to_string());
+    }
+    Ok(matches
+        .iter()
+        .map(|item| {
+            let path = item.get("path").and_then(Value::as_str).unwrap_or_default();
+            let line = item.get("line").and_then(Value::as_u64).unwrap_or_default();
+            let text = item.get("text").and_then(Value::as_str).unwrap_or_default();
+            format!("{path}:{line}: {text}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n"))
+}
+
+fn todo_steps_from_args(args: &Value) -> Result<Vec<PlanStep>> {
+    let todos = args
+        .get("todos")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow!("argument `todos` must be an array"))?;
+    let mut seen = BTreeSet::new();
+    todos
+        .iter()
+        .enumerate()
+        .map(|(index, item)| {
+            let content = item
+                .get("content")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow!("todo item {} requires `content`", index + 1))?
+                .trim()
+                .to_string();
+            let id = item
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("todo-{}", index + 1));
+            if !seen.insert(id.clone()) {
+                bail!("duplicate todo id `{id}`");
+            }
+            let status = match item
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("pending")
+            {
+                "pending" => PlanStepStatus::Pending,
+                "in_progress" => PlanStepStatus::InProgress,
+                "completed" => PlanStepStatus::Completed,
+                "failed" => PlanStepStatus::Failed,
+                other => bail!("unsupported todo status `{other}`"),
+            };
+            Ok(PlanStep {
+                id,
+                description: content,
+                status,
+            })
+        })
+        .collect()
+}
+
+fn plan_step_json(step: &PlanStep) -> Value {
+    json!({
+        "id": step.id,
+        "content": step.description,
+        "status": step.status,
+    })
+}
+
+fn format_todo_steps(steps: &[PlanStep]) -> String {
+    if steps.is_empty() {
+        return "todo list cleared".to_string();
+    }
+    steps
+        .iter()
+        .map(|step| {
+            format!(
+                "- [{}] {}: {}",
+                plan_status_label(&step.status),
+                step.id,
+                step.description
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn plan_status_label(status: &PlanStepStatus) -> &'static str {
+    match status {
+        PlanStepStatus::Pending => "pending",
+        PlanStepStatus::InProgress => "in_progress",
+        PlanStepStatus::Completed => "completed",
+        PlanStepStatus::Failed => "failed",
+    }
+}
+
+fn string_array_arg(args: &Value, key: &str) -> Vec<PathBuf> {
+    args.get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(Value::as_str)
+                .map(PathBuf::from)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+fn validate_allowed_subagent_tools(allowed_tools: &[String]) -> Result<()> {
+    if allowed_tools.is_empty() {
+        return Ok(());
+    }
+    let registry = ToolRegistry::mvp();
+    for tool in allowed_tools {
+        if !registry.has(tool) {
+            bail!("sub-agent allowed_tools contains unknown tool `{tool}`");
+        }
+    }
+    Ok(())
 }
 
 fn truncate_display(value: &str, limit: usize) -> String {
@@ -1645,6 +2134,220 @@ mod tests {
             .join(".deepcli/agents/tasks")
             .join(format!("{id}.json"))
             .exists());
+    }
+
+    #[tokio::test]
+    async fn spawn_subagent_persists_scope_tool_and_context_hints() {
+        let dir = tempdir().unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let execution = executor
+            .execute(
+                "spawn_subagent",
+                json!({
+                    "task": "inspect runtime",
+                    "depth": 1,
+                    "read_scope": ["src/runtime.rs"],
+                    "write_scope": ["src/tools.rs"],
+                    "allowed_tools": ["read_file", "search"],
+                    "context": "only inspect tool batching"
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.structured.kind, "subagent_task");
+        assert_eq!(execution.raw["read_scope"][0], "src/runtime.rs");
+        assert_eq!(execution.raw["write_scope"][0], "src/tools.rs");
+        assert_eq!(execution.raw["allowed_tools"][0], "read_file");
+        assert_eq!(execution.raw["context"], "only inspect tool batching");
+    }
+
+    #[tokio::test]
+    async fn todo_write_updates_session_plan_and_structured_result() {
+        let dir = tempdir().unwrap();
+        let store = crate::session::SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+
+        let execution = executor
+            .execute(
+                "todo_write",
+                json!({
+                    "todos": [
+                        {"id": "context", "content": "Read tool chain", "status": "completed"},
+                        {"id": "implementation", "content": "Patch tool protocol", "status": "in_progress"}
+                    ]
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.structured.kind, "todo_list");
+        assert_eq!(execution.raw["count"], 2);
+        let plan = session.load_plan().unwrap().unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].id, "context");
+        assert_eq!(
+            plan.steps[0].status,
+            crate::session::PlanStepStatus::Completed
+        );
+        assert_eq!(
+            plan.steps[1].status,
+            crate::session::PlanStepStatus::InProgress
+        );
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_enqueues_side_question_and_structured_result() {
+        let dir = tempdir().unwrap();
+        let store = crate::session::SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+
+        let execution = executor
+            .execute(
+                "ask_user_question",
+                json!({"question": "Which target should I verify?"}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.structured.kind, "question");
+        let questions = session.load_side_questions().unwrap();
+        assert_eq!(questions.len(), 1);
+        assert_eq!(questions[0].question, "Which target should I verify?");
+        assert_eq!(execution.raw["question"]["status"], "open");
+    }
+
+    #[tokio::test]
+    async fn web_fetch_rejects_non_http_urls_before_network() {
+        let dir = tempdir().unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let error = executor
+            .execute("web_fetch", json!({"url": "file:///etc/passwd"}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("http or https"));
+    }
+
+    #[tokio::test]
+    async fn list_files_supports_path_glob_and_metadata() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::create_dir_all(dir.path().join("tests")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "pub fn lib() {}\n").unwrap();
+        fs::write(dir.path().join("src/readme.txt"), "note\n").unwrap();
+        fs::write(
+            dir.path().join("tests/contract.rs"),
+            "#[test]\nfn ok() {}\n",
+        )
+        .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let execution = executor
+            .execute(
+                "list_files",
+                json!({"path": "src", "glob": "**/*.rs", "limit": 10}),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.structured.kind, "file_list");
+        assert_eq!(execution.raw["count"], 1);
+        assert_eq!(execution.raw["truncated"], false);
+        assert_eq!(execution.content.trim(), "src/lib.rs");
+    }
+
+    #[tokio::test]
+    async fn search_supports_case_insensitive_glob_and_context() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/lib.rs"), "alpha\nBeta target\nomega\n").unwrap();
+        fs::write(dir.path().join("README.md"), "beta target\n").unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let execution = executor
+            .execute(
+                "search",
+                json!({
+                    "query": "beta",
+                    "glob": "src/**/*.rs",
+                    "case_sensitive": false,
+                    "context_lines": 1,
+                    "limit": 10
+                }),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(execution.structured.kind, "search_matches");
+        assert_eq!(execution.raw["count"], 1);
+        assert_eq!(execution.raw["matches"][0]["path"], "src/lib.rs");
+        assert_eq!(execution.raw["matches"][0]["before"][0], "alpha");
+        assert_eq!(execution.raw["matches"][0]["after"][0], "omega");
+    }
+
+    #[tokio::test]
+    async fn tool_validation_rejects_extra_arguments() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("note.txt"), "hello\n").unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let error = executor
+            .execute("read_file", json!({"path": "note.txt", "unexpected": true}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported argument"));
     }
 
     #[tokio::test]

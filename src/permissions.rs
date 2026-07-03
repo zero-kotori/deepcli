@@ -46,6 +46,7 @@ pub enum ToolSurface {
     Network,
     Docker,
     Provider,
+    Session,
     Skill,
     Subagent,
     Terminal,
@@ -215,6 +216,7 @@ impl PermissionEngine {
                     RiskLevel::High
                 }
             }
+            ToolSurface::Session => RiskLevel::Low,
             ToolSurface::Docker => RiskLevel::High,
             ToolSurface::Shell if request.creates_process => RiskLevel::Medium,
             ToolSurface::Skill | ToolSurface::Subagent => RiskLevel::Medium,

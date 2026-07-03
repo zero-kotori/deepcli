@@ -439,7 +439,10 @@ fn mvp_tool_registry_exposes_required_tools() {
         "run_tests",
         "check_environment",
         "setup_environment",
+        "todo_write",
+        "ask_user_question",
         "web_search",
+        "web_fetch",
         "open_terminal",
         "prompt_list",
         "prompt_get",
@@ -452,6 +455,8 @@ fn mvp_tool_registry_exposes_required_tools() {
         assert!(registry.has(tool), "{tool} missing from registry");
     }
     assert_eq!(registry.tool_specs().len(), registry.declarations().len());
+    assert_eq!(registry.tools().len(), registry.declarations().len());
+    assert!(registry.tool("read_file").is_some());
 }
 
 #[test]

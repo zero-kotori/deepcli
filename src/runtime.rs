@@ -6,7 +6,8 @@ use crate::commands::{
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
 use crate::providers::{
-    create_provider, ChatRequest, ProviderMessage, StreamEvent, ToolCall, Usage,
+    create_provider, ChatRequest, ProviderClient, ProviderMessage, StreamEvent, ToolCall, ToolSpec,
+    Usage,
 };
 use crate::session::{
     ApprovalStatus, AuditEvent, GoalStatus, Plan, PlanStep, PlanStepStatus, Session,
@@ -16,7 +17,9 @@ use crate::tools::{ToolExecutor, ToolRegistry};
 use crate::workspace::WorkspaceManager;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
+use futures_util::future::join_all;
 use serde_json::{json, Value};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 use std::time::{Duration, Instant};
@@ -946,8 +949,22 @@ impl AgentRuntime {
         let mut consecutive_budget_skipped_turns = 0usize;
         for iteration in 0..self.config.agent.max_tool_iterations {
             let tool_specs = self.registry.tool_specs();
-            let compacted_messages = compact_messages_for_provider(&messages);
-            let compacted = compacted_messages.len() != messages.len();
+            let prepared_context = prepare_messages_for_provider(
+                provider.as_ref(),
+                &messages,
+                &tool_specs,
+                &self.config,
+                provider_turn_timeout,
+            )
+            .await?;
+            let compacted = prepared_context.compacted();
+            let context_estimated_tokens = prepared_context.estimated_tokens;
+            let context_threshold_tokens = prepared_context.threshold_tokens;
+            let microcompacted_tool_results = prepared_context.microcompacted_tool_results;
+            let full_compacted = prepared_context.full_compacted;
+            let tail_compacted = prepared_context.tail_compacted;
+            messages = prepared_context.messages;
+            let compacted_messages = messages.clone();
             let request_stats = provider_request_stats(&compacted_messages, &tool_specs);
             self.emit_progress(RuntimeProgress::ProviderTurnStarted {
                 iteration: iteration + 1,
@@ -968,7 +985,14 @@ impl AgentRuntime {
                         "tool_count": request_stats.tool_count,
                         "tool_bytes": request_stats.tool_bytes,
                         "total_bytes": request_stats.total_bytes,
-                        "compacted": compacted
+                        "compacted": compacted,
+                        "context": {
+                            "estimated_tokens": context_estimated_tokens,
+                            "threshold_tokens": context_threshold_tokens,
+                            "microcompacted_tool_results": microcompacted_tool_results,
+                            "full_compacted": full_compacted,
+                            "tail_compacted": tail_compacted
+                        }
                     }
                 }),
             )?;
@@ -1045,52 +1069,75 @@ impl AgentRuntime {
             });
 
             let mut budget_skipped_this_turn = 0usize;
-            for call in response.tool_calls {
-                if call.function.name == "run_tests" {
-                    self.session.set_state(SessionState::Testing)?;
+            let turn_tool_calls = response.tool_calls;
+            for batch in tool_call_batches(&self.registry, &turn_tool_calls) {
+                match batch {
+                    ToolCallBatch::Parallel(range)
+                        if batch_fits_tool_budgets(
+                            &turn_tool_calls[range.clone()],
+                            context_tool_calls_before_action,
+                            verification_calls_before_action,
+                            context_tool_limit,
+                            verification_tool_limit,
+                        ) =>
+                    {
+                        let calls = &turn_tool_calls[range];
+                        let outputs = self.execute_parallel_tool_calls(calls).await?;
+                        for (call, tool_output) in calls.iter().zip(outputs) {
+                            let tool_failed = tool_output_indicates_failure(&tool_output);
+                            update_tool_budget_counters(
+                                call,
+                                tool_failed,
+                                &mut context_tool_calls_before_action,
+                                &mut verification_calls_before_action,
+                            );
+                            messages.push(tool_provider_message(call, tool_output));
+                        }
+                    }
+                    ToolCallBatch::Parallel(range) => {
+                        for call in &turn_tool_calls[range] {
+                            let tool_output = self
+                                .execute_serial_tool_call_with_budgets(
+                                    call,
+                                    context_tool_calls_before_action,
+                                    verification_calls_before_action,
+                                    context_tool_limit,
+                                    verification_tool_limit,
+                                    &mut budget_skipped_this_turn,
+                                )
+                                .await?;
+                            let tool_failed = tool_output_indicates_failure(&tool_output);
+                            update_tool_budget_counters(
+                                call,
+                                tool_failed,
+                                &mut context_tool_calls_before_action,
+                                &mut verification_calls_before_action,
+                            );
+                            messages.push(tool_provider_message(call, tool_output));
+                        }
+                    }
+                    ToolCallBatch::Serial(index) => {
+                        let call = &turn_tool_calls[index];
+                        let tool_output = self
+                            .execute_serial_tool_call_with_budgets(
+                                call,
+                                context_tool_calls_before_action,
+                                verification_calls_before_action,
+                                context_tool_limit,
+                                verification_tool_limit,
+                                &mut budget_skipped_this_turn,
+                            )
+                            .await?;
+                        let tool_failed = tool_output_indicates_failure(&tool_output);
+                        update_tool_budget_counters(
+                            call,
+                            tool_failed,
+                            &mut context_tool_calls_before_action,
+                            &mut verification_calls_before_action,
+                        );
+                        messages.push(tool_provider_message(call, tool_output));
+                    }
                 }
-                let tool_output = if is_context_gathering_call(&call)
-                    && context_tool_calls_before_action >= context_tool_limit
-                {
-                    budget_skipped_this_turn += 1;
-                    format!(
-                        "tool `{}` skipped: context-gathering budget exceeded after {} context-only tool calls without a patch or verification action. Stop gathering context and either apply a focused patch, run a focused verification command, or report the concrete blocker.",
-                        call.function.name, context_tool_limit
-                    )
-                } else if is_verification_call(&call)
-                    && verification_calls_before_action >= verification_tool_limit
-                {
-                    budget_skipped_this_turn += 1;
-                    format!(
-                        "tool `{}` skipped: verification budget exceeded after {} verification-only tool calls without a project write. Stop running more tests, apply a focused patch to the current failure, or report the concrete blocker.",
-                        call.function.name, verification_tool_limit
-                    )
-                } else {
-                    self.execute_tool_call(&call).await?
-                };
-                if call.function.name == "run_tests" {
-                    self.session.set_state(SessionState::Executing)?;
-                }
-                let tool_failed = tool_output_indicates_failure(&tool_output);
-                if is_context_gathering_call(&call) {
-                    context_tool_calls_before_action += 1;
-                } else if is_progress_action_call(&call) && !tool_failed {
-                    context_tool_calls_before_action = 0;
-                }
-                if is_project_mutating_call(&call) && !tool_failed {
-                    verification_calls_before_action = 0;
-                } else if is_verification_call(&call) {
-                    verification_calls_before_action += 1;
-                }
-                let tool_output = truncate_tool_output_for_prompt(&tool_output);
-                messages.push(ProviderMessage {
-                    role: "tool".to_string(),
-                    content: Some(tool_output),
-                    reasoning_content: None,
-                    name: Some(call.function.name),
-                    tool_call_id: Some(call.id),
-                    tool_calls: None,
-                });
             }
 
             if budget_skipped_this_turn > 0 {
@@ -1283,7 +1330,118 @@ impl AgentRuntime {
             ok: true,
             summary: truncate_progress_detail(&execution.content),
         });
-        Ok(execution.content)
+        Ok(execution.prompt_content())
+    }
+
+    async fn execute_serial_tool_call_with_budgets(
+        &mut self,
+        call: &ToolCall,
+        context_tool_calls_before_action: usize,
+        verification_calls_before_action: usize,
+        context_tool_limit: usize,
+        verification_tool_limit: usize,
+        budget_skipped_this_turn: &mut usize,
+    ) -> Result<String> {
+        if call.function.name == "run_tests" {
+            self.session.set_state(SessionState::Testing)?;
+        }
+        let tool_output = if is_context_gathering_call(call)
+            && context_tool_calls_before_action >= context_tool_limit
+        {
+            *budget_skipped_this_turn += 1;
+            format!(
+                "tool `{}` skipped: context-gathering budget exceeded after {} context-only tool calls without a patch or verification action. Stop gathering context and either apply a focused patch, run a focused verification command, or report the concrete blocker.",
+                call.function.name, context_tool_limit
+            )
+        } else if is_verification_call(call)
+            && verification_calls_before_action >= verification_tool_limit
+        {
+            *budget_skipped_this_turn += 1;
+            format!(
+                "tool `{}` skipped: verification budget exceeded after {} verification-only tool calls without a project write. Stop running more tests, apply a focused patch to the current failure, or report the concrete blocker.",
+                call.function.name, verification_tool_limit
+            )
+        } else {
+            self.execute_tool_call(call).await?
+        };
+        if call.function.name == "run_tests" {
+            self.session.set_state(SessionState::Executing)?;
+        }
+        Ok(tool_output)
+    }
+
+    async fn execute_parallel_tool_calls(&mut self, calls: &[ToolCall]) -> Result<Vec<String>> {
+        for call in calls {
+            if !self.registry.has(&call.function.name) {
+                return Err(anyhow!(
+                    "provider requested unknown tool `{}`",
+                    call.function.name
+                ));
+            }
+            let progress_detail = tool_call_progress_detail(call);
+            self.emit_progress(RuntimeProgress::ToolStarted {
+                tool: call.function.name.clone(),
+                detail: progress_detail.clone(),
+            });
+            self.session.append_audit_event(
+                "tool_started",
+                json!({ "tool": call.function.name, "detail": progress_detail, "parallel": true }),
+            )?;
+        }
+
+        let futures = calls.iter().map(|call| {
+            self.executor
+                .execute(&call.function.name, call.function.arguments.clone())
+        });
+        let results = join_all(futures).await;
+        let mut outputs = Vec::with_capacity(results.len());
+        for (call, result) in calls.iter().zip(results) {
+            match result {
+                Ok(execution) => {
+                    self.update_plan_after_tool(
+                        &call.function.name,
+                        execution.raw.get("passed").and_then(|v| v.as_bool()),
+                    )?;
+                    self.emit_progress(RuntimeProgress::ToolCompleted {
+                        tool: call.function.name.clone(),
+                        ok: true,
+                        summary: truncate_progress_detail(&execution.content),
+                    });
+                    outputs.push(execution.prompt_content());
+                }
+                Err(error) if is_approval_error(&error) => {
+                    self.session.set_state(SessionState::AwaitingApproval)?;
+                    let output = format!(
+                        "tool `{}` is awaiting approval: {error}",
+                        call.function.name
+                    );
+                    self.emit_progress(RuntimeProgress::ToolCompleted {
+                        tool: call.function.name.clone(),
+                        ok: false,
+                        summary: truncate_progress_detail(&output),
+                    });
+                    outputs.push(output);
+                }
+                Err(error) => {
+                    self.session.append_audit_event(
+                        "tool_failed",
+                        json!({
+                            "tool": call.function.name,
+                            "error": error.to_string(),
+                            "parallel": true
+                        }),
+                    )?;
+                    let output = format!("tool `{}` failed: {error}", call.function.name);
+                    self.emit_progress(RuntimeProgress::ToolCompleted {
+                        tool: call.function.name.clone(),
+                        ok: false,
+                        summary: truncate_progress_detail(&output),
+                    });
+                    outputs.push(output);
+                }
+            }
+        }
+        Ok(outputs)
     }
 
     fn update_plan_after_tool(&self, tool_name: &str, passed: Option<bool>) -> Result<()> {
@@ -1443,6 +1601,315 @@ fn provider_request_stats(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContextCompactionOptions {
+    max_context_tokens: usize,
+    reserved_output_tokens: usize,
+    microcompact_keep_recent_tool_results: usize,
+    microcompact_tool_output_chars: usize,
+    full_compact_keep_recent_groups: usize,
+}
+
+impl ContextCompactionOptions {
+    fn from_config(config: &AppConfig) -> Self {
+        Self {
+            max_context_tokens: config.agent.max_context_tokens.max(1),
+            reserved_output_tokens: config.agent.reserved_output_tokens.max(1),
+            microcompact_keep_recent_tool_results: env_usize(
+                "DEEPCLI_MICROCOMPACT_KEEP_RECENT_TOOL_RESULTS",
+                1,
+                8,
+            ),
+            microcompact_tool_output_chars: env_usize(
+                "DEEPCLI_MICROCOMPACT_TOOL_OUTPUT_CHARS",
+                80,
+                2_000,
+            ),
+            full_compact_keep_recent_groups: env_usize(
+                "DEEPCLI_FULL_COMPACT_KEEP_RECENT_GROUPS",
+                1,
+                6,
+            ),
+        }
+    }
+
+    fn input_token_budget(&self) -> usize {
+        if self.reserved_output_tokens >= self.max_context_tokens {
+            return (self.max_context_tokens / 2).max(8_000);
+        }
+        self.max_context_tokens
+            .saturating_sub(self.reserved_output_tokens)
+            .max(8_000)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ContextPreparation {
+    messages: Vec<ProviderMessage>,
+    estimated_tokens: usize,
+    threshold_tokens: usize,
+    microcompacted_tool_results: usize,
+    full_compacted: bool,
+    tail_compacted: bool,
+}
+
+impl ContextPreparation {
+    fn compacted(&self) -> bool {
+        self.microcompacted_tool_results > 0 || self.full_compacted || self.tail_compacted
+    }
+}
+
+#[derive(Debug, Clone)]
+struct MicrocompactOutcome {
+    messages: Vec<ProviderMessage>,
+    compacted_tool_results: usize,
+}
+
+async fn prepare_messages_for_provider(
+    provider: &dyn ProviderClient,
+    messages: &[ProviderMessage],
+    tools: &[ToolSpec],
+    config: &AppConfig,
+    provider_turn_timeout: Duration,
+) -> Result<ContextPreparation> {
+    let options = ContextCompactionOptions::from_config(config);
+    let threshold_tokens = options.input_token_budget();
+    let microcompact = microcompact_tool_outputs(messages, &options);
+    let mut prepared_messages = microcompact.messages;
+    let mut estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
+    let mut full_compacted = false;
+    let mut tail_compacted = false;
+
+    if estimated_tokens > threshold_tokens {
+        if let Some(compacted) = full_compact_messages_with_provider(
+            provider,
+            &prepared_messages,
+            &options,
+            provider_turn_timeout,
+        )
+        .await?
+        {
+            prepared_messages = compacted;
+            full_compacted = true;
+            estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
+        }
+    }
+
+    if estimated_tokens > threshold_tokens {
+        let compacted = compact_messages_for_provider(&prepared_messages);
+        if compacted.len() != prepared_messages.len() {
+            prepared_messages = compacted;
+            tail_compacted = true;
+            estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
+        }
+    }
+
+    Ok(ContextPreparation {
+        messages: prepared_messages,
+        estimated_tokens,
+        threshold_tokens,
+        microcompacted_tool_results: microcompact.compacted_tool_results,
+        full_compacted,
+        tail_compacted,
+    })
+}
+
+fn microcompact_tool_outputs(
+    messages: &[ProviderMessage],
+    options: &ContextCompactionOptions,
+) -> MicrocompactOutcome {
+    let tool_indices = messages
+        .iter()
+        .enumerate()
+        .filter_map(|(index, message)| (message.role == "tool").then_some(index))
+        .collect::<Vec<_>>();
+    let keep_from = tool_indices
+        .len()
+        .saturating_sub(options.microcompact_keep_recent_tool_results);
+    let mut compacted_tool_results = 0usize;
+    let mut compacted = messages.to_vec();
+
+    for (ordinal, index) in tool_indices.into_iter().enumerate() {
+        if ordinal >= keep_from {
+            continue;
+        }
+        let Some(content) = compacted[index].content.clone() else {
+            continue;
+        };
+        if content.chars().count() <= options.microcompact_tool_output_chars {
+            continue;
+        }
+        compacted[index].content = Some(compact_tool_output_content(
+            &compacted[index],
+            &content,
+            options.microcompact_tool_output_chars,
+        ));
+        compacted_tool_results += 1;
+    }
+
+    MicrocompactOutcome {
+        messages: compacted,
+        compacted_tool_results,
+    }
+}
+
+fn compact_tool_output_content(message: &ProviderMessage, content: &str, limit: usize) -> String {
+    let char_count = content.chars().count();
+    let budget = limit.max(80);
+    let head_limit = (budget * 2 / 3).max(1);
+    let tail_limit = budget.saturating_sub(head_limit).max(1);
+    let head = content.chars().take(head_limit).collect::<String>();
+    let tail = content
+        .chars()
+        .rev()
+        .take(tail_limit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect::<String>();
+    let tool = message.name.as_deref().unwrap_or("<unknown>");
+    let tool_call_id = message.tool_call_id.as_deref().unwrap_or("<unknown>");
+    format!(
+        "{head}\n\n[deepcli compacted tool output: tool={tool} tool_call_id={tool_call_id} original_chars={char_count} kept_head={head_limit} kept_tail={tail_limit}. Re-run a focused read/search command if exact omitted output is needed.]\n\n{tail}"
+    )
+}
+
+async fn full_compact_messages_with_provider(
+    provider: &dyn ProviderClient,
+    messages: &[ProviderMessage],
+    options: &ContextCompactionOptions,
+    provider_turn_timeout: Duration,
+) -> Result<Option<Vec<ProviderMessage>>> {
+    let (summary_source, omitted_groups) =
+        full_compact_summary_source(messages, options.full_compact_keep_recent_groups);
+    if omitted_groups == 0 {
+        return Ok(None);
+    }
+
+    let mut summary_messages = summary_source;
+    summary_messages.push(ProviderMessage {
+        role: "user".to_string(),
+        content: Some(full_compact_summary_prompt()),
+        reasoning_content: None,
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+
+    let response = match timeout(
+        provider_turn_timeout,
+        provider.chat(ChatRequest {
+            messages: summary_messages,
+            tools: Vec::new(),
+            json_mode: false,
+        }),
+    )
+    .await
+    {
+        Ok(result) => result?,
+        Err(_) => {
+            return Err(anyhow!(
+                "provider compact summary timed out after {} seconds",
+                provider_turn_timeout.as_secs()
+            ));
+        }
+    };
+    let summary = response.content.unwrap_or_default();
+    if summary.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(build_full_compacted_messages(
+        messages,
+        summary.trim(),
+        options.full_compact_keep_recent_groups,
+    )))
+}
+
+fn full_compact_summary_source(
+    messages: &[ProviderMessage],
+    keep_recent_groups: usize,
+) -> (Vec<ProviderMessage>, usize) {
+    let base_count = messages.len().min(2);
+    let groups = message_groups(&messages[base_count..]);
+    let keep_count = keep_recent_groups.min(groups.len());
+    let omitted_groups = groups.len().saturating_sub(keep_count);
+    if omitted_groups == 0 {
+        return (messages.to_vec(), 0);
+    }
+
+    let mut source = messages[..base_count].to_vec();
+    for group in groups.iter().take(omitted_groups) {
+        source.extend(group.clone());
+    }
+    (source, omitted_groups)
+}
+
+fn build_full_compacted_messages(
+    messages: &[ProviderMessage],
+    summary: &str,
+    keep_recent_groups: usize,
+) -> Vec<ProviderMessage> {
+    let base_count = messages.len().min(2);
+    let base = messages[..base_count].to_vec();
+    let groups = message_groups(&messages[base_count..]);
+    let keep_count = keep_recent_groups.min(groups.len());
+    let omitted_groups = groups.len().saturating_sub(keep_count);
+    if omitted_groups == 0 {
+        return messages.to_vec();
+    }
+
+    let mut compacted = base;
+    compacted.push(ProviderMessage {
+        role: "user".to_string(),
+        content: Some(format!(
+            "[deepcli compacted conversation summary]\nEarlier assistant/tool exchange groups were summarized to keep the provider request within the context budget.\n\n{summary}"
+        )),
+        reasoning_content: None,
+        name: None,
+        tool_call_id: None,
+        tool_calls: None,
+    });
+    for group in groups.into_iter().skip(omitted_groups) {
+        compacted.extend(group);
+    }
+    compacted
+}
+
+fn full_compact_summary_prompt() -> String {
+    [
+        "Create a compact but complete summary of the conversation so far.",
+        "Preserve the user's explicit requests, current goal, files inspected or changed, important tool findings, errors and fixes, pending tasks, and the exact next step needed to continue.",
+        "Do not call tools. Return only the summary text.",
+    ]
+    .join("\n")
+}
+
+fn estimate_request_tokens(
+    provider: &dyn ProviderClient,
+    messages: &[ProviderMessage],
+    tools: &[ToolSpec],
+) -> usize {
+    provider
+        .count_tokens(messages)
+        .max(rough_json_tokens(messages))
+        + rough_json_tokens(tools)
+}
+
+fn rough_json_tokens<T: serde::Serialize + ?Sized>(value: &T) -> usize {
+    serde_json::to_string(value)
+        .map(|value| value.chars().count().div_ceil(4))
+        .unwrap_or_default()
+}
+
+fn env_usize(name: &str, min: usize, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value >= min)
+        .unwrap_or(default)
+}
+
 fn compact_messages_for_provider(messages: &[ProviderMessage]) -> Vec<ProviderMessage> {
     let limit = std::env::var("DEEPCLI_MAX_PROVIDER_REQUEST_BYTES")
         .ok()
@@ -1539,12 +2006,93 @@ fn budget_skip_turn_limit() -> usize {
         .unwrap_or(3)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolCallBatch {
+    Parallel(Range<usize>),
+    Serial(usize),
+}
+
+fn tool_call_batches(registry: &ToolRegistry, calls: &[ToolCall]) -> Vec<ToolCallBatch> {
+    let mut batches = Vec::new();
+    let mut index = 0usize;
+    while index < calls.len() {
+        if is_parallel_safe_call(registry, &calls[index]) {
+            let start = index;
+            index += 1;
+            while index < calls.len() && is_parallel_safe_call(registry, &calls[index]) {
+                index += 1;
+            }
+            batches.push(ToolCallBatch::Parallel(start..index));
+        } else {
+            batches.push(ToolCallBatch::Serial(index));
+            index += 1;
+        }
+    }
+    batches
+}
+
+fn is_parallel_safe_call(registry: &ToolRegistry, call: &ToolCall) -> bool {
+    registry
+        .tool(&call.function.name)
+        .is_some_and(|tool| tool.can_run_parallel())
+}
+
+fn batch_fits_tool_budgets(
+    calls: &[ToolCall],
+    context_tool_calls_before_action: usize,
+    verification_calls_before_action: usize,
+    context_tool_limit: usize,
+    verification_tool_limit: usize,
+) -> bool {
+    let context_calls = calls
+        .iter()
+        .filter(|call| is_context_gathering_call(call))
+        .count();
+    let verification_calls = calls
+        .iter()
+        .filter(|call| is_verification_call(call))
+        .count();
+    context_tool_calls_before_action + context_calls <= context_tool_limit
+        && verification_calls_before_action + verification_calls <= verification_tool_limit
+}
+
+fn update_tool_budget_counters(
+    call: &ToolCall,
+    tool_failed: bool,
+    context_tool_calls_before_action: &mut usize,
+    verification_calls_before_action: &mut usize,
+) {
+    if is_context_gathering_call(call) {
+        *context_tool_calls_before_action += 1;
+    } else if is_progress_action_call(call) && !tool_failed {
+        *context_tool_calls_before_action = 0;
+    }
+    if is_project_mutating_call(call) && !tool_failed {
+        *verification_calls_before_action = 0;
+    } else if is_verification_call(call) {
+        *verification_calls_before_action += 1;
+    }
+}
+
+fn tool_provider_message(call: &ToolCall, output: String) -> ProviderMessage {
+    ProviderMessage {
+        role: "tool".to_string(),
+        content: Some(truncate_tool_output_for_prompt(&output)),
+        reasoning_content: None,
+        name: Some(call.function.name.clone()),
+        tool_call_id: Some(call.id.clone()),
+        tool_calls: None,
+    }
+}
+
 fn is_context_gathering_tool(name: &str) -> bool {
     matches!(
         name,
         "read_file"
             | "list_files"
             | "search"
+            | "web_search"
+            | "web_fetch"
             | "git_status"
             | "git_diff"
             | "git_branch"
@@ -2551,6 +3099,110 @@ mod tests {
         );
     }
 
+    fn test_provider_message(role: &str, content: &str) -> ProviderMessage {
+        ProviderMessage {
+            role: role.to_string(),
+            content: Some(content.to_string()),
+            reasoning_content: None,
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        }
+    }
+
+    fn test_tool_message(id: &str, name: &str, content: &str) -> ProviderMessage {
+        ProviderMessage {
+            role: "tool".to_string(),
+            content: Some(content.to_string()),
+            reasoning_content: None,
+            name: Some(name.to_string()),
+            tool_call_id: Some(id.to_string()),
+            tool_calls: None,
+        }
+    }
+
+    #[test]
+    fn microcompact_tool_outputs_preserves_recent_results_and_compacts_older_large_outputs() {
+        let messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+            test_tool_message("old", "read_file", &"a".repeat(500)),
+            test_tool_message("middle", "search", &"b".repeat(500)),
+            test_tool_message("recent", "run_tests", &"c".repeat(500)),
+        ];
+        let options = ContextCompactionOptions {
+            max_context_tokens: 1_000_000,
+            reserved_output_tokens: 384_000,
+            microcompact_keep_recent_tool_results: 1,
+            microcompact_tool_output_chars: 120,
+            full_compact_keep_recent_groups: 4,
+        };
+
+        let outcome = microcompact_tool_outputs(&messages, &options);
+
+        assert_eq!(outcome.compacted_tool_results, 2);
+        assert!(outcome.messages[2]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("deepcli compacted tool output"));
+        assert!(outcome.messages[3]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("original_chars=500"));
+        let recent_output = "c".repeat(500);
+        assert_eq!(
+            outcome.messages[4].content.as_deref(),
+            Some(recent_output.as_str())
+        );
+    }
+
+    #[test]
+    fn full_compacted_messages_keep_summary_and_recent_groups_without_orphan_tools() {
+        let mut messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+        ];
+        for i in 0..5 {
+            messages.push(ProviderMessage {
+                role: "assistant".to_string(),
+                content: Some(format!("assistant {i}")),
+                reasoning_content: None,
+                name: None,
+                tool_call_id: None,
+                tool_calls: Some(vec![ToolCall {
+                    id: format!("call_{i}"),
+                    call_type: "function".to_string(),
+                    function: crate::providers::ToolCallFunction {
+                        name: "read_file".to_string(),
+                        arguments: json!({"path": "src/lib.rs"}),
+                    },
+                }]),
+            });
+            messages.push(test_tool_message(
+                &format!("call_{i}"),
+                "read_file",
+                &format!("tool result {i}"),
+            ));
+        }
+
+        let compacted = build_full_compacted_messages(&messages, "summary text", 2);
+
+        assert!(compacted.len() < messages.len());
+        assert_eq!(compacted[0].role, "system");
+        assert_eq!(compacted[1].role, "user");
+        assert!(compacted[2]
+            .content
+            .as_deref()
+            .unwrap()
+            .contains("summary text"));
+        assert_ne!(compacted[3].role, "tool");
+        assert!(compacted
+            .iter()
+            .any(|message| message.content.as_deref() == Some("assistant 4")));
+    }
+
     #[test]
     fn compacts_provider_history_at_group_boundaries() {
         let mut messages = vec![
@@ -2614,6 +3266,7 @@ mod tests {
         assert!(is_context_gathering_tool("read_file"));
         assert!(is_context_gathering_tool("list_files"));
         assert!(is_context_gathering_tool("search"));
+        assert!(is_context_gathering_tool("web_fetch"));
         assert!(is_context_gathering_tool("git_status"));
         assert!(is_context_gathering_tool("open_terminal"));
         assert!(!is_context_gathering_tool("apply_patch_or_write"));
@@ -2701,6 +3354,39 @@ mod tests {
         assert!(!tool_output_indicates_failure(
             "Finished dev profile successfully"
         ));
+    }
+
+    #[test]
+    fn tool_call_batches_group_consecutive_parallel_safe_tools() {
+        let call = |name: &str| ToolCall {
+            id: format!("call_{name}"),
+            call_type: "function".to_string(),
+            function: crate::providers::ToolCallFunction {
+                name: name.to_string(),
+                arguments: json!({}),
+            },
+        };
+        let registry = ToolRegistry::mvp();
+        let calls = vec![
+            call("read_file"),
+            call("list_files"),
+            call("todo_write"),
+            call("web_fetch"),
+            call("search"),
+            call("write_file"),
+        ];
+
+        let batches = tool_call_batches(&registry, &calls);
+
+        assert_eq!(
+            batches,
+            vec![
+                ToolCallBatch::Parallel(0..2),
+                ToolCallBatch::Serial(2),
+                ToolCallBatch::Parallel(3..5),
+                ToolCallBatch::Serial(5),
+            ]
+        );
     }
 
     #[test]

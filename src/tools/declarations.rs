@@ -1,4 +1,4 @@
-use super::schema::schema_for;
+use super::{schema::schema_for, validation::validate_tool_arguments};
 use crate::permissions::{ToolRequest, ToolSurface};
 use crate::providers::{ToolFunctionSpec, ToolSpec};
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,10 @@ pub struct ToolDeclaration {
 }
 
 impl ToolDeclaration {
+    pub fn validate_arguments(&self, args: &Value) -> anyhow::Result<()> {
+        validate_tool_arguments(&self.name, args)
+    }
+
     pub fn permission_request(&self, context: ToolPermissionContext) -> ToolRequest {
         ToolRequest {
             tool: self.name.clone(),
@@ -43,14 +47,52 @@ impl ToolDeclaration {
     }
 }
 
+#[derive(Debug, Clone)]
+pub struct ToolObject {
+    declaration: ToolDeclaration,
+}
+
+impl ToolObject {
+    fn new(declaration: ToolDeclaration) -> Self {
+        Self { declaration }
+    }
+
+    pub fn declaration(&self) -> &ToolDeclaration {
+        &self.declaration
+    }
+
+    pub fn name(&self) -> &str {
+        &self.declaration.name
+    }
+
+    pub fn validate_arguments(&self, args: &Value) -> anyhow::Result<()> {
+        self.declaration.validate_arguments(args)
+    }
+
+    pub fn can_run_parallel(&self) -> bool {
+        self.declaration.can_run_parallel && !self.declaration.writes_files
+    }
+
+    pub fn tool_spec(&self) -> ToolSpec {
+        ToolSpec {
+            spec_type: "function".to_string(),
+            function: ToolFunctionSpec {
+                name: self.declaration.name.clone(),
+                description: self.declaration.description.clone(),
+                parameters: self.declaration.parameters.clone(),
+            },
+        }
+    }
+}
+
 pub struct ToolRegistry {
     declarations: Vec<ToolDeclaration>,
+    tools: Vec<ToolObject>,
 }
 
 impl ToolRegistry {
     pub fn mvp() -> Self {
-        Self {
-            declarations: vec![
+        let declarations = vec![
                 declaration(
                     "read_file",
                     "Read a UTF-8 file inside the authorized workspace.",
@@ -180,8 +222,32 @@ impl ToolRegistry {
                     false,
                 ),
                 declaration(
+                    "todo_write",
+                    "Update the session todo plan with pending, in-progress, completed, or failed items.",
+                    ToolSurface::Session,
+                    false,
+                    false,
+                    false,
+                ),
+                declaration(
+                    "ask_user_question",
+                    "Queue a focused user question in the active session without interrupting tool execution.",
+                    ToolSurface::Session,
+                    false,
+                    false,
+                    false,
+                ),
+                declaration(
                     "web_search",
                     "Run a privacy-filtered web search query.",
+                    ToolSurface::Network,
+                    false,
+                    true,
+                    true,
+                ),
+                declaration(
+                    "web_fetch",
+                    "Fetch and extract text from an http or https URL with bounded output.",
                     ToolSurface::Network,
                     false,
                     true,
@@ -245,13 +311,21 @@ impl ToolRegistry {
                 ),
                 declaration(
                     "spawn_subagent",
-                    "Spawn a bounded sub-agent task descriptor.",
+                    "Spawn a bounded sub-agent task descriptor with read/write scope and allowed tool hints.",
                     ToolSurface::Subagent,
                     true,
                     false,
-                    true,
+                    false,
                 ),
-            ],
+            ];
+        let tools = declarations
+            .iter()
+            .cloned()
+            .map(ToolObject::new)
+            .collect::<Vec<_>>();
+        Self {
+            declarations,
+            tools,
         }
     }
 
@@ -259,26 +333,24 @@ impl ToolRegistry {
         &self.declarations
     }
 
+    pub fn tools(&self) -> &[ToolObject] {
+        &self.tools
+    }
+
+    pub fn tool(&self, name: &str) -> Option<&ToolObject> {
+        self.tools.iter().find(|tool| tool.name() == name)
+    }
+
     pub fn declaration(&self, name: &str) -> Option<&ToolDeclaration> {
-        self.declarations.iter().find(|tool| tool.name == name)
+        self.tool(name).map(ToolObject::declaration)
     }
 
     pub fn tool_specs(&self) -> Vec<ToolSpec> {
-        self.declarations
-            .iter()
-            .map(|declaration| ToolSpec {
-                spec_type: "function".to_string(),
-                function: ToolFunctionSpec {
-                    name: declaration.name.clone(),
-                    description: declaration.description.clone(),
-                    parameters: declaration.parameters.clone(),
-                },
-            })
-            .collect()
+        self.tools.iter().map(ToolObject::tool_spec).collect()
     }
 
     pub fn has(&self, name: &str) -> bool {
-        self.declarations.iter().any(|tool| tool.name == name)
+        self.tool(name).is_some()
     }
 }
 

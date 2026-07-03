@@ -177,8 +177,16 @@ impl WorkspaceManager {
     }
 
     pub fn walk_files(&self, limit: usize) -> Result<Vec<DirEntry>> {
+        self.walk_files_from(&self.root, limit)
+    }
+
+    pub fn walk_files_from(&self, base: impl AsRef<Path>, limit: usize) -> Result<Vec<DirEntry>> {
+        let base = base.as_ref();
+        if !base.starts_with(&self.root) {
+            anyhow::bail!("walk base must stay inside workspace: {}", base.display());
+        }
         let mut files = Vec::new();
-        for entry in WalkDir::new(&self.root)
+        for entry in WalkDir::new(base)
             .into_iter()
             .filter_entry(|entry| !self.ignore.is_ignored(entry.path()))
         {

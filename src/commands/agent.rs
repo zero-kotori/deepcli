@@ -177,11 +177,18 @@ fn subagent_task_json(workspace: &Path, task: &SubagentTask) -> Value {
         "parentSessionId": task.parent_session_id.map(|id| id.to_string()),
         "task": task.task.as_str(),
         "depth": task.depth,
+        "readScope": task
+            .read_scope
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>(),
         "writeScope": task
             .write_scope
             .iter()
             .map(|path| path.display().to_string())
             .collect::<Vec<_>>(),
+        "allowedTools": task.allowed_tools.clone(),
+        "context": task.context.clone(),
         "status": subagent_status_label(&task.status),
         "createdAt": task.created_at.to_rfc3339(),
         "updatedAt": task.updated_at.to_rfc3339(),

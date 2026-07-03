@@ -430,6 +430,8 @@ fn config_validation_json(workspace: &Path, config: &AppConfig) -> Value {
         "agent": {
             "maxToolIterations": config.agent.max_tool_iterations,
             "providerTurnTimeoutSeconds": config.agent.provider_turn_timeout_seconds,
+            "maxContextTokens": config.agent.max_context_tokens,
+            "reservedOutputTokens": config.agent.reserved_output_tokens,
         },
         "usage": {
             "tokenWarningThreshold": config.usage.token_warning_threshold,
@@ -450,6 +452,15 @@ pub(super) fn validate_config(workspace: &Path, config: &AppConfig) -> Result<St
     }
     if config.agent.provider_turn_timeout_seconds == 0 {
         bail!("agent.providerTurnTimeoutSeconds must be greater than 0");
+    }
+    if config.agent.max_context_tokens == 0 {
+        bail!("agent.maxContextTokens must be greater than 0");
+    }
+    if config.agent.reserved_output_tokens == 0 {
+        bail!("agent.reservedOutputTokens must be greater than 0");
+    }
+    if config.agent.reserved_output_tokens >= config.agent.max_context_tokens {
+        bail!("agent.reservedOutputTokens must be smaller than agent.maxContextTokens");
     }
     if config.usage.token_warning_threshold == 0 {
         bail!("usage.tokenWarningThreshold must be greater than 0");

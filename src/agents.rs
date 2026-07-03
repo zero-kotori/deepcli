@@ -20,10 +20,27 @@ pub struct SubagentTask {
     pub parent_session_id: Option<Uuid>,
     pub task: String,
     pub depth: u8,
+    #[serde(default)]
+    pub read_scope: Vec<PathBuf>,
     pub write_scope: Vec<PathBuf>,
+    #[serde(default)]
+    pub allowed_tools: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
     pub status: SubagentStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SubagentTaskOptions {
+    pub parent_session_id: Option<Uuid>,
+    pub task: String,
+    pub depth: u8,
+    pub read_scope: Vec<PathBuf>,
+    pub write_scope: Vec<PathBuf>,
+    pub allowed_tools: Vec<String>,
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -48,20 +65,44 @@ impl AgentStore {
         depth: u8,
         write_scope: Vec<PathBuf>,
     ) -> Result<SubagentTask> {
-        if task.trim().is_empty() {
+        self.create_subagent_task_with_options(SubagentTaskOptions {
+            parent_session_id,
+            task: task.to_string(),
+            depth,
+            read_scope: Vec::new(),
+            write_scope,
+            allowed_tools: Vec::new(),
+            context: None,
+        })
+    }
+
+    pub fn create_subagent_task_with_options(
+        &self,
+        options: SubagentTaskOptions,
+    ) -> Result<SubagentTask> {
+        if options.task.trim().is_empty() {
             bail!("sub-agent task cannot be empty");
         }
-        let normalized_scope = write_scope
+        let normalized_read_scope = options
+            .read_scope
+            .into_iter()
+            .map(|path| normalize_scope_path(&self.workspace, &path))
+            .collect::<Result<Vec<_>>>()?;
+        let normalized_write_scope = options
+            .write_scope
             .into_iter()
             .map(|path| normalize_scope_path(&self.workspace, &path))
             .collect::<Result<Vec<_>>>()?;
         let now = Utc::now();
         let task = SubagentTask {
             id: Uuid::new_v4(),
-            parent_session_id,
-            task: task.to_string(),
-            depth,
-            write_scope: normalized_scope,
+            parent_session_id: options.parent_session_id,
+            task: options.task,
+            depth: options.depth,
+            read_scope: normalized_read_scope,
+            write_scope: normalized_write_scope,
+            allowed_tools: options.allowed_tools,
+            context: options.context,
             status: SubagentStatus::Queued,
             created_at: now,
             updated_at: now,

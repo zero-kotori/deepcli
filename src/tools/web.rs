@@ -1,5 +1,13 @@
 use serde_json::Value;
 
+pub(super) fn format_web_fetch_text(body: &str, content_type: &str) -> String {
+    if content_type.to_ascii_lowercase().contains("html") || body.contains("<html") {
+        html_to_text(body)
+    } else {
+        collapse_blank_lines(body)
+    }
+}
+
 pub(super) fn format_web_search_result(query: &str, value: &Value) -> String {
     let mut lines = Vec::new();
     let heading = value
@@ -50,6 +58,72 @@ pub(super) fn format_web_search_result(query: &str, value: &Value) -> String {
     } else {
         lines.join("\n")
     }
+}
+
+fn html_to_text(body: &str) -> String {
+    let without_scripts = strip_html_block(body, "script");
+    let without_styles = strip_html_block(&without_scripts, "style");
+    let mut text = String::new();
+    let mut in_tag = false;
+    for ch in without_styles.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                text.push(' ');
+            }
+            '>' => in_tag = false,
+            _ if !in_tag => text.push(ch),
+            _ => {}
+        }
+    }
+    collapse_blank_lines(&decode_basic_entities(&text))
+}
+
+fn strip_html_block(body: &str, tag: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    let open = format!("<{tag}");
+    let close = format!("</{tag}>");
+    let mut output = String::new();
+    let mut index = 0usize;
+    while let Some(start) = lower[index..].find(&open).map(|offset| index + offset) {
+        output.push_str(&body[index..start]);
+        let after_start = lower[start..]
+            .find('>')
+            .map(|offset| start + offset + 1)
+            .unwrap_or(body.len());
+        let end = lower[after_start..]
+            .find(&close)
+            .map(|offset| after_start + offset + close.len())
+            .unwrap_or(after_start);
+        index = end;
+    }
+    output.push_str(&body[index..]);
+    output
+}
+
+fn decode_basic_entities(value: &str) -> String {
+    value
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+}
+
+fn collapse_blank_lines(value: &str) -> String {
+    let mut lines = Vec::new();
+    let mut previous_blank = false;
+    for line in value.lines() {
+        let line = line.split_whitespace().collect::<Vec<_>>().join(" ");
+        let blank = line.is_empty();
+        if blank && previous_blank {
+            continue;
+        }
+        lines.push(line);
+        previous_blank = blank;
+    }
+    lines.join("\n").trim().to_string()
 }
 
 fn collect_web_related_topics(value: &Value, limit: usize) -> Vec<(String, Option<String>)> {
@@ -133,5 +207,18 @@ mod tests {
     fn formats_web_search_empty_result_with_query() {
         let output = format_web_search_result("unknown", &json!({}));
         assert_eq!(output, "no web search summary found for `unknown`");
+    }
+
+    #[test]
+    fn formats_web_fetch_html_as_readable_text() {
+        let output = format_web_fetch_text(
+            "<html><head><style>.x{}</style><script>alert(1)</script></head><body><h1>Title</h1><p>A &amp; B</p></body></html>",
+            "text/html",
+        );
+
+        assert!(output.contains("Title"));
+        assert!(output.contains("A & B"));
+        assert!(!output.contains("alert"));
+        assert!(!output.contains(".x"));
     }
 }
