@@ -1,4 +1,4 @@
-use crate::runtime::{AgentRuntime, RuntimeProgress};
+use crate::runtime::{AgentRuntime, RuntimeProgress, SessionObservationQuestion};
 use anyhow::{anyhow, Result};
 use crossterm::{
     cursor::{MoveToColumn, MoveUp},
@@ -38,6 +38,11 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
         }
         if input.trim() == "/quit" {
             break;
+        }
+        if let Some(output) = answer_native_side_question(&mut runtime, &input)? {
+            println!("{output}");
+            print_native_open_questions(&runtime)?;
+            continue;
         }
 
         runtime.set_progress_sender(Some(progress_tx.clone()));
@@ -539,6 +544,7 @@ async fn wait_for_native_task(
             Ok(done) => {
                 drain_native_progress(progress_rx, render_state)?;
                 finish_native_stream_line(render_state)?;
+                let runtime = done.runtime;
                 match done.result {
                     Ok(output) => {
                         if !render_state.saw_assistant_delta {
@@ -549,7 +555,8 @@ async fn wait_for_native_task(
                         println!("error: {error}");
                     }
                 }
-                return Ok(done.runtime);
+                print_native_open_questions(&runtime)?;
+                return Ok(runtime);
             }
             Err(TryRecvError::Empty) => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
@@ -711,6 +718,76 @@ fn finish_native_stream_line(render_state: &mut NativeRenderState) -> io::Result
     Ok(())
 }
 
+fn answer_native_side_question(runtime: &mut AgentRuntime, input: &str) -> Result<Option<String>> {
+    let answer = input.trim();
+    if answer.is_empty() || answer.starts_with('/') {
+        return Ok(None);
+    }
+    let monitor = runtime.session_monitor()?;
+    let Some(question) = monitor.open_questions.first() else {
+        return Ok(None);
+    };
+    let resolved_answer = native_side_question_answer(question, answer);
+    let message = runtime.answer_current_side_question(&question.id, &resolved_answer)?;
+    let remaining = monitor.open_questions.len().saturating_sub(1);
+    if remaining == 0 {
+        Ok(Some(format!(
+            "{message}\ndeepcli | plan interview answered"
+        )))
+    } else {
+        Ok(Some(format!(
+            "{message}\ndeepcli | plan interview answered | remaining {remaining}"
+        )))
+    }
+}
+
+fn print_native_open_questions(runtime: &AgentRuntime) -> Result<()> {
+    let monitor = runtime.session_monitor()?;
+    for line in native_open_question_lines(&monitor.open_questions) {
+        println!("{line}");
+    }
+    Ok(())
+}
+
+fn native_open_question_lines(questions: &[SessionObservationQuestion]) -> Vec<String> {
+    if questions.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "deepcli | waiting for plan interview answer | questions {}",
+        questions.len()
+    )];
+    for (question_index, question) in questions.iter().enumerate() {
+        let label = if questions.len() == 1 {
+            "plan question".to_string()
+        } else {
+            format!("plan question {}", question_index + 1)
+        };
+        lines.push(format!("{label}: {}", question.question));
+        for (option_index, option) in question.options.iter().enumerate() {
+            lines.push(format!("  {}. {}", option_index + 1, option));
+        }
+        if !question.options.is_empty() {
+            lines.push(format!(
+                "  {}. 自定义输入（直接输入文本）",
+                question.options.len() + 1
+            ));
+        }
+    }
+    lines.push("deepcli | answer with option number or free text".to_string());
+    lines
+}
+
+fn native_side_question_answer(question: &SessionObservationQuestion, input: &str) -> String {
+    let trimmed = input.trim();
+    if let Ok(index) = trimmed.parse::<usize>() {
+        if (1..=question.options.len()).contains(&index) {
+            return question.options[index - 1].clone();
+        }
+    }
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -777,6 +854,45 @@ mod tests {
                 "deepcli | tools folded | events 2 | latest ok read_file | [deepcli read_file slice: lines 1-80 of 5671]".to_string(),
                 "deepcli | provider done | 5.6s | tool calls 1".to_string()
             ]
+        );
+    }
+
+    #[test]
+    fn native_open_question_lines_include_options_and_custom_input() {
+        let question = SessionObservationQuestion {
+            id: "question-id".to_string(),
+            question: "先验证现有模块还是直接实现 runner？".to_string(),
+            options: vec!["先验证".to_string(), "直接实现 runner".to_string()],
+        };
+
+        let lines = native_open_question_lines(&[question]);
+
+        assert_eq!(
+            lines,
+            vec![
+                "deepcli | waiting for plan interview answer | questions 1".to_string(),
+                "plan question: 先验证现有模块还是直接实现 runner？".to_string(),
+                "  1. 先验证".to_string(),
+                "  2. 直接实现 runner".to_string(),
+                "  3. 自定义输入（直接输入文本）".to_string(),
+                "deepcli | answer with option number or free text".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn native_side_question_answer_maps_option_numbers() {
+        let question = SessionObservationQuestion {
+            id: "question-id".to_string(),
+            question: "选择路线".to_string(),
+            options: vec!["路线 A".to_string(), "路线 B".to_string()],
+        };
+
+        assert_eq!(native_side_question_answer(&question, "2"), "路线 B");
+        assert_eq!(native_side_question_answer(&question, "3"), "3");
+        assert_eq!(
+            native_side_question_answer(&question, "自定义路线"),
+            "自定义路线"
         );
     }
 
