@@ -1672,7 +1672,7 @@ fn start_subagent_background(
             workspace.display().to_string(),
             "--yes".to_string(),
             "agent".to_string(),
-            "run".to_string(),
+            "resume".to_string(),
             id.to_string(),
             "--background-child".to_string(),
             "--json".to_string(),
@@ -1683,7 +1683,7 @@ fn start_subagent_background(
             .arg(workspace)
             .arg("--yes")
             .arg("agent")
-            .arg("run")
+            .arg("resume")
             .arg(id.to_string())
             .arg("--background-child")
             .arg("--json")
@@ -1739,7 +1739,7 @@ fn subagent_next_actions(task: &SubagentTask) -> Vec<String> {
     ];
     match task.status {
         SubagentStatus::Queued | SubagentStatus::Failed => {
-            actions.push(format!("deepcli agent run {id} --json"));
+            actions.push(format!("deepcli agent resume {id} --json"));
         }
         SubagentStatus::Running => {
             actions.push(format!("deepcli agent resume {id} --json"));
@@ -2324,6 +2324,13 @@ mod tests {
             .unwrap()
             .iter()
             .any(|action| action == &json!(format!("deepcli agent logs {id} --json"))));
+        let next_actions = execution.raw["next_actions"].as_array().unwrap();
+        assert!(next_actions
+            .iter()
+            .any(|action| action == &json!(format!("deepcli agent resume {id} --json"))));
+        assert!(!next_actions.iter().any(|action| action
+            .as_str()
+            .is_some_and(|value| value.contains("agent run"))));
     }
 
     #[tokio::test]

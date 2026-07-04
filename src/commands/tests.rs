@@ -2997,7 +2997,7 @@ fn command_specific_help_explains_usage_examples_and_notes() {
     let agent_help = CommandRouter::help_for(&["agent".to_string()]).unwrap();
     assert!(agent_help.contains("/agent list [--json] [--output path]"));
     assert!(agent_help.contains("/agent show <id> [--json] [--output path]"));
-    assert!(agent_help.contains("/agent run <id> [--json] [--output path]"));
+    assert!(!agent_help.contains("/agent run <id>"));
     assert!(agent_help.contains("/agent resume <id> [--json] [--output path]"));
     assert!(agent_help.contains("/agent logs <id> [--json] [--output path]"));
     assert!(agent_help.contains("deepcli.agent.inspect.v1"));
@@ -8342,7 +8342,23 @@ async fn agent_logs_json_output_reports_lifecycle_events() {
 }
 
 #[tokio::test]
-async fn agent_run_json_uses_runtime_and_persists_failure_for_resume() {
+async fn agent_run_action_is_not_supported() {
+    let dir = tempdir().unwrap();
+    let executor = test_executor(dir.path());
+    let error = handle_agent(
+        dir.path(),
+        &executor,
+        vec!["run".into(), "abc123".into(), "--json".into()],
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+
+    assert!(error.contains("unsupported /agent action `run`"));
+}
+
+#[tokio::test]
+async fn agent_resume_json_uses_runtime_and_persists_failure_for_resume() {
     let dir = tempdir().unwrap();
     let store = AgentStore::new(dir.path());
     let task = store
@@ -8366,14 +8382,14 @@ async fn agent_run_json_uses_runtime_and_persists_failure_for_resume() {
         &config,
         None,
         &executor,
-        vec!["run".into(), short_id(&task.id), "--json".into()],
+        vec!["resume".into(), short_id(&task.id), "--json".into()],
     )
     .await
     .unwrap();
 
     let value: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(value["schema"], "deepcli.agent.inspect.v1");
-    assert_eq!(value["kind"], "run");
+    assert_eq!(value["kind"], "resume");
     assert_eq!(value["status"], "failed");
     assert!(value["error"]
         .as_str()

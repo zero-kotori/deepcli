@@ -217,7 +217,7 @@ Expected: lifecycle tests pass.
 
 - [ ] **Step 1: Write failing command tests**
 
-Add command tests for `agent spawn --no-start`, `agent run`, `agent resume`, `agent logs`, lifecycle JSON fields in `show/list`, and nextActions for queued/running/stale/completed tasks.
+Add command tests for `agent spawn --no-start`, `agent resume`, `agent logs`, lifecycle JSON fields in `show/list`, and nextActions for queued/running/stale/completed tasks.
 
 Run: `cargo test agent_ --lib`
 
@@ -241,7 +241,7 @@ Expected: tests fail because no runner exists.
 
 - [ ] **Step 4: Implement minimal real runner**
 
-Create the runner that builds a child `AgentRuntime`, marks lifecycle transitions, writes heartbeat/events, and exposes foreground `run/resume`. `spawn_subagent` starts via the runner when safe and reports failure through structured output if start fails.
+Create the runner that builds a child `AgentRuntime`, marks lifecycle transitions, writes heartbeat/events, and exposes foreground `resume`. `spawn_subagent` starts via the runner when safe and reports failure through structured output if start fails.
 
 Run: `cargo test spawn_subagent subagent_runner agent_ --lib`
 

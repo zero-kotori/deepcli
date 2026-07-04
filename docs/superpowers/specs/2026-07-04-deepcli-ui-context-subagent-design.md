@@ -145,7 +145,7 @@ Add append-only JSONL events under `.deepcli/agents/events/<task-id>.jsonl`. Eve
 Extend `/agent` and `deepcli agent`:
 
 - `agent spawn <task>` creates a task and starts it by default unless `--no-start` is passed.
-- `agent run <id>` runs a queued task in the foreground using the same persisted lifecycle.
+- `agent resume <id>` runs or resumes a queued, running, or failed task using the same persisted lifecycle.
 - `agent resume <id>` resumes a queued or stale-running task.
 - `agent logs <id> [--json]` reads the JSONL event log.
 - `agent show/list --json` include lifecycle fields, child session id, heartbeat age, log path, and next actions.

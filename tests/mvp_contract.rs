@@ -2813,7 +2813,7 @@ fn agent_docs_cover_subagent_lifecycle_owner() {
         );
     }
     for item in [
-        "async fn run_subagent_command",
+        "async fn resume_subagent_command",
         "AgentRuntime::new",
         "fn format_agent_logs_json",
     ] {
@@ -2823,9 +2823,11 @@ fn agent_docs_cover_subagent_lifecycle_owner() {
         );
     }
     assert!(architecture_doc.contains("子 Agent task、lifecycle、事件日志和恢复元数据"));
-    assert!(commands_doc.contains("/agent run|resume|logs"));
+    assert!(commands_doc.contains("/agent resume|logs"));
     assert!(features_doc.contains("spawn_subagent"));
-    assert!(features_doc.contains("agent list|show|run|resume|logs --json"));
+    assert!(features_doc.contains("agent list|show|resume|logs --json"));
+    assert!(!commands_doc.contains("/agent run|resume|logs"));
+    assert!(!features_doc.contains("agent list|show|run|resume|logs"));
 }
 
 #[test]

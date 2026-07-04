@@ -18,7 +18,7 @@
 
 `src/commands/delivery_review.rs` 负责 delivery review heuristic、review risk detection、sensitive/dangerous/panic-prone finding projection、`review_diff` 与 `review_worktree`；`/review`、`/verify`、`/handoff` 通过该 owner 复用同一套风险检测。`src/commands/delivery_verify.rs` 负责 `/verify`/`/handoff` 的命令编排、verify/handoff option parser、test/env execution helper 与 verification session selection。`src/commands/delivery.rs` 的 delivery 职责限定为 `/diff`/`/review` 编排与 diff/review owner 委派。
 
-`src/commands/agent.rs` 还拥有 `/agent run|resume|logs`：`run|resume` 构建真实 `AgentRuntime` 子会话并把 started/heartbeat/completed/failed 写回 `AgentStore`，`logs` 从 JSONL 事件日志投影可观察输出。
+`src/commands/agent.rs` 还拥有 `/agent resume|logs`：`resume` 构建真实 `AgentRuntime` 子会话并把 started/heartbeat/completed/failed 写回 `AgentStore`，`logs` 从 JSONL 事件日志投影可观察输出。
 
 ## 边界
 

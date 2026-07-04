@@ -682,7 +682,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         SlashCommand::Agent { args } => {
             matches!(
                 args.first().map(String::as_str),
-                None | Some("list" | "show" | "logs" | "run" | "resume")
+                None | Some("list" | "show" | "logs" | "resume")
             )
         }
         SlashCommand::Test { args } => {
@@ -1057,13 +1057,15 @@ mod tests {
             vec!["list".to_string()],
             vec!["show".to_string(), "abc123".to_string()],
             vec!["logs".to_string(), "abc123".to_string()],
-            vec!["run".to_string(), "abc123".to_string()],
             vec!["resume".to_string(), "abc123".to_string()],
         ] {
             assert!(command_can_run_without_session(&SlashCommand::Agent {
                 args
             }));
         }
+        assert!(!command_can_run_without_session(&SlashCommand::Agent {
+            args: vec!["run".to_string(), "abc123".to_string()],
+        }));
     }
 
     #[test]

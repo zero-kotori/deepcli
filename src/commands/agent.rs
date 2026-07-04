@@ -106,14 +106,14 @@ async fn handle_agent_inner(
             }
             Ok(output)
         }
-        Some("run") | Some("resume") => {
-            let action = args.first().map(String::as_str).unwrap_or("run");
+        Some("resume") => {
+            let action = "resume";
             let id = required_arg(&args, 1, "sub-agent id")?;
-            let options = parse_agent_run_options(&args[2..], &format!("/agent {action}"))?;
+            let options = parse_agent_resume_options(&args[2..], &format!("/agent {action}"))?;
             let config = config
                 .ok_or_else(|| anyhow::anyhow!("/agent {action} requires command context"))?;
             let task = select_subagent_task(&store, id)?;
-            let output = run_subagent_command(
+            let output = resume_subagent_command(
                 workspace,
                 config,
                 provider_override,
@@ -178,14 +178,14 @@ fn parse_agent_read_options(args: &[String], command: &str) -> Result<AgentReadO
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct AgentRunOptions {
+struct AgentResumeOptions {
     json_output: bool,
     output_path: Option<String>,
     background_child: bool,
 }
 
-fn parse_agent_run_options(args: &[String], command: &str) -> Result<AgentRunOptions> {
-    let mut options = AgentRunOptions::default();
+fn parse_agent_resume_options(args: &[String], command: &str) -> Result<AgentResumeOptions> {
+    let mut options = AgentResumeOptions::default();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -233,14 +233,14 @@ fn select_subagent_task(store: &AgentStore, selector: &str) -> Result<SubagentTa
     }
 }
 
-async fn run_subagent_command(
+async fn resume_subagent_command(
     workspace: &Path,
     config: &AppConfig,
     provider_override: Option<&str>,
     store: &AgentStore,
     task: SubagentTask,
     action: &str,
-    options: &AgentRunOptions,
+    options: &AgentResumeOptions,
 ) -> Result<String> {
     if task.status == SubagentStatus::Completed {
         bail!("sub-agent {} is already completed", short_id(&task.id));
@@ -260,7 +260,7 @@ async fn run_subagent_command(
         Ok(runtime) => runtime,
         Err(error) => {
             let failed = store.fail_subagent(task.id, &error.to_string())?;
-            return format_agent_run_output(
+            return format_agent_resume_output(
                 workspace,
                 store,
                 &failed,
@@ -282,7 +282,7 @@ async fn run_subagent_command(
         Ok(output) => {
             append_subagent_output(store, task.id, &output)?;
             let completed = store.complete_subagent(task.id, first_line_for_summary(&output))?;
-            format_agent_run_output(
+            format_agent_resume_output(
                 workspace,
                 store,
                 &completed,
@@ -295,7 +295,7 @@ async fn run_subagent_command(
         Err(error) => {
             append_subagent_output(store, task.id, &format!("error: {error:#}"))?;
             let failed = store.fail_subagent(task.id, &error.to_string())?;
-            format_agent_run_output(
+            format_agent_resume_output(
                 workspace,
                 store,
                 &failed,
@@ -369,12 +369,12 @@ fn first_line_for_summary(output: &str) -> &str {
     output.lines().next().unwrap_or("").trim()
 }
 
-fn format_agent_run_output(
+fn format_agent_resume_output(
     workspace: &Path,
     store: &AgentStore,
     task: &SubagentTask,
     action: &str,
-    options: &AgentRunOptions,
+    options: &AgentResumeOptions,
     output: Option<&str>,
     error: Option<&str>,
 ) -> Result<String> {
@@ -582,7 +582,7 @@ fn agent_next_actions(task: Option<&SubagentTask>, empty: bool) -> Vec<String> {
     if let Some(task) = task {
         match task.status {
             SubagentStatus::Queued => {
-                actions.push(format!("deepcli agent run {}", short_id(&task.id)))
+                actions.push(format!("deepcli agent resume {}", short_id(&task.id)))
             }
             SubagentStatus::Running | SubagentStatus::Failed => {
                 actions.push(format!("deepcli agent resume {}", short_id(&task.id)));
