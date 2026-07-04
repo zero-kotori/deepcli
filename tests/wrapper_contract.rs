@@ -130,13 +130,13 @@ fn wrapper_usage_lists_terminal_where_it_is_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|"),
+            .contains("deepcli kimi [ask|stream|resume|repl|terminal|"),
         "kimi provider routable command list should include terminal: {}",
         run.stdout
     );
     assert!(
         run.stdout
-            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|"),
+            .contains("deepcli deepseek [ask|stream|resume|repl|terminal|"),
         "deepseek provider routable command list should include terminal: {}",
         run.stdout
     );
@@ -165,13 +165,13 @@ fn wrapper_usage_lists_git_workflow_where_it_is_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|git|"),
+            .contains("deepcli kimi [ask|stream|resume|repl|terminal|git|"),
         "kimi provider routable command list should include git: {}",
         run.stdout
     );
     assert!(
         run.stdout
-            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|"),
+            .contains("deepcli deepseek [ask|stream|resume|repl|terminal|git|"),
         "deepseek provider routable command list should include git: {}",
         run.stdout
     );
@@ -225,13 +225,13 @@ fn wrapper_usage_lists_collaboration_queues_where_they_are_routable() {
     );
     assert!(
         run.stdout
-            .contains("deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|"),
+            .contains("deepcli kimi [ask|stream|resume|repl|terminal|git|approval|btw|"),
         "kimi provider routable command list should include approval and btw: {}",
         run.stdout
     );
     assert!(
         run.stdout
-            .contains("deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|"),
+            .contains("deepcli deepseek [ask|stream|resume|repl|terminal|git|approval|btw|"),
         "deepseek provider routable command list should include approval and btw: {}",
         run.stdout
     );

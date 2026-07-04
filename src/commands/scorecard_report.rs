@@ -315,12 +315,16 @@ pub(crate) fn build_scorecard_report(
     }
 
     if workspace.join("src/ui.rs").exists() {
-        scorecard_add_evidence(&mut categories[2], 2, "TUI implementation is present");
+        scorecard_add_evidence(
+            &mut categories[2],
+            2,
+            "native terminal implementation is present",
+        );
     } else {
         scorecard_add_gap(
             &mut categories[2],
-            "TUI source is missing, so session continuity cannot be inspected in-app",
-            "restore or implement the TUI session picker and task monitor",
+            "native terminal source is missing, so interactive sessions cannot start",
+            "restore src/ui/native_terminal.rs and verify `deepcli` interactive startup",
         );
     }
 

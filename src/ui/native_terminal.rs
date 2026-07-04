@@ -11,11 +11,14 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
-use super::worker::WorkerDone;
-
 const NATIVE_INPUT_PROMPT_LABEL: &str = "user ";
 const NATIVE_INPUT_PROMPT: &str = "\x1b[36muser\x1b[0m ";
 const NATIVE_PROGRESS_DETAIL_CHARS: usize = 120;
+
+struct WorkerDone {
+    runtime: AgentRuntime,
+    result: Result<String, String>,
+}
 
 #[derive(Default)]
 struct NativeRenderState {

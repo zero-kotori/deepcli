@@ -91,8 +91,7 @@ Completion-only alias 决策：
 - `completion:kimi`：保留 support provider preset。
 - `completion:ask`：保留 support one-shot alias。
 - `completion:stream`：保留 support streaming one-shot alias。
-- `completion:tui`：保留 support 原生终端聊天兼容 alias。
-- `completion:repl` -> `tui`：保留 legacy 原生终端聊天兼容 alias，降级展示并指向 `tui`。
+- `completion:repl`：保留 support 原生终端聊天兼容 alias。
 - `completion:sessions`：保留 support `session list` alias。
 - `completion:completions`：保留 support `completion` alias。
 

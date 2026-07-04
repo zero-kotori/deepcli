@@ -91,30 +91,6 @@ pub(crate) async fn handle_restore_backup(
     Ok(output)
 }
 
-pub(crate) fn handle_restore_backup_dry_run(
-    workspace: &Path,
-    current: Option<String>,
-    args: &[String],
-    write_output: bool,
-) -> Result<String> {
-    let parsed = parse_restore_backup_args(args, current)?;
-    if !parsed.dry_run {
-        bail!(
-            "stop or wait for the running task before restoring; use `/session restore-backup latest --dry-run --json` to preview while the agent is running"
-        );
-    }
-    if parsed.output_path.is_some() && !write_output {
-        bail!(
-            "`/session restore-backup --dry-run --output` writes a file; omit `--output` or stop/wait before writing preview artifacts"
-        );
-    }
-    let output = render_restore_backup_dry_run(workspace, &parsed)?;
-    if let Some(output_path) = &parsed.output_path {
-        write_command_output(workspace, output_path, &output)?;
-    }
-    Ok(output)
-}
-
 fn render_restore_backup_dry_run(workspace: &Path, parsed: &RestoreBackupArgs) -> Result<String> {
     let store = SessionStore::new(workspace);
     let (session, note) = resolve_restore_backup_session(

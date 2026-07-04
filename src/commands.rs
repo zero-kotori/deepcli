@@ -173,7 +173,6 @@ pub(crate) use round_goal_status::*;
 pub(crate) use scorecard_opportunities::*;
 pub(crate) use scorecard_report::*;
 use selftest::handle_selftest;
-pub(crate) use selftest::handle_selftest_local;
 pub(crate) use session::{handle_session, handle_session_command};
 pub(crate) use session_catalog::{
     handle_session_default_list, handle_session_list, handle_session_prune_empty,
@@ -198,7 +197,7 @@ pub(crate) use session_recovery::{
     resolve_session_for_next_actions, session_has_next_action_signals,
 };
 pub(crate) use session_rename::handle_session_rename;
-pub(crate) use session_restore::{handle_restore_backup, handle_restore_backup_dry_run};
+pub(crate) use session_restore::handle_restore_backup;
 pub(crate) use session_resumable::{
     format_resumable_session_list, resolve_resumable_session_for_workspace,
     session_has_resumable_context, session_is_low_information_clarification_only,

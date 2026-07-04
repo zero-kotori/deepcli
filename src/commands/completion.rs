@@ -323,7 +323,7 @@ fn format_completion_guide(command_count: usize) -> String {
         "  deepcli completion json --output .deepcli/exports/commands.json".to_string(),
         "notes:".to_string(),
         "  - no session is created and no provider is called".to_string(),
-        "  - use /completion [bash|zsh|fish|json] inside the TUI".to_string(),
+        "  - use /completion [bash|zsh|fish|json] inside native terminal chat".to_string(),
     ]
     .join("\n")
 }
@@ -703,7 +703,7 @@ fn completion_words(commands: &[CompletionCommand]) -> String {
 }
 
 fn provider_completion_words() -> &'static str {
-    "ask stream resume tui repl version about quickstart recipes recipe playbook workflow workflows scorecard benchmark bench sota round iterate iteration selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
+    "ask stream resume repl version about quickstart recipes recipe playbook workflow workflows scorecard benchmark bench sota round iterate iteration selftest preflight release-check completion diagnose support health timeout model provider use switch models providers history cleanup accept gate login logout check docker compiler setup logs privacy"
 }
 
 fn fish_escape(value: &str) -> String {

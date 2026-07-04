@@ -2468,7 +2468,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ask_user_question_enqueues_options_for_interview_dialog() {
+    async fn ask_user_question_enqueues_options_for_interview_prompt() {
         let dir = tempdir().unwrap();
         let store = crate::session::SessionStore::new(dir.path());
         let session = store

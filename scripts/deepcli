@@ -242,12 +242,11 @@ Usage:
   deepcli init [--quick]          Run /init without typing the slash
   deepcli status|usage|goal|plan|fork|terminal|accept|gate|verify|handoff|trace|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion
                                    Run common diagnostic slash commands
-  deepcli tui                     Compatibility alias for native terminal chat
   deepcli ask <prompt>            Run a one-shot task in the current directory
   deepcli stream <prompt>         Run a streaming one-shot chat task
-  deepcli kimi [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli kimi [ask|stream|resume|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider kimi --model kimi-for-coding
-  deepcli deepseek [ask|stream|resume|tui|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
+  deepcli deepseek [ask|stream|resume|repl|terminal|git|approval|btw|version|diagnose|support|timeout|model|goal|plan|fork|cleanup|accept|gate|login|logout|compiler|install|logs|privacy|recipes|scorecard|opportunities|benchmark|round|selftest|preflight|completion] [args...]
                                    Use --provider deepseek --model deepseek-v4-pro
   deepcli help                    Show this help
 
@@ -258,7 +257,6 @@ you supplied them:
 Examples:
   deepcli
   deepcli repl
-  deepcli tui
   deepcli resume
   deepcli resume 6155c14e --dry-run --json
   deepcli quickstart
@@ -398,10 +396,6 @@ run_provider_command() {
       run_deepcli --provider "$provider" --model "$model" "$@"
       ;;
     stream )
-      run_deepcli --provider "$provider" --model "$model" "$@"
-      ;;
-    tui )
-      shift
       run_deepcli --provider "$provider" --model "$model" "$@"
       ;;
     repl )
@@ -551,10 +545,6 @@ case "${1:-}" in
         run_deepcli /test "$@"
         ;;
     esac
-    ;;
-  tui )
-    shift
-    run_deepcli "$@"
     ;;
   repl )
     shift

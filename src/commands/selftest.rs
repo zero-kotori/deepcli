@@ -46,12 +46,6 @@ struct SelftestReport {
     tests: Vec<DiscoveredTestCommand>,
 }
 
-pub(crate) fn handle_selftest_local(workspace: &Path, args: Vec<String>) -> Result<String> {
-    let config = AppConfig::load_effective(workspace, None)?;
-    let registry = ToolRegistry::mvp();
-    handle_selftest(workspace, &config, &registry, args)
-}
-
 pub(super) fn handle_selftest(
     workspace: &Path,
     config: &AppConfig,

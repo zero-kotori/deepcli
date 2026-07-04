@@ -7948,14 +7948,11 @@ fn completion_json_output_is_structured_and_written() {
         .any(|item| item["name"] == "/cleanup"
             && item["successor"] == "/session prune-empty"
             && item["policy"].as_str().unwrap().contains("compatibility")));
-    assert!(value["legacyCommands"]
+    assert!(value["commands"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|item| item["name"] == "repl"
-            && item["successor"] == "tui"
-            && item["surface"] == "completionAlias"
-            && item["policy"].as_str().unwrap().contains("compatibility")));
+        .any(|item| item["name"] == "repl" && item["group"] == "support"));
 
     let written = fs::read_to_string(dir.path().join(".deepcli/exports/commands.json")).unwrap();
     assert_eq!(written, output);

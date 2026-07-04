@@ -4,7 +4,7 @@
 
 ## CLI 与命令发现
 
-- 默认 `deepcli` 进入原生终端聊天；`deepcli tui` / `deepcli repl` 为兼容 alias；`deepcli ask|stream <prompt>` 为 one-shot（缺 prompt 本地报错）。
+- 默认 `deepcli` 进入原生终端聊天；`deepcli repl` 为兼容 alias；`deepcli tui` / `--tui` 已移除并会提示使用 `deepcli`；`deepcli ask|stream <prompt>` 为 one-shot（缺 prompt 本地报错）。
 - 高频 slash 命令、provider 前缀（deepseek/kimi）与模式有顶层别名；`--help`/`-h` 转发到 `/help <topic>`。
 - 本地 one-shot 命令不创建空 session、不预调用 provider；未知/拼错命令本地拦截并给 nearest-command 建议。
 - `completion` 输出 bash/zsh/fish 脚本与 JSON 命令目录。

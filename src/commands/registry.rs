@@ -152,17 +152,10 @@ const COMPLETION_ALIAS_METADATA: &[CompletionAliasMetadata] = &[
         CommandGroup::Support,
     ),
     completion_alias(
-        "tui",
-        "Compatibility alias for native terminal chat.",
-        true,
-        CommandGroup::Support,
-    ),
-    legacy_completion_alias(
         "repl",
         "Compatibility alias for native terminal chat.",
         true,
-        "tui",
-        "keep as native terminal chat compatibility alias",
+        CommandGroup::Support,
     ),
     completion_alias(
         "sessions",
@@ -243,23 +236,6 @@ const fn completion_alias(
         group,
         successor: None,
         policy: None,
-    }
-}
-
-const fn legacy_completion_alias(
-    name: &'static str,
-    summary: &'static str,
-    running_safe: bool,
-    successor: &'static str,
-    policy: &'static str,
-) -> CompletionAliasMetadata {
-    CompletionAliasMetadata {
-        name,
-        summary,
-        running_safe,
-        group: CommandGroup::Legacy,
-        successor: Some(successor),
-        policy: Some(policy),
     }
 }
 

@@ -49,12 +49,8 @@ pub struct Cli {
     #[arg(long)]
     pub stream: bool,
 
-    /// Compatibility flag for native terminal chat.
-    #[arg(long)]
-    pub tui: bool,
-
     /// Start native terminal chat.
-    #[arg(long, conflicts_with = "tui")]
+    #[arg(long)]
     pub repl: bool,
 
     /// Grant first-use local read authorization and approve non-dangerous local actions.
@@ -172,12 +168,6 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
     }
 }
 
-#[cfg(test)]
-fn should_start_tui(cli: &Cli) -> bool {
-    let _ = cli;
-    false
-}
-
 fn should_use_provider_stream(cli: &Cli) -> bool {
     cli.stream || cli.task.is_empty()
 }
@@ -215,9 +205,8 @@ fn normalize_cli_aliases(mut cli: Cli) -> Result<Cli> {
             cli.stream = true;
             require_prompt_after_mode(&cli, "stream")?;
         }
-        "tui" => {
-            cli.task.remove(0);
-            cli.tui = true;
+        "tui" | "--tui" => {
+            bail!("`deepcli tui` has been removed. Use `deepcli` for native terminal chat.")
         }
         "repl" => {
             cli.task.remove(0);
@@ -292,7 +281,6 @@ fn normalize_provider_alias(cli: &mut Cli, provider: &str, model: &str) -> Resul
     }
 
     let Some(mode) = cli.task.first().map(String::as_str) else {
-        cli.tui = true;
         return Ok(());
     };
 
@@ -306,9 +294,8 @@ fn normalize_provider_alias(cli: &mut Cli, provider: &str, model: &str) -> Resul
             cli.stream = true;
             require_prompt_after_mode(cli, "stream")?;
         }
-        "tui" => {
-            cli.task.remove(0);
-            cli.tui = true;
+        "tui" | "--tui" => {
+            bail!("`deepcli tui` has been removed. Use `deepcli` for native terminal chat.")
         }
         "repl" => {
             cli.task.remove(0);
@@ -338,7 +325,6 @@ fn top_level_entries() -> &'static [&'static str] {
         "kimi",
         "ask",
         "stream",
-        "tui",
         "repl",
         "resume",
         "sessions",
@@ -441,7 +427,6 @@ fn normalize_resume_alias(cli: &mut Cli) -> Result<()> {
     }
 
     cli.resume = Some(cli.task.remove(0));
-    cli.tui = true;
     if !cli.task.is_empty() {
         bail!("resume accepts at most one session id");
     }
@@ -783,7 +768,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         }
@@ -806,25 +790,24 @@ mod tests {
 
         let cli = Cli::try_parse_from(["deepcli", "--repl"]).unwrap();
         assert!(cli.repl);
-        assert!(!should_start_tui(&cli));
 
         let cli = Cli::try_parse_from(["deepcli"]).unwrap();
-        assert!(!should_start_tui(&cli));
+        assert!(should_use_provider_stream(&cli));
 
-        assert!(Cli::try_parse_from(["deepcli", "--tui", "--repl"]).is_err());
+        let error = normalize_cli_aliases(test_cli(&["--tui", "--repl"])).unwrap_err();
+        assert!(error.to_string().contains("removed"));
     }
 
     #[test]
     fn interactive_default_uses_native_terminal_not_fullscreen_tui() {
         let cli = test_cli(&[]);
         assert!(requires_interactive_terminal(&cli));
-        assert!(!should_start_tui(&cli));
         assert!(should_use_provider_stream(&cli));
 
-        let cli = normalize_cli_aliases(test_cli(&["tui"])).unwrap();
-        assert!(requires_interactive_terminal(&cli));
-        assert!(!should_start_tui(&cli));
-        assert!(should_use_provider_stream(&cli));
+        let error = normalize_cli_aliases(test_cli(&["tui"])).unwrap_err();
+        assert!(error.to_string().contains("removed"));
+        let error = normalize_cli_aliases(test_cli(&["--tui"])).unwrap_err();
+        assert!(error.to_string().contains("removed"));
 
         let cli = normalize_cli_aliases(test_cli(&["resume", "session-123"])).unwrap();
         assert!(requires_interactive_terminal(&cli));
@@ -885,10 +868,12 @@ mod tests {
         assert!(cli.resume_picker);
         assert!(cli.task.is_empty());
 
+        let error = normalize_cli_aliases(test_cli(&["deepseek", "tui"])).unwrap_err();
+        assert!(error.to_string().contains("removed"));
+
         let cli = normalize_cli_aliases(test_cli(&["deepseek", "resume", "abc123"])).unwrap();
         assert_eq!(cli.provider.as_deref(), Some("deepseek"));
         assert_eq!(cli.resume.as_deref(), Some("abc123"));
-        assert!(cli.tui);
         assert!(cli.task.is_empty());
 
         let cli = normalize_cli_aliases(test_cli(&[
@@ -911,7 +896,6 @@ mod tests {
                 ".deepcli/exports/resume.json"
             ]
         );
-        assert!(!cli.tui);
         assert!(cli.resume.is_none());
         assert_eq!(
             parse_one_shot_command(&cli.task).unwrap(),
@@ -1611,7 +1595,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: false,
         })
@@ -1633,7 +1616,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1656,7 +1638,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1678,7 +1659,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1709,7 +1689,6 @@ mod tests {
             resume: Some(prefix),
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1745,7 +1724,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1782,7 +1760,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1812,7 +1789,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1891,7 +1867,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -1917,7 +1892,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1948,7 +1922,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -1976,7 +1949,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2014,7 +1986,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2045,7 +2016,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2077,7 +2047,6 @@ mod tests {
             resume: None,
             resume_picker: false,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
@@ -2108,7 +2077,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2135,7 +2103,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2169,7 +2136,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2201,7 +2167,6 @@ mod tests {
                 resume: None,
                 resume_picker: false,
                 stream: false,
-                tui: false,
                 repl: false,
                 yes: true,
             })
@@ -2227,7 +2192,6 @@ mod tests {
             resume: None,
             resume_picker: true,
             stream: false,
-            tui: false,
             repl: false,
             yes: true,
         })
