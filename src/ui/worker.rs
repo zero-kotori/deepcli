@@ -2,7 +2,10 @@ use crate::runtime::{AgentRuntime, RuntimeProgress};
 use std::sync::mpsc::Receiver;
 
 use super::monitor_tools::ToolLogItem;
-use super::{format_action_event, sync_active_session_ref, ChatLine, TuiState};
+use super::{
+    format_action_event, open_interview_dialog_with_options, session_monitor_for_state,
+    sync_active_session_ref, ChatLine, TuiState,
+};
 
 pub(super) struct WorkerDone {
     pub(super) runtime: AgentRuntime,
@@ -132,6 +135,7 @@ pub(super) fn drain_done(state: &mut TuiState, done_rx: &Receiver<WorkerDone>) {
                         content: output,
                     });
                 }
+                open_first_user_question_if_idle(state);
             }
             Err(error) => {
                 state.last_event = format_action_event("action failed", &error);
@@ -143,4 +147,19 @@ pub(super) fn drain_done(state: &mut TuiState, done_rx: &Receiver<WorkerDone>) {
             }
         }
     }
+}
+
+fn open_first_user_question_if_idle(state: &mut TuiState) {
+    if state.dialog.is_some()
+        || state.side_question_prompt.is_some()
+        || state.credential_prompt.is_some()
+    {
+        return;
+    }
+    let Some(question) = session_monitor_for_state(state)
+        .and_then(|monitor| monitor.open_questions.into_iter().next())
+    else {
+        return;
+    };
+    open_interview_dialog_with_options(state, question.id, question.question, question.options);
 }

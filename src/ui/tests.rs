@@ -666,6 +666,48 @@ fn worker_done_returns_transcript_to_latest_output() {
 }
 
 #[test]
+fn worker_done_opens_interview_for_open_side_question() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let session_id = runtime.session_id();
+    let session = SessionStore::new(dir.path()).load(&session_id).unwrap();
+    session
+        .enqueue_side_question_with_options(
+            "which route should I use?",
+            vec!["Validate first".to_string(), "Implement Task 6".to_string()],
+        )
+        .unwrap();
+    let mut state = test_tui_state();
+    state.running = true;
+    let (done_tx, done_rx) = mpsc::channel();
+    done_tx
+        .send(WorkerDone {
+            runtime,
+            result: Ok("等待用户回答 plan 采访问题".to_string()),
+        })
+        .unwrap();
+
+    drain_done(&mut state, &done_rx);
+
+    assert!(matches!(state.dialog, Some(TuiDialog::Interview(_))));
+    let body = dialog_body_for_state(&state, 12).unwrap();
+    assert!(body.contains("1. Validate first"));
+    assert!(body.contains("2. Implement Task 6"));
+    assert!(body.contains("3. 自定义输入"));
+}
+
+#[test]
 fn transcript_scroll_keys_move_history_window() {
     let mut state = TuiState {
         runtime: None,
@@ -1965,6 +2007,7 @@ fn task_monitor_tabs_format_usage_tests_environment_approvals_and_trace() {
         open_questions: vec![SessionObservationQuestion {
             id: "87654321-aaaa-bbbb-cccc-123456789abc".to_string(),
             question: "switch model?".to_string(),
+            options: Vec::new(),
         }],
         recent_events: vec![SessionObservationEvent {
             event_type: "test_run".to_string(),
@@ -3564,6 +3607,56 @@ fn interview_dialog_saves_side_question_answer() {
     assert_eq!(updated[0].id, question.id);
     assert_eq!(updated[0].status, SideQuestionStatus::Answered);
     assert_eq!(updated[0].answer.as_deref(), Some("use v4-pro"));
+}
+
+#[test]
+fn interview_dialog_saves_numbered_option_answer() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let session_id = runtime.session_id();
+    let store = SessionStore::new(dir.path());
+    let session = store.load(&session_id).unwrap();
+    let question = session
+        .enqueue_side_question_with_options(
+            "which route should I use?",
+            vec!["Validate first".to_string(), "Implement Task 6".to_string()],
+        )
+        .unwrap();
+    let mut state = test_tui_state();
+    state.runtime = Some(runtime);
+    state.monitor_tab = MonitorTab::Approvals;
+
+    assert!(handle_approval_tab_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state
+    ));
+    assert!(matches!(state.dialog, Some(TuiDialog::Interview(_))));
+
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Char('2'), KeyModifiers::NONE),
+        &mut state,
+    );
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+    );
+
+    let loaded = store.load(&session_id).unwrap();
+    let updated = loaded.load_side_questions().unwrap();
+    assert_eq!(updated[0].id, question.id);
+    assert_eq!(updated[0].status, SideQuestionStatus::Answered);
+    assert_eq!(updated[0].answer.as_deref(), Some("Implement Task 6"));
 }
 
 #[test]

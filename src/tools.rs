@@ -956,6 +956,7 @@ impl ToolExecutor {
 
     async fn ask_user_question(&self, args: Value) -> Result<ToolExecution> {
         let question = required_str(&args, "question")?.trim();
+        let options = optional_string_array(&args, "options")?;
         let decision = self.evaluate_declared_tool(
             "ask_user_question",
             ToolPermissionContext {
@@ -968,7 +969,7 @@ impl ToolExecutor {
             .session
             .as_ref()
             .ok_or_else(|| anyhow!("ask_user_question requires an active session"))?;
-        let item = session.enqueue_side_question(question)?;
+        let item = session.enqueue_side_question_with_options(question, options)?;
         let content = format!(
             "queued user question {}: {}",
             short_id(&item.id),
@@ -1463,6 +1464,23 @@ fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
         ),
         _ => default,
     }
+}
+
+fn optional_string_array(args: &Value, key: &str) -> Result<Vec<String>> {
+    let Some(value) = args.get(key) else {
+        return Ok(Vec::new());
+    };
+    let Some(items) = value.as_array() else {
+        anyhow::bail!("argument `{key}` must be an array of strings");
+    };
+    items
+        .iter()
+        .map(|item| {
+            item.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| anyhow!("argument `{key}` must be an array of strings"))
+        })
+        .collect()
 }
 
 fn optional_glob(args: &Value) -> Result<Option<GlobSet>> {
@@ -2447,6 +2465,42 @@ mod tests {
         assert_eq!(questions.len(), 1);
         assert_eq!(questions[0].question, "Which target should I verify?");
         assert_eq!(execution.raw["question"]["status"], "open");
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_enqueues_options_for_interview_dialog() {
+        let dir = tempdir().unwrap();
+        let store = crate::session::SessionStore::new(dir.path());
+        let session = store
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+
+        executor
+            .execute(
+                "ask_user_question",
+                json!({
+                    "question": "Which plan route should I use?",
+                    "options": ["Validate first", "Implement Task 6"]
+                }),
+            )
+            .await
+            .unwrap();
+
+        let questions = session.load_side_questions().unwrap();
+        assert_eq!(
+            questions[0].options,
+            vec!["Validate first".to_string(), "Implement Task 6".to_string()]
+        );
     }
 
     #[tokio::test]

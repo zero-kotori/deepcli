@@ -77,7 +77,11 @@ pub(super) fn schema_for(name: &str) -> Value {
         ),
         "todo_write" => todo_write_schema(),
         "ask_user_question" => object_schema(
-            vec![("question", "string"), ("context", "string")],
+            vec![
+                ("question", "string"),
+                ("context", "string"),
+                ("options", "array"),
+            ],
             &["question"],
         ),
         "web_search" => object_schema(vec![("query", "string")], &["query"]),

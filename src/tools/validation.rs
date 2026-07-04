@@ -68,7 +68,7 @@ fn allowed_arguments(name: &str) -> BTreeSet<&'static str> {
         "check_environment" => ["target"].into(),
         "setup_environment" => ["target", "approved", "install_missing", "smoke_test"].into(),
         "todo_write" => ["title", "todos"].into(),
-        "ask_user_question" => ["question", "context"].into(),
+        "ask_user_question" => ["question", "context", "options"].into(),
         "web_search" => ["query"].into(),
         "web_fetch" => ["url", "max_chars"].into(),
         "prompt_get" => ["name"].into(),
@@ -149,6 +149,7 @@ fn validate_argument_types(name: &str, args: &Value) -> Result<()> {
         "ask_user_question" => {
             expect_string(args, "question")?;
             expect_optional_string(args, "context")?;
+            expect_optional_string_array(args, "options")?;
         }
         "web_fetch" => {
             expect_string(args, "url")?;

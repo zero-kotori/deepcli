@@ -80,7 +80,7 @@ pub use dashboard::{render_dashboard, TuiSnapshot};
 #[cfg(test)]
 use dialogs::{dialog_body_for_state, open_agent_editor_dialog, replace_dialog_field, DialogKind};
 use dialogs::{
-    handle_dialog_key, open_interview_dialog, open_latest_agent_editor_dialog,
+    handle_dialog_key, open_interview_dialog_with_options, open_latest_agent_editor_dialog,
     open_settings_dialog, TuiDialog,
 };
 use dialogs::{open_diff_dialog, render_dialog};

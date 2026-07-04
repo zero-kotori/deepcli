@@ -177,6 +177,7 @@ pub(super) fn session_monitor_from_session(session: &Session) -> Result<SessionM
         .map(|question| SessionObservationQuestion {
             id: question.id.to_string(),
             question: question.question,
+            options: question.options,
         })
         .collect();
     let events = session.load_audit_events()?;

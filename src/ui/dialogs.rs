@@ -113,6 +113,7 @@ pub(super) struct SettingsDialog {
 pub(super) struct InterviewDialog {
     pub(super) id: String,
     pub(super) question: String,
+    pub(super) options: Vec<String>,
     pub(super) input: MessageBox,
 }
 
@@ -121,10 +122,16 @@ pub(super) struct DialogView {
     pub(super) body: String,
 }
 
-pub(super) fn open_interview_dialog(state: &mut TuiState, id: String, question: String) {
+pub(super) fn open_interview_dialog_with_options(
+    state: &mut TuiState,
+    id: String,
+    question: String,
+    options: Vec<String>,
+) {
     state.dialog = Some(TuiDialog::Interview(InterviewDialog {
         id,
         question: question.clone(),
+        options,
         input: MessageBox::new(),
     }));
     state.side_question_prompt = None;
@@ -423,13 +430,21 @@ fn settings_view(dialog: &SettingsDialog) -> DialogView {
 }
 
 fn interview_view(dialog: &InterviewDialog) -> DialogView {
+    let mut body = vec![compact_ui_text(&dialog.question, 100)];
+    if !dialog.options.is_empty() {
+        body.extend(
+            dialog
+                .options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| format!("{}. {}", index + 1, compact_ui_text(option, 96))),
+        );
+        body.push(format!("{}. 自定义输入", dialog.options.len() + 1));
+    }
+    body.push(format!("answer: {}", dialog.input.buffer()));
     DialogView {
         title: "Interview".to_string(),
-        body: format!(
-            "{}\nanswer: {}",
-            compact_ui_text(&dialog.question, 100),
-            dialog.input.buffer()
-        ),
+        body: body.join("\n"),
     }
 }
 
@@ -525,11 +540,38 @@ fn handle_interview_key(key: KeyEvent, state: &mut TuiState) -> bool {
             confirm_interview_dialog(state);
             true
         }
+        KeyCode::Char(ch) if key.modifiers.is_empty() && ch.is_ascii_digit() => {
+            if select_interview_option(state, ch) {
+                return true;
+            }
+            handle_prompt_input_key(interview_input_mut(state), key);
+            true
+        }
         _ => {
             handle_prompt_input_key(interview_input_mut(state), key);
             true
         }
     }
+}
+
+fn select_interview_option(state: &mut TuiState, ch: char) -> bool {
+    let Some(index) = ch.to_digit(10).map(|value| value as usize) else {
+        return false;
+    };
+    let Some(TuiDialog::Interview(dialog)) = state.dialog.as_mut() else {
+        return false;
+    };
+    if dialog.options.is_empty() || index == 0 || index > dialog.options.len() + 1 {
+        return false;
+    }
+    dialog.input.clear();
+    if index <= dialog.options.len() {
+        dialog.input.set_buffer(dialog.options[index - 1].clone());
+        state.last_event = "interview option selected".to_string();
+    } else {
+        state.last_event = "interview custom answer selected".to_string();
+    }
+    true
 }
 
 fn confirm_interview_dialog(state: &mut TuiState) {

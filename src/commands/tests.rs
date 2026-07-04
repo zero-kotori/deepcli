@@ -15856,6 +15856,7 @@ fn formats_side_questions_by_default_and_all() {
     let open = SideQuestion {
         id: uuid::Uuid::new_v4(),
         question: "open item".to_string(),
+        options: Vec::new(),
         answer: None,
         status: SideQuestionStatus::Open,
         created_at: now,
@@ -15864,6 +15865,7 @@ fn formats_side_questions_by_default_and_all() {
     let answered = SideQuestion {
         id: uuid::Uuid::new_v4(),
         question: "answered item".to_string(),
+        options: Vec::new(),
         answer: Some("done".to_string()),
         status: SideQuestionStatus::Answered,
         created_at: now,

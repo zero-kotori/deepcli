@@ -124,7 +124,7 @@ Current user requirement:
 Plan-mode rules:
 - Do not modify files or execute implementation steps.
 - Use read-only exploration before answering: inspect relevant files, search for existing patterns, and check git context when useful.
-- After initial read-only exploration, call `ask_user_question` with 1-3 focused, code-context-aware questions before finalizing the plan.
+- After initial read-only exploration, call `ask_user_question` with 1-3 focused, code-context-aware questions before finalizing the plan. Include an `options` array with 2-4 concise choices whenever practical; the UI will also allow custom input.
 - Ask only questions that depend on this requirement and this repository. Do not use generic fixed planning questions.
 - Do not ask the user whether the plan is okay; finish with a concrete plan when enough context is available.
 - If more information is needed after queued questions, explain what is blocked.
@@ -296,6 +296,7 @@ pub struct SessionObservationApproval {
 pub struct SessionObservationQuestion {
     pub id: String,
     pub question: String,
+    pub options: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -659,6 +660,12 @@ impl CompletionDecision {
             )),
         }
     }
+
+    fn waits_for_user_input(&self) -> bool {
+        self.blockers
+            .iter()
+            .any(|blocker| blocker.starts_with("open user question count:"))
+    }
 }
 
 impl AgentRuntime {
@@ -917,6 +924,7 @@ impl AgentRuntime {
             .map(|question| SessionObservationQuestion {
                 id: question.id.to_string(),
                 question: question.question,
+                options: question.options,
             })
             .collect();
         let events = self.session.load_audit_events()?;
@@ -1479,6 +1487,17 @@ impl AgentRuntime {
                     completion_hook_continuations,
                 )?;
                 if decision.action == CompletionAction::Continue {
+                    if decision.waits_for_user_input() {
+                        let content = self.pause_for_user_questions()?;
+                        self.record_agent_loop_transition(
+                            &mut loop_tracker,
+                            Some(iteration_number),
+                            AgentLoopState::Completed,
+                            AgentLoopTransitionReason::CompletionBlocked,
+                            json!({ "waiting_for_user": true }),
+                        )?;
+                        return Ok(content);
+                    }
                     self.session.append_audit_event(
                         "completion_hook_blocked",
                         json!({
@@ -1662,6 +1681,18 @@ impl AgentRuntime {
                 json!({ "tool_calls": turn_tool_calls.len() }),
             )?;
 
+            if mode == AgentRunMode::Planning && self.has_open_side_questions()? {
+                let content = self.pause_for_user_questions()?;
+                self.record_agent_loop_transition(
+                    &mut loop_tracker,
+                    Some(iteration_number),
+                    AgentLoopState::Completed,
+                    AgentLoopTransitionReason::CompletionBlocked,
+                    json!({ "waiting_for_user": true }),
+                )?;
+                return Ok(content);
+            }
+
             if budget_skipped_this_turn > 0 {
                 consecutive_budget_skipped_turns += 1;
                 if consecutive_budget_skipped_turns >= budget_skip_turn_limit {
@@ -1701,6 +1732,32 @@ impl AgentRuntime {
                 "critical_files": extract_critical_files_for_implementation(document),
             }),
         )
+    }
+
+    fn has_open_side_questions(&self) -> Result<bool> {
+        Ok(self
+            .session
+            .load_side_questions()?
+            .iter()
+            .any(|question| question.status == SideQuestionStatus::Open))
+    }
+
+    fn pause_for_user_questions(&mut self) -> Result<String> {
+        let open_questions = self
+            .session
+            .load_side_questions()?
+            .into_iter()
+            .filter(|question| question.status == SideQuestionStatus::Open)
+            .collect::<Vec<_>>();
+        let content = if open_questions.len() == 1 {
+            format!("等待用户回答 plan 采访问题：{}", open_questions[0].question)
+        } else {
+            format!("等待用户回答 {} 个 plan 采访问题。", open_questions.len())
+        };
+        self.session.append_message("assistant", &content)?;
+        self.session.set_state(SessionState::WaitingUser)?;
+        self.session.write_summary(&content)?;
+        Ok(content)
     }
 
     fn provider_turn_timeout(&self) -> Duration {
@@ -1776,11 +1833,6 @@ impl AgentRuntime {
         _iteration: usize,
         continuation_count: usize,
     ) -> Result<CompletionDecision> {
-        let continuation_limit = completion_hook_continuation_limit();
-        if continuation_count >= continuation_limit {
-            return Ok(CompletionDecision::accept());
-        }
-
         let mut blockers = Vec::new();
         if self.planning_mode_active {
             if let Some(blocker) = planning_critical_files_blocker(content) {
@@ -1830,7 +1882,14 @@ impl AgentRuntime {
             blockers.push(format!("failed plan steps: {}", failed_steps.join(", ")));
         }
 
-        if blockers.is_empty() {
+        let non_overridable_blocker = blockers.iter().any(|blocker| {
+            blocker.starts_with("open user question count:")
+                || blocker == PLAN_USER_QUESTION_BLOCKER
+        });
+        if blockers.is_empty()
+            || (continuation_count >= completion_hook_continuation_limit()
+                && !non_overridable_blocker)
+        {
             Ok(CompletionDecision::accept())
         } else {
             Ok(CompletionDecision::continue_with(blockers))
@@ -2310,7 +2369,7 @@ impl<'a> SessionContextManager<'a> {
         if let Some(section) = self.render_plan()? {
             sections.push(section);
         }
-        if let Some(section) = self.render_open_questions()? {
+        if let Some(section) = self.render_side_questions()? {
             sections.push(section);
         }
         if let Some(section) = self.render_pending_approvals()? {
@@ -2396,18 +2455,18 @@ impl<'a> SessionContextManager<'a> {
         )))
     }
 
-    fn render_open_questions(&self) -> Result<Option<String>> {
+    fn render_side_questions(&self) -> Result<Option<String>> {
         let questions = self
             .session
             .load_side_questions()?
             .into_iter()
-            .filter(|question| question.status == SideQuestionStatus::Open)
+            .filter(|question| question.status != SideQuestionStatus::Cleared)
             .collect::<Vec<_>>();
         if questions.is_empty() {
             return Ok(None);
         }
         Ok(Some(format!(
-            "Open questions:\n{}",
+            "Side questions:\n{}",
             questions
                 .iter()
                 .map(format_side_question_context)
@@ -2634,12 +2693,20 @@ fn render_goal_context(goal: &GoalContract) -> String {
 }
 
 fn format_side_question_context(question: &SideQuestion) -> String {
-    format!(
-        "- {} at {}: {}",
+    let mut line = format!(
+        "- {} [{:?}] at {}: {}",
         question.id,
+        question.status,
         question.created_at.to_rfc3339(),
         truncate_chars(&question.question, 600)
-    )
+    );
+    if !question.options.is_empty() {
+        line.push_str(&format!("\n  options: {}", question.options.join(" | ")));
+    }
+    if let Some(answer) = question.answer.as_deref() {
+        line.push_str(&format!("\n  answer: {}", truncate_chars(answer, 600)));
+    }
+    line
 }
 
 fn format_approval_context(approval: &ApprovalRequest) -> String {
@@ -3883,6 +3950,41 @@ mod tests {
     }
 
     #[test]
+    fn resumed_session_context_includes_answered_side_questions() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        let question = runtime
+            .session
+            .enqueue_side_question_with_options(
+                "Which route should the plan use?",
+                vec!["Validate first".to_string(), "Implement Task 6".to_string()],
+            )
+            .unwrap();
+        runtime
+            .session
+            .answer_side_question(&question.id.to_string(), "Implement Task 6")
+            .unwrap();
+
+        let context = runtime.build_session_context().unwrap().unwrap();
+
+        assert!(context.contains("Side questions"));
+        assert!(context.contains("Which route should the plan use?"));
+        assert!(context.contains("options: Validate first | Implement Task 6"));
+        assert!(context.contains("answer: Implement Task 6"));
+    }
+
+    #[test]
     fn default_plan_contains_verification_step() {
         let plan = default_plan("task");
         assert!(plan.steps.iter().any(|step| step.id == "verification"));
@@ -3943,6 +4045,35 @@ mod tests {
         let valid_plan = "## Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n";
 
         let decision = runtime.evaluate_completion_hooks(valid_plan, 1, 0).unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Continue);
+        assert!(decision
+            .follow_up_prompt
+            .unwrap()
+            .contains("ask_user_question"));
+    }
+
+    #[test]
+    fn planning_question_requirement_is_not_ignored_at_continuation_limit() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime.planning_mode_active = true;
+        let valid_plan = "## Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n";
+
+        let decision = runtime
+            .evaluate_completion_hooks(valid_plan, 1, completion_hook_continuation_limit())
+            .unwrap();
 
         assert_eq!(decision.action, CompletionAction::Continue);
         assert!(decision
@@ -4777,6 +4908,37 @@ mod tests {
         assert!(prompt.contains("open user question"));
     }
 
+    #[test]
+    fn completion_hooks_do_not_accept_open_user_questions_at_continuation_limit() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .enqueue_side_question("Which plan path should I use?")
+            .unwrap();
+
+        let decision = runtime
+            .evaluate_completion_hooks("final answer", 1, completion_hook_continuation_limit())
+            .unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Continue);
+        assert!(decision
+            .follow_up_prompt
+            .unwrap()
+            .contains("open user question"));
+    }
+
     fn test_provider_message(role: &str, content: &str) -> ProviderMessage {
         ProviderMessage {
             role: role.to_string(),
@@ -5024,7 +5186,7 @@ mod tests {
         assert!(context.contains("Latest tests"));
         assert!(context.contains("cargo test --lib"));
         assert!(context.contains("Diff summary"));
-        assert!(context.contains("Open questions"));
+        assert!(context.contains("Side questions"));
         assert!(context.contains("Pending approvals"));
         assert!(context.contains("after compact boundary"));
         assert!(!context.contains("before compact boundary"));

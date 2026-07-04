@@ -1,7 +1,7 @@
 use super::{
-    compact_ui_text, handle_dialog_key, handle_prompt_input_key, open_interview_dialog,
-    rect_contains, rect_content_row_contains, session_monitor_for_state, short_id, ChatLine,
-    MessageBox, MonitorTab, TuiDialog, TuiState,
+    compact_ui_text, handle_dialog_key, handle_prompt_input_key,
+    open_interview_dialog_with_options, rect_contains, rect_content_row_contains,
+    session_monitor_for_state, short_id, ChatLine, MessageBox, MonitorTab, TuiDialog, TuiState,
 };
 use crate::session::{ApprovalStatus, SessionStore};
 use anyhow::{anyhow, Result};
@@ -240,13 +240,13 @@ fn open_side_question_answer_prompt(state: &mut TuiState, question_id: &str) {
             .open_questions
             .into_iter()
             .find(|question| question.id == question_id)
-            .map(|question| question.question)
+            .map(|question| (question.question, question.options))
     });
-    let Some(question) = question else {
+    let Some((question, options)) = question else {
         state.last_event = "btw question not found".to_string();
         return;
     };
-    open_interview_dialog(state, question_id.to_string(), question);
+    open_interview_dialog_with_options(state, question_id.to_string(), question, options);
 }
 
 pub(super) fn handle_side_question_prompt_key(key: KeyEvent, state: &mut TuiState) {

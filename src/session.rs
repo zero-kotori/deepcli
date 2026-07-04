@@ -229,6 +229,8 @@ pub enum SideQuestionStatus {
 pub struct SideQuestion {
     pub id: Uuid,
     pub question: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
     pub answer: Option<String>,
     pub status: SideQuestionStatus,
     pub created_at: DateTime<Utc>,
@@ -636,11 +638,26 @@ impl Session {
     }
 
     pub fn enqueue_side_question(&self, question: impl Into<String>) -> Result<SideQuestion> {
+        self.enqueue_side_question_with_options(question, Vec::new())
+    }
+
+    pub fn enqueue_side_question_with_options(
+        &self,
+        question: impl Into<String>,
+        options: Vec<String>,
+    ) -> Result<SideQuestion> {
         let question = question.into();
+        let options = options
+            .into_iter()
+            .map(|option| option.trim().to_string())
+            .filter(|option| !option.is_empty())
+            .take(8)
+            .collect();
         let now = Utc::now();
         let item = SideQuestion {
             id: Uuid::new_v4(),
             question,
+            options,
             answer: None,
             status: SideQuestionStatus::Open,
             created_at: now,
@@ -1500,6 +1517,29 @@ mod tests {
             .iter()
             .any(|item| item.id == second.id && item.status == SideQuestionStatus::Cleared));
         assert_eq!(session.activity_summary().unwrap().side_question_count, 2);
+    }
+
+    #[test]
+    fn stores_side_question_options() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+
+        let item = session
+            .enqueue_side_question_with_options(
+                "Which route should the plan use?",
+                vec!["Validate first".to_string(), "Implement Task 6".to_string()],
+            )
+            .unwrap();
+
+        assert_eq!(
+            item.options,
+            vec!["Validate first".to_string(), "Implement Task 6".to_string()]
+        );
+        let loaded = session.load_side_questions().unwrap();
+        assert_eq!(loaded[0].options, item.options);
     }
 
     #[test]
