@@ -2987,7 +2987,7 @@ fn settings_dialog_validates_and_persists_whitelisted_config() {
     assert!(matches!(state.dialog, Some(TuiDialog::Settings(_))));
     let body = dialog_body_for_state(&state, 16).unwrap();
     assert!(body.contains("agent.providerTurnTimeoutSeconds"));
-    assert!(body.contains("agent.maxToolIterations"));
+    assert!(!body.contains("agent.maxToolIterations"));
     assert!(!body.contains("apiKey"));
 
     replace_dialog_field(&mut state, "agent.providerTurnTimeoutSeconds", "0").unwrap();

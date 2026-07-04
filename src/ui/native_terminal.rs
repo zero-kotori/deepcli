@@ -32,10 +32,7 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let mut stdout = io::stdout();
-    loop {
-        let Some(input) = read_native_input(&mut stdout)? else {
-            break;
-        };
+    while let Some(input) = read_native_input(&mut stdout)? {
         if input.trim().is_empty() {
             continue;
         }
@@ -612,7 +609,6 @@ fn native_progress_lines(
         }
         RuntimeProgress::ProviderTurnStarted {
             iteration,
-            max_iterations: _,
             message_count,
             tool_count,
             request_kib,
@@ -725,7 +721,6 @@ mod tests {
         let mut render_state = NativeRenderState::default();
         let started = RuntimeProgress::ProviderTurnStarted {
             iteration: 2,
-            max_iterations: 8,
             message_count: 14,
             tool_count: 9,
             request_kib: 128,
@@ -751,7 +746,6 @@ mod tests {
         let mut render_state = NativeRenderState::default();
         let started_turn = RuntimeProgress::ProviderTurnStarted {
             iteration: 1,
-            max_iterations: 64,
             message_count: 12,
             tool_count: 9,
             request_kib: 72,

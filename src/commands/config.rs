@@ -428,7 +428,6 @@ fn config_validation_json(workspace: &Path, config: &AppConfig) -> Value {
             })
             .collect::<Vec<_>>(),
         "agent": {
-            "maxToolIterations": config.agent.max_tool_iterations,
             "providerTurnTimeoutSeconds": config.agent.provider_turn_timeout_seconds,
             "maxContextTokens": config.agent.max_context_tokens,
             "reservedOutputTokens": config.agent.reserved_output_tokens,
@@ -446,9 +445,6 @@ pub(super) fn validate_config(workspace: &Path, config: &AppConfig) -> Result<St
             "defaultProvider `{}` is not present in providers",
             config.default_provider
         );
-    }
-    if config.agent.max_tool_iterations == 0 {
-        bail!("agent.maxToolIterations must be greater than 0");
     }
     if config.agent.provider_turn_timeout_seconds == 0 {
         bail!("agent.providerTurnTimeoutSeconds must be greater than 0");

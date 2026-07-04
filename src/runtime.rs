@@ -494,7 +494,6 @@ pub enum RuntimeProgress {
     },
     ProviderTurnStarted {
         iteration: usize,
-        max_iterations: usize,
         message_count: usize,
         tool_count: usize,
         request_kib: usize,
@@ -524,7 +523,6 @@ impl RuntimeProgress {
             RuntimeProgress::AssistantDelta { .. } => "deepcli: assistant streaming".to_string(),
             RuntimeProgress::ProviderTurnStarted {
                 iteration,
-                max_iterations: _,
                 message_count,
                 tool_count,
                 request_kib,
@@ -578,7 +576,6 @@ enum AgentLoopTransitionReason {
     CompletionAccepted,
     CompletionBlocked,
     BudgetGuardRecovered,
-    MaxIterationsReached,
     ProviderFailed,
 }
 
@@ -1287,8 +1284,9 @@ impl AgentRuntime {
         let mut consecutive_budget_skipped_turns = 0usize;
         let mut completion_hook_continuations = 0usize;
         let mut loop_tracker = AgentLoopTracker::new();
-        for iteration in 0..self.config.agent.max_tool_iterations {
-            let iteration_number = iteration + 1;
+        let mut iteration_number = 0usize;
+        loop {
+            iteration_number = iteration_number.saturating_add(1);
             self.record_agent_loop_transition(
                 &mut loop_tracker,
                 Some(iteration_number),
@@ -1343,7 +1341,6 @@ impl AgentRuntime {
             )?;
             self.emit_progress(RuntimeProgress::ProviderTurnStarted {
                 iteration: iteration_number,
-                max_iterations: self.config.agent.max_tool_iterations,
                 message_count: request_stats.message_count,
                 tool_count: request_stats.tool_count,
                 request_kib: request_stats.total_bytes.div_ceil(1024),
@@ -1685,16 +1682,6 @@ impl AgentRuntime {
                 consecutive_budget_skipped_turns = 0;
             }
         }
-
-        self.record_agent_loop_transition(
-            &mut loop_tracker,
-            Some(self.config.agent.max_tool_iterations),
-            AgentLoopState::Failed,
-            AgentLoopTransitionReason::MaxIterationsReached,
-            json!({ "max_iterations": self.config.agent.max_tool_iterations }),
-        )?;
-        self.session.set_state(SessionState::Failed)?;
-        Err(anyhow!("agent loop reached maximum tool-call iterations"))
     }
 
     fn save_planning_artifacts(&self, requirement: &str, document: &str) -> Result<()> {

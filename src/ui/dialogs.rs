@@ -677,11 +677,6 @@ fn settings_entries(config: &AppConfig) -> Vec<SettingsEntry> {
             SettingsValueKind::Number,
         ),
         (
-            "agent.maxToolIterations",
-            config.agent.max_tool_iterations.to_string(),
-            SettingsValueKind::Number,
-        ),
-        (
             "agent.maxContextTokens",
             config.agent.max_context_tokens.to_string(),
             SettingsValueKind::Number,

@@ -541,7 +541,7 @@ fn default_config_matches_documented_mvp_defaults() {
     assert!(config.sandbox.enabled_by_default);
     assert!(config.agent.require_plan_for_complex_tasks);
     assert_eq!(config.agent.max_subagent_depth, 2);
-    assert_eq!(config.agent.max_tool_iterations, 512);
+    assert_eq!(config.agent.max_tool_iterations, 0);
     assert_eq!(config.agent.provider_turn_timeout_seconds, 600);
     assert!(config
         .providers
@@ -549,6 +549,15 @@ fn default_config_matches_documented_mvp_defaults() {
         .unwrap()
         .capabilities
         .contains(&"tool_calling".to_string()));
+}
+
+#[test]
+fn runtime_agent_loop_is_not_bounded_by_max_tool_iterations() {
+    let runtime = std::fs::read_to_string("src/runtime.rs").unwrap();
+
+    assert!(!runtime.contains("0..self.config.agent.max_tool_iterations"));
+    assert!(!runtime.contains("MaxIterationsReached"));
+    assert!(!runtime.contains("agent loop reached maximum tool-call iterations"));
 }
 
 #[test]

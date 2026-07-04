@@ -142,11 +142,10 @@ pub(super) fn format_health_tab_lines(
         )),
     }
     lines.push(format!(
-        "config: project={} permissions={} timeout={}s max_iters={}",
+        "config: project={} permissions={} timeout={}s",
         presence_label(workspace.join(".deepcli/config.json").exists()),
         config.permissions.default_mode,
-        config.agent.provider_turn_timeout_seconds,
-        config.agent.max_tool_iterations
+        config.agent.provider_turn_timeout_seconds
     ));
     append_monitor_quick_actions(
         &mut lines,

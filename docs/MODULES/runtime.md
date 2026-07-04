@@ -10,6 +10,7 @@
 - 工具执行必须经过 `ToolExecutor` 与权限检查。
 - 会话状态变更必须经过会话 API。
 - provider 特定的请求与流式解析归属于 `src/providers.rs`。
+- agent loop 不设置固定 provider/tool 轮次上限；结束条件来自模型最终回答、用户停止、权限等待、provider timeout 或真实错误。
 - context/verification 工具预算默认不启用；只有显式设置 `DEEPCLI_MAX_CONTEXT_TOOL_CALLS` 或 `DEEPCLI_MAX_VERIFICATION_TOOL_CALLS` 时，运行时才会跳过对应工具并把恢复提示反馈给模型继续处理。
 - 上下文压缩行为不属于当前 harness 重构的范围，除非另行编写专门的计划。
 
