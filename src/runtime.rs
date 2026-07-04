@@ -43,6 +43,8 @@ use tokio::time::timeout;
 const SESSION_CONTEXT_MESSAGE_LIMIT: usize = 16;
 const SESSION_CONTEXT_MESSAGE_CHARS: usize = 1_500;
 const SESSION_CONTEXT_TOTAL_CHARS: usize = 16_000;
+const PLAN_CRITICAL_FILES_BLOCKER: &str =
+    "final plan must include `Critical Files for Implementation` with 3-5 file paths";
 const PLAN_MODE_TOOLS: &[&str] = &[
     "read_file",
     "list_files",
@@ -131,13 +133,92 @@ Required final response:
 1. Briefly summarize the code context you inspected.
 2. List any queued or still-open custom questions.
 3. Provide a repository-specific implementation plan.
-4. End with `Critical Files for Implementation` and list 3-5 paths.
+4. End with `Critical Files for Implementation` and list exactly 3-5 file paths.
 "#
     )
 }
 
 fn is_plan_mode_tool(name: &str) -> bool {
     PLAN_MODE_TOOLS.contains(&name)
+}
+
+fn planning_critical_files_blocker(content: &str) -> Option<String> {
+    let count = extract_critical_files_for_implementation(content).len();
+    if (3..=5).contains(&count) {
+        None
+    } else {
+        Some(PLAN_CRITICAL_FILES_BLOCKER.to_string())
+    }
+}
+
+fn extract_critical_files_for_implementation(content: &str) -> Vec<String> {
+    let mut files = Vec::new();
+    let mut in_section = false;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let heading = trimmed.trim_start_matches('#').trim();
+        if heading.eq_ignore_ascii_case("Critical Files for Implementation") {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed.starts_with('#') {
+            break;
+        }
+        if !in_section {
+            continue;
+        }
+        if let Some(file) = critical_file_from_line(trimmed) {
+            if !files.contains(&file) {
+                files.push(file);
+            }
+        }
+    }
+    files
+}
+
+fn critical_file_from_line(line: &str) -> Option<String> {
+    let item = line
+        .strip_prefix("- ")
+        .or_else(|| line.strip_prefix("* "))
+        .or_else(|| numbered_list_item(line))?
+        .trim();
+    let candidate = item
+        .trim_matches('`')
+        .split_whitespace()
+        .next()?
+        .trim_matches('`')
+        .trim_end_matches([':', ',', ';']);
+    if candidate.contains('/') || candidate.contains('.') {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+fn numbered_list_item(line: &str) -> Option<&str> {
+    let (prefix, rest) = line.split_once(". ")?;
+    if prefix.chars().all(|ch| ch.is_ascii_digit()) {
+        Some(rest)
+    } else {
+        None
+    }
+}
+
+fn plan_from_planning_document(requirement: &str, document: &str) -> Plan {
+    let steps = extract_critical_files_for_implementation(document)
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| PlanStep {
+            id: format!("critical_file_{}", index + 1),
+            description: format!("Review or update {path}"),
+            status: PlanStepStatus::Pending,
+        })
+        .collect::<Vec<_>>();
+    Plan {
+        title: format!("Plan: {}", truncate_chars(requirement, 96)),
+        steps,
+        updated_at: Utc::now(),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1430,6 +1511,9 @@ impl AgentRuntime {
                     continue;
                 }
 
+                if mode == AgentRunMode::Planning {
+                    self.save_planning_artifacts(title_task, &provider_content)?;
+                }
                 let content = with_token_estimate(provider_content, estimated_tokens);
                 self.session.append_message("assistant", &content)?;
                 self.session
@@ -1605,6 +1689,19 @@ impl AgentRuntime {
         Err(anyhow!("agent loop reached maximum tool-call iterations"))
     }
 
+    fn save_planning_artifacts(&self, requirement: &str, document: &str) -> Result<()> {
+        self.session.write_plan_document(document)?;
+        self.session
+            .save_plan(&plan_from_planning_document(requirement, document))?;
+        self.session.append_audit_event(
+            "plan_document_saved",
+            json!({
+                "path": "plan.md",
+                "critical_files": extract_critical_files_for_implementation(document),
+            }),
+        )
+    }
+
     fn provider_turn_timeout(&self) -> Duration {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
     }
@@ -1687,7 +1784,7 @@ impl AgentRuntime {
 
     fn evaluate_completion_hooks(
         &self,
-        _content: &str,
+        content: &str,
         _iteration: usize,
         continuation_count: usize,
     ) -> Result<CompletionDecision> {
@@ -1697,6 +1794,12 @@ impl AgentRuntime {
         }
 
         let mut blockers = Vec::new();
+        if self.planning_mode_active {
+            if let Some(blocker) = planning_critical_files_blocker(content) {
+                blockers.push(blocker);
+            }
+        }
+
         let pending_approvals = self
             .session
             .load_approval_requests()?
@@ -3784,6 +3887,22 @@ mod tests {
         assert!(!tool_names.contains(&"run_shell".to_string()));
         assert!(!tool_names.contains(&"run_tests".to_string()));
         assert!(!tool_names.contains(&"git_commit".to_string()));
+    }
+
+    #[test]
+    fn planning_completion_requires_three_to_five_critical_files() {
+        let missing = "## Plan\n\nImplement the feature.";
+        assert_eq!(
+            planning_critical_files_blocker(missing).as_deref(),
+            Some("final plan must include `Critical Files for Implementation` with 3-5 file paths")
+        );
+
+        let valid = "## Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n";
+        assert_eq!(planning_critical_files_blocker(valid), None);
+        let plan = plan_from_planning_document("实现 plan 文档", valid);
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.steps[0].description, "Review or update src/runtime.rs");
+        assert!(plan.title.contains("实现 plan 文档"));
     }
 
     #[test]

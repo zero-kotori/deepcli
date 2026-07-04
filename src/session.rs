@@ -571,6 +571,22 @@ impl Session {
         self.read_json_if_exists("plan.json")
     }
 
+    pub fn write_plan_document(&self, document: &str) -> Result<()> {
+        fs::write(self.path.join("plan.md"), document)
+            .with_context(|| format!("failed to write plan document for {}", self.metadata.id))?;
+        self.touch_metadata()
+    }
+
+    pub fn load_plan_document(&self) -> Result<Option<String>> {
+        let path = self.path.join("plan.md");
+        if !path.exists() {
+            return Ok(None);
+        }
+        fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))
+            .map(Some)
+    }
+
     pub fn save_goal(&self, goal: &GoalContract) -> Result<()> {
         self.write_json("goal.json", goal)?;
         self.touch_metadata()
@@ -1167,6 +1183,13 @@ mod tests {
         assert_eq!(loaded.load_recent_messages(1).unwrap(), messages);
         loaded.write_summary("done").unwrap();
         assert_eq!(loaded.load_summary().unwrap().as_deref(), Some("done"));
+        loaded
+            .write_plan_document("# Plan\n\n### Critical Files for Implementation\n- src/lib.rs\n")
+            .unwrap();
+        assert_eq!(
+            loaded.load_plan_document().unwrap().as_deref(),
+            Some("# Plan\n\n### Critical Files for Implementation\n- src/lib.rs\n")
+        );
         assert_eq!(loaded.load_tool_calls().unwrap().len(), 1);
         assert_eq!(
             loaded.load_recent_tool_calls(1).unwrap()[0].tool,

@@ -1249,6 +1249,18 @@ fn plan_command_show_reads_saved_plan_and_rejects_local_draft_generation() {
     let value: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(value["title"], "Model-backed planning");
 
+    session
+        .write_plan_document("# Generated Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n")
+        .unwrap();
+    let output = handle_plan_command(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["show".to_string()],
+    )
+    .unwrap();
+    assert!(output.contains("# Generated Plan"));
+    assert!(output.contains("src/runtime.rs"));
+
     let error = handle_plan_command(
         dir.path(),
         Some(session.id().to_string()),

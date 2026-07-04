@@ -21,6 +21,9 @@ fn show_plan(workspace: &Path, current: Option<String>) -> Result<String> {
     };
     let store = SessionStore::new(workspace);
     let session = store.load(&session_id)?;
+    if let Some(document) = session.load_plan_document()? {
+        return Ok(document);
+    }
     if let Some(plan) = session.load_plan()? {
         return Ok(serde_json::to_string_pretty(&plan)?);
     }

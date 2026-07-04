@@ -687,7 +687,7 @@ fn help_topics() -> &'static [CommandHelp] {
                 "/plan 做一个更好的会话恢复能力",
                 "/plan 支持团队共享配置",
             ],
-            notes: &["`/plan show` prints the saved execution plan. Passing a requirement now goes through the active provider: the model receives a read-only planning prompt, can inspect repository context with planning-safe tools, can queue repository-specific questions through `ask_user_question`, and returns a concrete implementation plan. Legacy local draft options such as `--json`, `--output`, and `--write-doc` are no longer supported for `/plan <requirement>`."],
+            notes: &["`/plan show` prints the generated plan document when one exists, otherwise the saved execution plan. Passing a requirement goes through the active provider: the model receives a read-only planning prompt, can inspect repository context with planning-safe tools, can queue repository-specific questions through `ask_user_question`, and must return a plan ending with `Critical Files for Implementation` and 3-5 paths. Accepted planning output is saved as the session `plan.md` and mirrored into `plan.json` steps. Legacy local draft options such as `--json`, `--output`, and `--write-doc` are no longer supported for `/plan <requirement>`."],
         },
         CommandHelp {
             name: "/fork",
