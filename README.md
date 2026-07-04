@@ -39,6 +39,7 @@ deepcli goal status --json
 deepcli plan "做一个可以交互式澄清需求的功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md
 deepcli fork --current --no-open --verify --json
 deepcli terminal --dry-run --json
+deepcli cmd git status --short
 ```
 
 更多命令与一次性 JSON 入口见 `docs/COMMANDS.md` 与 `docs/CORE_FEATURES.md`。

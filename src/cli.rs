@@ -397,6 +397,7 @@ fn top_level_entries() -> &'static [&'static str] {
         "stop",
         "quit",
         "terminal",
+        "cmd",
     ]
 }
 
@@ -576,6 +577,7 @@ fn is_top_level_slash_alias(value: &str) -> bool {
             | "stop"
             | "quit"
             | "terminal"
+            | "cmd"
     )
 }
 
@@ -631,6 +633,7 @@ fn command_can_run_without_session(command: &SlashCommand) -> bool {
         | SlashCommand::Preflight { .. }
         | SlashCommand::Completion { .. } => true,
         SlashCommand::Quit | SlashCommand::Stop => true,
+        SlashCommand::Cmd { attach, .. } => !attach,
         SlashCommand::Status { .. } | SlashCommand::Context => true,
         SlashCommand::Diagnose { .. } => true,
         SlashCommand::Usage { .. }
@@ -1497,6 +1500,33 @@ mod tests {
             parse_one_shot_command(&["help".into(), "doctor".into()]).unwrap(),
             Some(SlashCommand::Help {
                 args: vec!["doctor".to_string()]
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&[
+                "cmd".into(),
+                "git".into(),
+                "status".into(),
+                "--short".into()
+            ])
+            .unwrap(),
+            Some(SlashCommand::Cmd {
+                command: "git status --short".to_string(),
+                attach: false
+            })
+        );
+        assert_eq!(
+            parse_one_shot_command(&[
+                "cmd".into(),
+                "--attach".into(),
+                "git".into(),
+                "status".into(),
+                "--short".into()
+            ])
+            .unwrap(),
+            Some(SlashCommand::Cmd {
+                command: "git status --short".to_string(),
+                attach: true
             })
         );
         assert_eq!(

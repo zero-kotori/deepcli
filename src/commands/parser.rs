@@ -54,12 +54,16 @@ pub enum SlashCommand {
     Stop,
     Quit,
     Terminal { args: Vec<String> },
+    Cmd { command: String, attach: bool },
 }
 
 pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
     let trimmed = input.trim();
     if !trimmed.starts_with('/') {
         return Ok(None);
+    }
+    if let Some(command) = parse_cmd_command(trimmed)? {
+        return Ok(Some(command));
     }
     let parts = shell_words::split(trimmed).unwrap_or_else(|_| {
         trimmed
@@ -156,8 +160,49 @@ pub(super) fn parse(input: &str) -> Result<Option<SlashCommand>> {
         "/stop" => SlashCommand::Stop,
         "/quit" => SlashCommand::Quit,
         "/terminal" => SlashCommand::Terminal { args },
+        "/cmd" => unreachable!("/cmd is parsed before shell_words splitting"),
         other => bail!("unknown slash command `{other}`"),
     }))
+}
+
+fn parse_cmd_command(trimmed: &str) -> Result<Option<SlashCommand>> {
+    let Some(mut rest) = trimmed.strip_prefix("/cmd") else {
+        return Ok(None);
+    };
+    if !rest.is_empty() && !rest.chars().next().is_some_and(char::is_whitespace) {
+        return Ok(None);
+    }
+    rest = rest.trim_start();
+    if rest == "--help" || rest == "-h" {
+        return Ok(Some(SlashCommand::Help {
+            args: vec!["cmd".to_string()],
+        }));
+    }
+
+    let mut attach = false;
+    if let Some(command) = strip_leading_cmd_flag(rest, "--attach") {
+        attach = true;
+        rest = command;
+    }
+    if rest.trim().is_empty() {
+        if attach {
+            bail!("missing shell command for /cmd --attach");
+        }
+        bail!("missing shell command for /cmd");
+    }
+    Ok(Some(SlashCommand::Cmd {
+        command: rest.to_string(),
+        attach,
+    }))
+}
+
+fn strip_leading_cmd_flag<'a>(input: &'a str, flag: &str) -> Option<&'a str> {
+    let rest = input.strip_prefix(flag)?;
+    if rest.is_empty() || rest.chars().next().is_some_and(char::is_whitespace) {
+        Some(rest.trim_start())
+    } else {
+        None
+    }
 }
 
 fn normalize_support_args(args: Vec<String>) -> Vec<String> {

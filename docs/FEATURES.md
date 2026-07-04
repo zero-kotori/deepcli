@@ -33,6 +33,7 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 - `deepcli git status|diff|branch|message --json [--output path]`：用稳定 `deepcli.git.inspect.v1` 输出只读 Git 检查结果、原始 stdout/stderr、report 和可执行 next actions，并可写入 workspace 内 artifact；`diff` 支持 `--staged|--cached`，未知只读参数会被拒绝，避免脚本把空输出误判为成功。
 - `deepcli git create-branch <name>` 和 `deepcli git commit <message>`：作为受控 Git 写操作入口暴露在顶层帮助中；`--dry-run --json` 输出稳定 `deepcli.git.action.v1` 预览、可写入 workspace artifact，且不会创建分支或提交，真实执行仍走权限策略。
 - `deepcli terminal [--dry-run|--no-open] [--app name] [--json]`：打开当前 workspace 的新终端，或输出可脚本验收的 `deepcli.terminal.v1` 预览；终端 app 采用同一优先级，`DEEPCLI_TERMINAL_APP` 可显式设置默认 macOS 终端 app，`--app iTerm2` 可单次覆盖，JSON 包含 app、command 和可直接复制的 `workspaceCommand`，并且 dry-run、失败和真实打开成功时的 `nextActions` 都只输出可执行的 `cd <workspace>` 或 `deepcli ...` 命令。
+- `deepcli cmd [--attach] <bash command>`：在当前 workspace 通过受控 `run_shell` 工具执行本地 shell 命令，并在当前 UI 输出 command、exit code、stdout 和 stderr；普通 `cmd` 不调用 provider，`--attach` 会先执行本地命令，再把格式化输出作为下一条用户上下文发送给模型。
 - `deepcli version|about|health|doctor [--json]`：输出本地版本、配置、凭据、环境和支持诊断信息；JSON 顶层 `nextActions` 是可直接复制到 shell 的命令，并派生 `checklist[]` 供 UI 直接渲染，说明性上下文留在 `report`、`environment` 或 `shell` 字段。
 - `deepcli scorecard [--json]`：查看产品能力覆盖、SOTA 差距和 benchmark 证据。
 - `deepcli round [--json] [--fail-on-gaps]`：聚合 scorecard、benchmark status 和最近 goal readiness，输出本轮产品迭代状态、去重后的门禁、非阻塞机会和下一步动作。
@@ -45,9 +46,9 @@ deepcli 提供脚本入口和 Rust 二进制入口：
 交互聊天使用终端原生 scrollback，而不是全屏 alternate-screen UI：
 
 - deepcli 不进入 alternate screen、不接管鼠标，也不启用鼠标捕获；滚轮滚动的是终端历史 scrollback，鼠标选中文本和 `Cmd-C` / 终端复制使用终端原生行为。
-- 输入使用普通行提示符 `>`；`Enter` 发送当前行，`/quit` 退出交互聊天。
-- Agent 输出、工具进度和最终回复追加到普通 stdout；当前任务结束后才回到下一次 `>` 输入。
-- slash 命令可以作为普通输入发送，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark status|summary|trends|compare|baselines|list|show|presets`、`/git status|diff|branch|message`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
+- 输入使用彩色 `user` 标签作为当前用户输入提示；`Enter` 发送当前行，`/quit` 退出交互聊天。
+- Agent 输出、工具进度和最终回复追加到普通 stdout；当前任务结束后才回到下一次 `user` 输入。
+- slash 命令可以作为普通输入发送，例如 `/status`、`/usage`、`/trace`、`/logs`、`/privacy`、`/fork`、`/recipes`、`/scorecard`、`/opportunities`、`/round`、`/benchmark status|summary|trends|compare|baselines|list|show|presets`、`/git status|diff|branch|message`、`/cmd git status --short`、`/cmd --attach git status --short`、`/selftest`、`/preflight --dry-run`、`/completion`、read-only `/session`、`/session restore-backup --dry-run --json`、`/approval`、`/terminal`、`/stop` 和 `/quit`。
 - 会话消息会从持久化记录恢复，`deepcli resume` 会先选择或恢复历史会话，再进入同一个原生终端聊天入口。
 - `deepcli approval list --json` 和 `deepcli btw list --json` 会输出稳定协作队列 schema，并在顶层 `nextActions` 中给出可直接执行、无占位符的 `deepcli ...` 命令，再派生 `checklist[]` 供协作队列面板直接渲染；审批队列存在 pending 项时会优先给出 approve/deny 动作，空队列也会给出 `--all --json` 和帮助入口。
 - `deepcli approval approve|deny|clear --json` 和 `deepcli btw answer|clear --json` 会输出稳定 action schema，包含处理后的 session、item 或 cleared count、nextActions、checklist 和 report；`--output` 可写入 workspace 内 artifact。

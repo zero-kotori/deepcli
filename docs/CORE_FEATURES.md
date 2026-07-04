@@ -14,6 +14,7 @@
 - Agent 循环：分析 → 计划 → 修改 → 测试 → 修复 → 汇报。
 - 工具注册表覆盖文件、shell、Git、测试、环境、web、terminal、prompt、skill、子 Agent；工具声明拥有 provider schema 与权限请求。
 - 所有写入/shell/Git/网络/Docker/终端/setup 操作经权限层；工具调用全生命周期审计、输出脱敏。
+- `/cmd <bash command>` 复用本地 `run_shell` 工具在当前 workspace 执行命令并把 command/exit code/stdout/stderr 回显到 UI；默认不调用 provider，`/cmd --attach <bash command>` 会把格式化输出作为下一条用户上下文交给模型。
 
 ## 权限与 sandbox
 

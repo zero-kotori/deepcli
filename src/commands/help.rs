@@ -1106,6 +1106,20 @@ fn help_topics() -> &'static [CommandHelp] {
             notes: &[],
         },
         CommandHelp {
+            name: "/cmd",
+            listing: "/cmd [--attach] <bash command>",
+            summary: "Run a local shell command in the current workspace.",
+            usage: &["/cmd <bash command>", "/cmd --attach <bash command>"],
+            examples: &[
+                "/cmd pwd",
+                "/cmd git status --short",
+                "/cmd cargo test native_terminal::tests --lib",
+                "/cmd --attach git status --short",
+                "deepcli cmd git status --short",
+            ],
+            notes: &["`/cmd` runs through the same local `run_shell` tool and permission policy as agent-initiated shell work. The command executes in the current workspace and prints command, exit code, stdout, and stderr in the current UI. Plain `/cmd` is local-only and does not call a provider. `/cmd --attach` first runs the command locally, then sends the formatted command output as the next user message for model context."],
+        },
+        CommandHelp {
             name: "/terminal",
             listing: "/terminal [--dry-run|--no-open] [--app name] [--json] [--output path]",
             summary: "Open a terminal in the current workspace directory.",

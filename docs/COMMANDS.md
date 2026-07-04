@@ -59,6 +59,7 @@
 | /stop | core | runtime | stable | 停止活动交互任务并保持会话可恢复。 |
 | /quit | core | ui | stable | 退出交互会话。 |
 | /terminal | core | tools | stable | 打开或预览同工作区终端。 |
+| /cmd | core | tools | stable | 在当前 workspace 执行受控 shell 命令；`--attach` 可把输出作为下一条模型上下文。 |
 
 ## 删除/降级审计
 

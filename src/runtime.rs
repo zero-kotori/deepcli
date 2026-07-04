@@ -1,7 +1,8 @@
 use crate::commands::{
     format_session_list, handle_config, handle_credentials_with_default, handle_model_read_command,
-    handle_timeout, list_resumable_sessions, parse_model_set_args, set_credentials_api_key,
-    update_project_model_config, CommandContext, CommandRouter, SlashCommand,
+    handle_timeout, list_resumable_sessions, parse_model_set_args, run_cmd_shell,
+    set_credentials_api_key, update_project_model_config, CommandContext, CommandRouter,
+    SlashCommand,
 };
 use crate::config::AppConfig;
 use crate::permissions::PermissionEngine;
@@ -589,6 +590,9 @@ impl AgentRuntime {
                 SlashCommand::Credentials { args } => {
                     return self.handle_credentials_command(args);
                 }
+                SlashCommand::Cmd { command, attach } => {
+                    return self.handle_cmd_command(command, attach).await;
+                }
                 SlashCommand::Quit => {
                     return Ok("bye".to_string());
                 }
@@ -612,6 +616,29 @@ impl AgentRuntime {
             return self.handle_low_information_input(input);
         }
         self.run_agent_task(input).await
+    }
+
+    async fn handle_cmd_command(&mut self, command: String, attach: bool) -> Result<String> {
+        self.executor.set_session(Some(self.session.clone()));
+        let execution = run_cmd_shell(&self.executor, &command).await?;
+        if !attach {
+            return Ok(execution.report);
+        }
+
+        let response = match self.run_agent_task(&execution.attachment).await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(anyhow!(
+                    "{}\n\nmodel response error:\n{}",
+                    execution.report,
+                    error
+                ));
+            }
+        };
+        Ok(format!(
+            "{}\n\nmodel response:\n{}",
+            execution.report, response
+        ))
     }
 
     pub fn list_sessions(&self) -> Result<Vec<crate::session::SessionMetadata>> {
@@ -4190,7 +4217,7 @@ mod tests {
     use crate::config::{AppConfig, ProviderConfig};
     use crate::permissions::{DecisionOutcome, PermissionDecision, RiskLevel};
     use crate::providers::{ChatResponse, ProviderCapability, ProviderMetadata};
-    use crate::session::{TestRunRecord, ToolCallRecord};
+    use crate::session::{TestRunRecord, ToolCallRecord, ToolCallStatus};
     use std::fs;
     use std::sync::{
         atomic::{AtomicUsize, Ordering},
@@ -4607,6 +4634,99 @@ mod tests {
         assert_eq!(
             loaded.metadata.title.as_deref(),
             Some("请修复 compiler 项目并运行测试")
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_cmd_runs_shell_locally_without_provider_call() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let output = runtime.handle_input("/cmd pwd").await.unwrap();
+
+        assert!(output.contains("command: pwd"));
+        assert!(output.contains("exit code: 0"));
+        assert!(output.contains(&dir.path().display().to_string()));
+        assert!(runtime.session.load_messages().unwrap().is_empty());
+        assert!(
+            runtime
+                .session
+                .load_tool_calls()
+                .unwrap()
+                .iter()
+                .any(|record| record.tool == "run_shell"
+                    && record.status == ToolCallStatus::Succeeded)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_cmd_attach_runs_shell_then_sends_output_to_provider_context() {
+        let dir = tempdir().unwrap();
+        let mut config = AppConfig {
+            default_provider: "stub".to_string(),
+            ..AppConfig::default()
+        };
+        config.providers.insert(
+            "stub".to_string(),
+            ProviderConfig {
+                provider_type: "stub".to_string(),
+                credentials_file: ".deepcli/credentials/stub.json".into(),
+                acceptance_model: Some("stub-model".to_string()),
+                capabilities: Vec::new(),
+            },
+        );
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let error = runtime
+            .handle_input("/cmd --attach pwd")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("provider type `stub` is not implemented"));
+        assert!(error.contains("command: pwd"));
+        assert!(error.contains("exit code: 0"));
+        let messages = runtime.session.load_messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert!(messages[0]
+            .content
+            .contains("Local shell command output attached for model context."));
+        assert!(messages[0].content.contains("command:\n```bash\npwd\n```"));
+        assert!(messages[0].content.contains("exit code: 0"));
+        assert!(messages[0]
+            .content
+            .contains(&dir.path().display().to_string()));
+        assert!(
+            runtime
+                .session
+                .load_tool_calls()
+                .unwrap()
+                .iter()
+                .any(|record| record.tool == "run_shell"
+                    && record.status == ToolCallStatus::Succeeded)
         );
     }
 

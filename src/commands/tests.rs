@@ -804,6 +804,20 @@ fn parses_core_slash_commands() {
         })
     );
     assert_eq!(
+        CommandRouter::parse("/cmd echo \"$HOME\" | sed 's#/#:#g'").unwrap(),
+        Some(SlashCommand::Cmd {
+            command: "echo \"$HOME\" | sed 's#/#:#g'".to_string(),
+            attach: false
+        })
+    );
+    assert_eq!(
+        CommandRouter::parse("/cmd --attach git status --short").unwrap(),
+        Some(SlashCommand::Cmd {
+            command: "git status --short".to_string(),
+            attach: true
+        })
+    );
+    assert_eq!(
         CommandRouter::parse("/model set deepseek deepseek-v4-pro").unwrap(),
         Some(SlashCommand::Model {
             args: vec![
@@ -1004,6 +1018,12 @@ fn parses_core_slash_commands() {
             ]
         })
     );
+}
+
+#[test]
+fn slash_cmd_requires_a_shell_command() {
+    let error = CommandRouter::parse("/cmd").unwrap_err().to_string();
+    assert!(error.contains("missing shell command for /cmd"));
 }
 
 #[test]
@@ -2860,6 +2880,14 @@ fn command_specific_help_explains_usage_examples_and_notes() {
     assert!(terminal_help.contains("running-safe: yes"));
     assert!(terminal_help.contains("/terminal --dry-run --json"));
     assert!(terminal_help.contains("workspaceCommand"));
+
+    let cmd_help = CommandRouter::help_for(&["cmd".to_string()]).unwrap();
+    assert!(cmd_help.contains("running-safe: no"));
+    assert!(cmd_help.contains("/cmd <bash command>"));
+    assert!(cmd_help.contains("/cmd --attach <bash command>"));
+    assert!(cmd_help.contains("/cmd git status --short"));
+    assert!(cmd_help.contains("Plain `/cmd` is local-only and does not call a provider"));
+    assert!(cmd_help.contains("/cmd --attach"));
 
     let permissions_help = CommandRouter::help_for(&["permissions".to_string()]).unwrap();
     assert!(permissions_help.contains("/permissions [show] [--json] [--output path]"));

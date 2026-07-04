@@ -25,6 +25,7 @@ mod benchmark_presets;
 mod benchmark_runs;
 mod benchmark_status;
 mod btw;
+mod cmd;
 mod command_policy;
 mod completion;
 mod config;
@@ -99,6 +100,7 @@ pub(crate) use benchmark_presets::*;
 pub(crate) use benchmark_runs::*;
 pub(crate) use benchmark_status::*;
 pub(crate) use btw::handle_btw;
+pub(crate) use cmd::{handle_cmd, run_cmd_shell};
 pub(crate) use command_policy::{command_group_policy_json, legacy_command_policy_json};
 pub(crate) use completion::handle_completion_local;
 use completion::{
@@ -412,6 +414,12 @@ impl CommandRouter {
             SlashCommand::Quit => Ok("bye".to_string()),
             SlashCommand::Terminal { args } => {
                 handle_terminal(context.workspace, context.executor, args)
+            }
+            SlashCommand::Cmd { command, attach } => {
+                if attach {
+                    anyhow::bail!("/cmd --attach requires an active runtime");
+                }
+                handle_cmd(context.executor, &command).await
             }
         }
     }

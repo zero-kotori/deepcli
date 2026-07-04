@@ -128,6 +128,7 @@ const COMMAND_METADATA: &[CommandMetadata] = &[
     command("/stop", true, CommandGroup::Core),
     command("/quit", true, CommandGroup::Core),
     command("/terminal", true, CommandGroup::Core),
+    command("/cmd", false, CommandGroup::Core),
 ];
 
 const COMPLETION_ALIAS_METADATA: &[CompletionAliasMetadata] = &[

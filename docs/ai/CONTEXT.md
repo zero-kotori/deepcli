@@ -1396,6 +1396,12 @@ git grep -n -I -E 'non-target personal identity markers' -- . ':!target'
    - 结果：已验证 `cargo test --test mvp_contract`（73 passed）、`cargo test ui::tests --lib`（74 passed）、`cargo fmt --check`、`git diff --check`、`bash -n scripts/tui-smoke && scripts/tui-smoke`（`tui-smoke: ok`）、`cargo test --quiet`（486 lib + 73 contract + 13 integration passed）、`./scripts/deepcli preflight --quick --json`（status ok，format/diff-whitespace/selftest/doctor/privacy passed）和 `./scripts/deepcli round --json`（ready true，gaps empty）。
    - 目的：本轮 `docs/ai/HARNESS_REFACTOR_PLAN.md` 对应的 harness 化重构切片可以判定完成；`docs/ai/CONTEXT.md` 里的长期 SOTA 产品循环目标仍未完成，后续应作为新的产品迭代继续推进。
 
+247. Local `/cmd` Shell Fallback
+   - 产品缺口：原生终端聊天里用户想直接执行少量 bash 命令时，只能让模型代为调用 shell 工具，或者切到外部终端；这会消耗 provider turn，也让本地命令输出无法作为当前 UI 的一等结果。
+   - 结果：新增 `/cmd <bash command>` 和顶层 `deepcli cmd <bash command>`，复用本地 `run_shell` 工具、权限策略、超时和工具审计，在当前 workspace 执行命令并回显 command、exit code、stdout、stderr；新增 `/cmd --attach <bash command>`，先本地执行，再把格式化输出作为下一条 user message 进入模型上下文。
+   - 行为：普通 `/cmd` 不调用 provider、不写用户消息；`--attach` 明确调用 provider，返回文本先展示本地命令输出再展示模型响应；`/cmd` 保留 raw bash tail，避免 `$HOME`、管道、重定向等 shell 语法被 slash parser 重组转义。
+   - 目的：给用户一个明确、受控、可审计的 shell fallback 入口，减少“让模型执行本地小命令”的额外往返，同时保留需要模型分析命令结果时的显式 attach 模式。
+
 ## 下一步建议
 
 - 本轮 harness 化重构切片已完成并通过 gate；后续不要继续把它当作未完成的 Stage 6/7 任务重复执行。
