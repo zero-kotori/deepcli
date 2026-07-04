@@ -1,7 +1,7 @@
 use super::{
     approval_prompt_view_for_state, command_palette_auto_popup_enabled, compact_ui_text,
     credential_prompt_hidden_body, credential_prompt_hidden_cursor, render_command_palette,
-    render_resume_picker, slash_command_suggestions_for_state, ChatLine, TuiState,
+    render_dialog, render_resume_picker, slash_command_suggestions_for_state, ChatLine, TuiState,
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Position, Rect},
@@ -231,6 +231,8 @@ pub(super) fn render_chat_ui(frame: &mut Frame<'_>, state: &TuiState) {
     if state.credential_prompt.is_none() && state.side_question_prompt.is_none() {
         if let Some(picker) = &state.resume_picker {
             render_resume_picker(frame, areas.input, picker);
+            return;
+        } else if render_dialog(frame, areas.input, state) {
             return;
         } else if let Some(prompt) = approval_prompt_view_for_state(state, areas.input.height) {
             frame.render_widget(

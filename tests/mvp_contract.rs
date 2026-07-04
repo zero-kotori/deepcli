@@ -2665,6 +2665,65 @@ fn ui_module_docs_cover_approval_interaction_owner() {
 }
 
 #[test]
+fn ui_module_docs_cover_dialog_owner() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let ui_doc = fs::read_to_string(root.join("docs/MODULES/ui.md")).unwrap();
+    let ui_entrypoint = fs::read_to_string(root.join("src/ui.rs")).unwrap();
+    let source = "src/ui/dialogs.rs";
+
+    assert!(
+        root.join(source).exists(),
+        "{source} should exist for dialog ownership"
+    );
+    assert!(
+        ui_entrypoint.contains("mod dialogs;"),
+        "src/ui.rs should register the dialog owner module"
+    );
+    assert!(
+        ui_doc.contains(source),
+        "docs/MODULES/ui.md should mention {source}"
+    );
+
+    let dialog_source = fs::read_to_string(root.join(source)).unwrap();
+    for item in [
+        "enum DialogKind",
+        "enum TuiDialog",
+        "struct DiffDialog",
+        "struct AgentEditorDialog",
+        "struct SettingsDialog",
+        "struct InterviewDialog",
+        "fn open_diff_dialog",
+        "fn open_agent_editor_dialog",
+        "fn open_latest_agent_editor_dialog",
+        "fn open_settings_dialog",
+        "fn open_interview_dialog",
+        "fn render_dialog",
+        "fn dialog_view_for_state",
+        "fn dialog_body_for_state",
+        "fn handle_dialog_key",
+        "fn replace_dialog_field",
+        "fn clamp_selected_blocker_to_monitor",
+    ] {
+        assert!(
+            dialog_source.contains(item),
+            "{item} should live in {source}"
+        );
+        assert!(
+            !ui_entrypoint.contains(item),
+            "{item} should not remain in src/ui.rs"
+        );
+        assert!(
+            ui_doc.contains(
+                item.trim_start_matches("struct ")
+                    .trim_start_matches("enum ")
+                    .trim_start_matches("fn ")
+            ),
+            "docs/MODULES/ui.md should document {item} ownership"
+        );
+    }
+}
+
+#[test]
 fn ui_module_docs_cover_command_palette_owner() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ui_doc = fs::read_to_string(root.join("docs/MODULES/ui.md")).unwrap();

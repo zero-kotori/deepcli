@@ -10,9 +10,9 @@ use crate::session::{SessionDiffRecord, SessionStore};
 use super::monitor::{append_monitor_quick_actions, MonitorQuickAction, MonitorTab};
 use super::monitor_shell::format_task_monitor_text;
 use super::{
-    active_session_ref, compact_ui_text, rect_contains, rect_content_row_contains,
-    session_monitor_for_state, short_id, slash_command_suggestions_for_state, ActiveSessionRef,
-    TuiState,
+    active_session_ref, compact_ui_text, open_diff_dialog, rect_contains,
+    rect_content_row_contains, session_monitor_for_state, short_id,
+    slash_command_suggestions_for_state, ActiveSessionRef, TuiState,
 };
 
 pub(super) const WORKTREE_CHANGES_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
@@ -70,6 +70,7 @@ pub(super) fn handle_changes_tab_key(key: KeyEvent, state: &mut TuiState) -> boo
             select_previous_change_patch(state);
             true
         }
+        KeyCode::Enter => open_diff_dialog(state),
         KeyCode::PageDown => {
             scroll_change_patch_down(state, CHANGE_PATCH_SCROLL_STEP);
             true
@@ -193,6 +194,7 @@ pub(super) fn select_change_patch_at_row(
         || state.resume_picker.is_some()
         || state.credential_prompt.is_some()
         || state.side_question_prompt.is_some()
+        || state.dialog.is_some()
         || slash_command_suggestions_for_state(state.input.buffer(), state.running).is_some()
         || !rect_contains(tools_area, column, row)
         || !rect_content_row_contains(tools_area, row)

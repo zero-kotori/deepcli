@@ -44,6 +44,15 @@ pub struct SubagentTaskOptions {
 }
 
 #[derive(Debug, Clone)]
+pub struct SubagentTaskUpdate {
+    pub task: String,
+    pub read_scope: Vec<PathBuf>,
+    pub write_scope: Vec<PathBuf>,
+    pub allowed_tools: Vec<String>,
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct AgentStore {
     root: PathBuf,
     workspace: PathBuf,
@@ -141,6 +150,36 @@ impl AgentStore {
         tasks.sort_by_key(|task: &SubagentTask| task.created_at);
         Ok(tasks)
     }
+
+    pub fn update_queued_subagent_task(
+        &self,
+        id: Uuid,
+        update: SubagentTaskUpdate,
+    ) -> Result<SubagentTask> {
+        if update.task.trim().is_empty() {
+            bail!("sub-agent task cannot be empty");
+        }
+        let mut task = self.load(id)?;
+        if task.status != SubagentStatus::Queued {
+            bail!("only queued sub-agent tasks can be edited");
+        }
+        task.task = update.task;
+        task.read_scope = update
+            .read_scope
+            .into_iter()
+            .map(|path| normalize_scope_path(&self.workspace, &path))
+            .collect::<Result<Vec<_>>>()?;
+        task.write_scope = update
+            .write_scope
+            .into_iter()
+            .map(|path| normalize_scope_path(&self.workspace, &path))
+            .collect::<Result<Vec<_>>>()?;
+        task.allowed_tools = update.allowed_tools;
+        task.context = update.context;
+        task.updated_at = Utc::now();
+        self.save(&task)?;
+        Ok(task)
+    }
 }
 
 fn normalize_scope_path(workspace: &Path, raw: &Path) -> Result<PathBuf> {
@@ -200,5 +239,38 @@ mod tests {
         assert!(store
             .create_subagent_task(None, "bad", 1, vec![PathBuf::from("../outside")])
             .is_err());
+    }
+
+    #[test]
+    fn updates_queued_subagent_task_descriptor() {
+        let dir = tempdir().unwrap();
+        let store = AgentStore::new(dir.path());
+        let task = store
+            .create_subagent_task(
+                None,
+                "inspect parser",
+                1,
+                vec![PathBuf::from("src/parser.rs")],
+            )
+            .unwrap();
+
+        let updated = store
+            .update_queued_subagent_task(
+                task.id,
+                SubagentTaskUpdate {
+                    task: "inspect lexer".to_string(),
+                    read_scope: vec![PathBuf::from("README.md")],
+                    write_scope: vec![PathBuf::from("src/lexer.rs")],
+                    allowed_tools: vec!["read_file".to_string()],
+                    context: Some("focus tokenization".to_string()),
+                },
+            )
+            .unwrap();
+
+        assert_eq!(updated.task, "inspect lexer");
+        assert_eq!(updated.read_scope, vec![PathBuf::from("README.md")]);
+        assert_eq!(updated.write_scope, vec![PathBuf::from("src/lexer.rs")]);
+        assert_eq!(updated.allowed_tools, vec!["read_file"]);
+        assert_eq!(updated.context.as_deref(), Some("focus tokenization"));
     }
 }

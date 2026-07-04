@@ -1,6 +1,7 @@
 use super::{
-    compact_ui_text, handle_prompt_input_key, rect_contains, rect_content_row_contains,
-    session_monitor_for_state, short_id, ChatLine, MessageBox, MonitorTab, TuiState,
+    compact_ui_text, handle_dialog_key, handle_prompt_input_key, open_interview_dialog,
+    rect_contains, rect_content_row_contains, session_monitor_for_state, short_id, ChatLine,
+    MessageBox, MonitorTab, TuiDialog, TuiState,
 };
 use crate::session::{ApprovalStatus, SessionStore};
 use anyhow::{anyhow, Result};
@@ -33,6 +34,7 @@ pub(super) fn blocker_count(state: &TuiState) -> Option<usize> {
 pub(super) fn approval_prompt_active(state: &TuiState) -> bool {
     state.credential_prompt.is_none()
         && state.side_question_prompt.is_none()
+        && state.dialog.is_none()
         && state.resume_picker.is_none()
         && blocker_count(state).is_some_and(|count| count > 0)
 }
@@ -244,19 +246,14 @@ fn open_side_question_answer_prompt(state: &mut TuiState, question_id: &str) {
         state.last_event = "btw question not found".to_string();
         return;
     };
-    state.side_question_prompt = Some(SideQuestionPrompt {
-        id: question_id.to_string(),
-        question: question.clone(),
-        input: MessageBox::new(),
-    });
-    state.chat.push(ChatLine {
-        role: "deepcli".to_string(),
-        content: format!("请回答旁路问题：{question}"),
-    });
-    state.last_event = "btw answer prompt opened".to_string();
+    open_interview_dialog(state, question_id.to_string(), question);
 }
 
 pub(super) fn handle_side_question_prompt_key(key: KeyEvent, state: &mut TuiState) {
+    if matches!(state.dialog, Some(TuiDialog::Interview(_))) {
+        handle_dialog_key(key, state);
+        return;
+    }
     match key.code {
         KeyCode::Enter
             if key

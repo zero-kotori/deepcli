@@ -34,6 +34,7 @@ fn test_tui_state() -> TuiState {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -46,6 +47,50 @@ fn test_tui_state() -> TuiState {
         streaming_assistant: None,
         worker: None,
     }
+}
+
+#[test]
+fn ui_dialog_shell_replaces_input_area_and_esc_closes_first() {
+    let backend = TestBackend::new(90, 20);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    state.input.set_buffer("draft input".to_string());
+    state.dialog = Some(TuiDialog::notice(
+        DialogKind::Settings,
+        "Settings",
+        "agent.providerTurnTimeoutSeconds = 600",
+    ));
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+    assert!(rendered.contains("Settings"));
+    assert!(rendered.contains("agent.providerTurnTimeoutSeconds"));
+    assert!(!rendered.contains("Message Box"));
+    assert!(!rendered.contains("draft input"));
+
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    let mut clipboard = Vec::new();
+    handle_tui_key_with_clipboard_writer(
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        &mut state,
+        &progress_tx,
+        &done_tx,
+        &mut clipboard,
+    )
+    .unwrap();
+
+    assert!(state.dialog.is_none());
+    assert!(!state.exit_requested);
+    assert_eq!(state.input.buffer(), "draft input");
 }
 
 #[test]
@@ -142,6 +187,7 @@ fn tui_paste_inserts_into_message_box_and_normalizes_newlines() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -183,6 +229,7 @@ fn tui_paste_targets_active_prompt() {
             input: MessageBox::new(),
         }),
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -638,6 +685,7 @@ fn transcript_scroll_keys_move_history_window() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -697,6 +745,7 @@ fn transcript_mouse_wheel_scrolls_messages_and_unhandled_tool_area() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -892,6 +941,7 @@ fn result_scroll_keys_move_output_window() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -951,6 +1001,7 @@ fn result_mouse_wheel_scrolls_result_tab_tools_area_only() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1029,6 +1080,7 @@ fn changes_mouse_wheel_scrolls_selected_patch_in_tools_area() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1119,6 +1171,7 @@ fn changes_mouse_click_selects_patch_from_worktree_file_list() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1186,6 +1239,7 @@ fn message_box_render_places_terminal_cursor_at_input_cursor() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1477,6 +1531,7 @@ fn slash_command_palette_filters_formats_and_completes() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1517,6 +1572,7 @@ fn slash_command_input_mouse_events_do_not_open_or_complete_palette() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1596,6 +1652,7 @@ fn slash_command_input_stays_in_message_box_without_auto_popup() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -1656,6 +1713,7 @@ fn task_overview_formats_plan_tests_and_blockers() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -1844,6 +1902,7 @@ fn task_monitor_tabs_format_usage_tests_environment_approvals_and_trace() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2079,6 +2138,7 @@ fn changes_tab_surfaces_session_diff_records_and_actions() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2224,6 +2284,7 @@ fn changes_tab_keys_select_and_scroll_file_patch() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2269,6 +2330,61 @@ fn changes_tab_keys_select_and_scroll_file_patch() {
 }
 
 #[test]
+fn diff_dialog_opens_selected_change_patch_and_scrolls() {
+    let mut state = test_tui_state();
+    state.monitor_tab = MonitorTab::Changes;
+    state.workspace_changes = Some(WorkspaceChangesSnapshot {
+        available: true,
+        detail: None,
+        changed: 2,
+        staged: 1,
+        unstaged: 1,
+        untracked: 0,
+        paths: vec!["src/lib.rs".to_string(), "src/ui.rs".to_string()],
+        diff_preview: Vec::new(),
+        diff_preview_truncated: false,
+        diff_sections: vec![
+            WorkspaceDiffSection {
+                label: "unstaged".to_string(),
+                path: "src/lib.rs".to_string(),
+                lines: (0..20).map(|index| format!("lib-line-{index}")).collect(),
+                truncated: false,
+            },
+            WorkspaceDiffSection {
+                label: "staged".to_string(),
+                path: "src/ui.rs".to_string(),
+                lines: (0..20).map(|index| format!("ui-line-{index}")).collect(),
+                truncated: true,
+            },
+        ],
+    });
+
+    assert!(handle_changes_tab_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state
+    ));
+    assert!(matches!(state.dialog, Some(TuiDialog::Diff(_))));
+    let body = dialog_body_for_state(&state, 8).unwrap();
+    assert!(body.contains("unstaged src/lib.rs"));
+    assert!(body.contains("lib-line-0"));
+
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE),
+        &mut state,
+    );
+    let switched = dialog_body_for_state(&state, 8).unwrap();
+    assert!(switched.contains("staged src/ui.rs"));
+    assert!(switched.contains("truncated"));
+
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        &mut state,
+    );
+    let scrolled = dialog_body_for_state(&state, 8).unwrap();
+    assert!(scrolled.contains("[above:"));
+}
+
+#[test]
 fn diff_sections_split_by_file_and_cap_long_sections() {
     let mut diff =
         String::from("diff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n");
@@ -2303,6 +2419,7 @@ fn monitor_tab_cycles_without_touching_message_input() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2475,6 +2592,7 @@ fn monitor_advanced_toggle_enters_first_advanced_tab() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 3,
         selected_change: 0,
@@ -2533,6 +2651,7 @@ fn monitor_tab_hit_test_selects_visible_tab() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 2,
         selected_change: 0,
@@ -2638,6 +2757,7 @@ fn health_tab_surfaces_model_credentials_and_config_actions() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2706,6 +2826,7 @@ fn health_tab_surfaces_missing_credentials_repair_action_and_opens_prompt() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2774,6 +2895,7 @@ fn library_tab_surfaces_prompt_skill_and_agent_inventory() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2798,6 +2920,93 @@ fn library_tab_surfaces_prompt_skill_and_agent_inventory() {
     assert!(library.contains("/prompt render <name> --file path"));
     assert!(library.contains("/skill list --json"));
     assert!(library.contains("/agent list --json"));
+}
+
+#[test]
+fn agent_editor_dialog_saves_queued_task_descriptor() {
+    let dir = tempdir().unwrap();
+    let store = AgentStore::new(dir.path());
+    let task = store
+        .create_subagent_task(None, "inspect parser module", 1, vec![PathBuf::from("src")])
+        .unwrap();
+    let session = SessionStore::new(dir.path())
+        .create(
+            dir.path(),
+            "deepseek".to_string(),
+            Some("model".to_string()),
+        )
+        .unwrap();
+    let mut state = test_tui_state();
+    state.active_session = Some(ActiveSessionRef {
+        workspace: dir.path().to_path_buf(),
+        session_id: session.id().to_string(),
+    });
+
+    open_agent_editor_dialog(&mut state, task.id).unwrap();
+    assert!(matches!(state.dialog, Some(TuiDialog::AgentEditor(_))));
+    replace_dialog_field(&mut state, "task", "inspect lexer module").unwrap();
+    replace_dialog_field(&mut state, "write_scope", "src/lexer.rs").unwrap();
+    replace_dialog_field(&mut state, "read_scope", "src\nREADME.md").unwrap();
+    replace_dialog_field(&mut state, "allowed_tools", "read_file\nrun_shell").unwrap();
+    replace_dialog_field(&mut state, "context", "focus on token handling").unwrap();
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        &mut state,
+    );
+
+    assert_eq!(state.last_event, "agent task saved");
+    assert!(state.dialog.is_none());
+    let updated = store.load(task.id).unwrap();
+    assert_eq!(updated.task, "inspect lexer module");
+    assert_eq!(updated.write_scope, vec![PathBuf::from("src/lexer.rs")]);
+    assert_eq!(
+        updated.read_scope,
+        vec![PathBuf::from("src"), PathBuf::from("README.md")]
+    );
+    assert_eq!(updated.allowed_tools, vec!["read_file", "run_shell"]);
+    assert_eq!(updated.context.as_deref(), Some("focus on token handling"));
+}
+
+#[test]
+fn settings_dialog_validates_and_persists_whitelisted_config() {
+    let dir = tempdir().unwrap();
+    let session = SessionStore::new(dir.path())
+        .create(
+            dir.path(),
+            "deepseek".to_string(),
+            Some("model".to_string()),
+        )
+        .unwrap();
+    let mut state = test_tui_state();
+    state.active_session = Some(ActiveSessionRef {
+        workspace: dir.path().to_path_buf(),
+        session_id: session.id().to_string(),
+    });
+
+    open_settings_dialog(&mut state).unwrap();
+    assert!(matches!(state.dialog, Some(TuiDialog::Settings(_))));
+    let body = dialog_body_for_state(&state, 16).unwrap();
+    assert!(body.contains("agent.providerTurnTimeoutSeconds"));
+    assert!(body.contains("agent.maxToolIterations"));
+    assert!(!body.contains("apiKey"));
+
+    replace_dialog_field(&mut state, "agent.providerTurnTimeoutSeconds", "0").unwrap();
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        &mut state,
+    );
+    assert!(state.dialog.is_some());
+    assert!(state.last_event.contains("settings save failed"));
+
+    replace_dialog_field(&mut state, "agent.providerTurnTimeoutSeconds", "45").unwrap();
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL),
+        &mut state,
+    );
+    assert_eq!(state.last_event, "settings saved");
+    assert!(state.dialog.is_none());
+    let config = AppConfig::load_effective(dir.path(), None).unwrap();
+    assert_eq!(config.agent.provider_turn_timeout_seconds, 45);
 }
 
 #[test]
@@ -2826,6 +3035,7 @@ fn monitor_quick_actions_can_select_and_prefill_editable_commands() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2881,6 +3091,7 @@ fn monitor_quick_action_hit_test_can_activate_action() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -2936,6 +3147,7 @@ fn monitor_truncation_keeps_selected_quick_action_visible() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 6,
         selected_change: 0,
@@ -2998,6 +3210,7 @@ fn approvals_tab_can_approve_selected_request() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3072,6 +3285,7 @@ fn approval_prompt_covers_input_and_returns_after_choice() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3096,7 +3310,7 @@ fn approval_prompt_covers_input_and_returns_after_choice() {
         .iter()
         .map(|cell| cell.symbol())
         .collect::<String>();
-    assert!(blocked.contains("Approval"));
+    assert!(blocked.contains("Permission"));
     assert!(blocked.contains("approve/deny"));
     assert!(blocked.contains("write_file"));
     assert!(!blocked.contains("Message Box"));
@@ -3133,7 +3347,71 @@ fn approval_prompt_covers_input_and_returns_after_choice() {
         .collect::<String>();
     assert!(restored.contains("Message Box"));
     assert!(restored.contains("draft message"));
-    assert!(!restored.contains("Approval"));
+    assert!(!restored.contains("Permission"));
+}
+
+#[test]
+fn permission_dialog_auto_opens_for_pending_approval() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let session_id = runtime.session_id();
+    let store = SessionStore::new(dir.path());
+    let session = store.load(&session_id).unwrap();
+    session
+        .enqueue_approval_request(
+            "write_file",
+            PermissionDecision {
+                outcome: DecisionOutcome::RequiresUserApproval,
+                risk: RiskLevel::Medium,
+                reason: "write requires approval".to_string(),
+            },
+        )
+        .unwrap();
+    let backend = TestBackend::new(100, 24);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = test_tui_state();
+    state.runtime = Some(runtime);
+    state.input.set_buffer("draft message".to_string());
+
+    terminal
+        .draw(|frame| render_chat_ui(frame, &state))
+        .unwrap();
+    let rendered = terminal
+        .backend()
+        .buffer()
+        .content()
+        .iter()
+        .map(|cell| cell.symbol())
+        .collect::<String>();
+
+    assert!(rendered.contains("Permission"));
+    assert!(rendered.contains("approve/deny"));
+    assert!(rendered.contains("write_file"));
+    assert!(!rendered.contains("Message Box"));
+
+    let (progress_tx, _progress_rx) = mpsc::channel();
+    let (done_tx, _done_rx) = mpsc::channel();
+    let mut clipboard = Vec::new();
+    handle_tui_key_with_clipboard_writer(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+        &progress_tx,
+        &done_tx,
+        &mut clipboard,
+    )
+    .unwrap();
+    assert_eq!(state.last_event, "approval approved");
 }
 
 #[test]
@@ -3171,6 +3449,7 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3191,7 +3470,8 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
     ));
     assert_eq!(state.last_event, "btw answer prompt opened");
     assert_eq!(state.input.buffer(), "");
-    assert!(state.side_question_prompt.is_some());
+    assert!(matches!(state.dialog, Some(TuiDialog::Interview(_))));
+    assert!(state.side_question_prompt.is_none());
     for ch in "use v-pro".chars() {
         handle_side_question_prompt_key(
             KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
@@ -3213,6 +3493,7 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
         &mut state,
     );
     assert_eq!(state.last_event, "btw answer saved");
+    assert!(state.dialog.is_none());
     assert!(state.side_question_prompt.is_none());
     assert!(state
         .chat
@@ -3224,6 +3505,65 @@ fn approvals_tab_opens_and_saves_btw_answer_prompt() {
     assert_eq!(updated[0].status, SideQuestionStatus::Answered);
     assert_eq!(updated[0].answer.as_deref(), Some("use v4-pro"));
     assert_eq!(blocker_count(&state), Some(0));
+}
+
+#[test]
+fn interview_dialog_saves_side_question_answer() {
+    let dir = tempdir().unwrap();
+    let runtime = AgentRuntime::new(
+        AppConfig::default(),
+        RuntimeOptions {
+            workspace: dir.path().to_path_buf(),
+            provider: None,
+            model: None,
+            assume_yes: true,
+            resume_session: None,
+            stream_output: false,
+        },
+    )
+    .unwrap();
+    let session_id = runtime.session_id();
+    let store = SessionStore::new(dir.path());
+    let session = store.load(&session_id).unwrap();
+    let question = session
+        .enqueue_side_question("which model should I use?")
+        .unwrap();
+    let mut state = test_tui_state();
+    state.runtime = Some(runtime);
+    state.monitor_tab = MonitorTab::Approvals;
+
+    assert!(handle_approval_tab_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state
+    ));
+    assert!(matches!(state.dialog, Some(TuiDialog::Interview(_))));
+    assert!(state.side_question_prompt.is_none());
+
+    for ch in "use v-pro".chars() {
+        handle_dialog_key(
+            KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE),
+            &mut state,
+        );
+    }
+    for _ in 0..4 {
+        handle_dialog_key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), &mut state);
+    }
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE),
+        &mut state,
+    );
+    handle_dialog_key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut state,
+    );
+
+    assert_eq!(state.last_event, "btw answer saved");
+    assert!(state.dialog.is_none());
+    let loaded = store.load(&session_id).unwrap();
+    let updated = loaded.load_side_questions().unwrap();
+    assert_eq!(updated[0].id, question.id);
+    assert_eq!(updated[0].status, SideQuestionStatus::Answered);
+    assert_eq!(updated[0].answer.as_deref(), Some("use v4-pro"));
 }
 
 #[test]
@@ -3269,6 +3609,7 @@ fn approval_prompt_mouse_selects_blockers_without_acting() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3378,6 +3719,7 @@ fn running_tui_handles_btw_commands_without_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3449,6 +3791,7 @@ fn running_tui_status_reads_active_session_without_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3509,6 +3852,7 @@ fn running_tui_stop_marks_session_paused_and_rebuilds_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3611,6 +3955,7 @@ fn running_tui_handles_trace_approval_and_session_commands_without_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3718,6 +4063,7 @@ fn running_tui_allows_session_restore_backup_dry_run_only() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3811,6 +4157,7 @@ fn running_tui_blocks_session_write_actions() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -3889,6 +4236,7 @@ fn running_tui_handles_product_loop_reports_without_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4005,6 +4353,7 @@ fn running_tui_blocks_artifact_output_for_local_side_commands() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4132,6 +4481,7 @@ fn running_tui_blocks_completion_force_install() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4212,6 +4562,7 @@ fn running_tui_can_fork_persisted_context_without_runtime() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4286,6 +4637,7 @@ fn running_tui_allows_read_only_git_inspection_only() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4380,6 +4732,7 @@ fn header_status_uses_active_session_metadata_while_running() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4480,6 +4833,7 @@ fn task_monitor_reads_active_session_while_runtime_is_running() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4565,6 +4919,7 @@ fn environment_setup_quick_action_prefills_instead_of_running() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4634,6 +4989,7 @@ fn approvals_tab_can_approve_active_session_while_running() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4688,6 +5044,7 @@ fn approvals_tab_answers_active_btw_question_while_running() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,
@@ -4745,6 +5102,7 @@ fn chat_ui_render_keeps_tools_out_of_primary_view() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -4796,6 +5154,7 @@ fn tools_tab_keys_and_mouse_keep_selected_tool_visible() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -4871,6 +5230,7 @@ fn tools_tab_mouse_click_maps_focused_window_to_actual_tool() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(7),
         selected_command: 0,
         selected_change: 0,
@@ -4933,6 +5293,7 @@ fn tools_tab_expanded_selected_tool_shows_detail_preview_and_full_output_hint() 
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -4975,6 +5336,7 @@ fn tools_tab_ctrl_shortcuts_prefill_session_tool_commands() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -5033,6 +5395,7 @@ fn tools_tab_shows_visible_session_tool_actions() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -5072,6 +5435,7 @@ fn tools_tab_mouse_click_prefills_visible_tool_action_without_toggling_tool() {
         resume_picker: None,
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: Some(0),
         selected_command: 0,
         selected_change: 0,
@@ -5249,6 +5613,7 @@ fn resume_picker_mouse_selects_and_scrolls_without_falling_through() {
         resume_picker: Some(picker),
         credential_prompt: None,
         side_question_prompt: None,
+        dialog: None,
         selected_tool: None,
         selected_command: 0,
         selected_change: 0,

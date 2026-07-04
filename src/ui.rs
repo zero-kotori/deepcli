@@ -25,6 +25,7 @@ mod clipboard;
 mod command_palette;
 mod credential_prompt;
 mod dashboard;
+mod dialogs;
 mod geometry;
 mod input_submission;
 mod message_box;
@@ -76,6 +77,13 @@ use credential_prompt::{
     CredentialPrompt,
 };
 pub use dashboard::{render_dashboard, TuiSnapshot};
+#[cfg(test)]
+use dialogs::{dialog_body_for_state, open_agent_editor_dialog, replace_dialog_field, DialogKind};
+use dialogs::{
+    handle_dialog_key, open_interview_dialog, open_latest_agent_editor_dialog,
+    open_settings_dialog, TuiDialog,
+};
+use dialogs::{open_diff_dialog, render_dialog};
 use geometry::{rect_contains, rect_content_row_contains};
 use input_submission::{apply_resume_result, submit_tui_input};
 use message_box::{handle_prompt_input_key, MessageBox, MessageBoxAction};
@@ -170,6 +178,7 @@ struct TuiState {
     resume_picker: Option<ResumePicker>,
     credential_prompt: Option<CredentialPrompt>,
     side_question_prompt: Option<SideQuestionPrompt>,
+    dialog: Option<TuiDialog>,
     selected_tool: Option<usize>,
     selected_command: usize,
     selected_change: usize,
@@ -217,6 +226,7 @@ pub async fn run_tui(mut runtime: AgentRuntime) -> Result<()> {
             resume_picker: None,
             credential_prompt: None,
             side_question_prompt: None,
+            dialog: None,
             selected_tool: None,
             selected_command: 0,
             selected_change: 0,
@@ -302,6 +312,9 @@ fn handle_tui_mouse(
         return;
     }
     if handle_approvals_mouse_for_state(state, mouse, areas.input) {
+        return;
+    }
+    if state.dialog.is_some() {
         return;
     }
     if handle_command_palette_mouse_for_state(state, mouse, areas.input) {
@@ -426,6 +439,10 @@ fn handle_tui_key_with_clipboard_writer<W: Write>(
             state.last_event = "btw answer cancelled".to_string();
             return Ok(());
         }
+        if state.dialog.take().is_some() {
+            state.last_event = "dialog closed".to_string();
+            return Ok(());
+        }
         if state.running {
             stop_running_task(state, false, "keyboard interrupt");
         } else {
@@ -440,6 +457,10 @@ fn handle_tui_key_with_clipboard_writer<W: Write>(
         }
         if state.side_question_prompt.take().is_some() {
             state.last_event = "btw answer cancelled".to_string();
+            return Ok(());
+        }
+        if state.dialog.take().is_some() {
+            state.last_event = "dialog closed".to_string();
             return Ok(());
         }
         if state.resume_picker.is_some() {
@@ -465,6 +486,10 @@ fn handle_tui_key_with_clipboard_writer<W: Write>(
     }
     if state.side_question_prompt.is_some() {
         handle_side_question_prompt_key(key, state);
+        return Ok(());
+    }
+    if state.dialog.is_some() {
+        handle_dialog_key(key, state);
         return Ok(());
     }
     if state.resume_picker.is_some() {
@@ -504,6 +529,22 @@ fn handle_tui_key_with_clipboard_writer<W: Write>(
         }
         KeyCode::Left if key.modifiers.contains(KeyModifiers::CONTROL) => {
             cycle_monitor_tab(state, false);
+        }
+        KeyCode::Char('e')
+            if key.modifiers.is_empty()
+                && state.monitor_tab == MonitorTab::Library
+                && state.input.buffer().trim().is_empty() =>
+        {
+            open_latest_agent_editor_dialog(state);
+        }
+        KeyCode::Char('s')
+            if key.modifiers.is_empty()
+                && state.monitor_tab == MonitorTab::Health
+                && state.input.buffer().trim().is_empty() =>
+        {
+            if let Err(error) = open_settings_dialog(state) {
+                state.last_event = format!("settings dialog failed: {error}");
+            }
         }
         KeyCode::Tab => {
             if state.monitor_tab != MonitorTab::Tools {

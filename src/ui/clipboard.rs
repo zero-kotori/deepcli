@@ -2,7 +2,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent,
 use ratatui::layout::Rect;
 use std::io::{self, Write};
 
-use super::{rect_contains, MessageBox, TuiState};
+use super::{rect_contains, MessageBox, TuiDialog, TuiState};
 
 const OSC52_CLIPBOARD_TARGET: &str = "c";
 const BASE64_ALPHABET: &[u8; 64] =
@@ -80,6 +80,9 @@ fn selected_editable_text(state: &TuiState) -> Option<String> {
     if let Some(prompt) = &state.side_question_prompt {
         return prompt.input.selected_text();
     }
+    if let Some(TuiDialog::Interview(dialog)) = &state.dialog {
+        return dialog.input.selected_text();
+    }
     state.input.selected_text()
 }
 
@@ -89,6 +92,9 @@ fn active_editable_input_mut(state: &mut TuiState) -> Option<&mut MessageBox> {
     }
     if let Some(prompt) = &mut state.side_question_prompt {
         return Some(&mut prompt.input);
+    }
+    if let Some(TuiDialog::Interview(dialog)) = &mut state.dialog {
+        return Some(&mut dialog.input);
     }
     Some(&mut state.input)
 }
