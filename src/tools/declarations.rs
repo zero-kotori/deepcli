@@ -349,6 +349,14 @@ impl ToolRegistry {
         self.tools.iter().map(ToolObject::tool_spec).collect()
     }
 
+    pub fn tool_specs_for_names(&self, names: &[&str]) -> Vec<ToolSpec> {
+        self.tools
+            .iter()
+            .filter(|tool| names.iter().any(|name| *name == tool.name()))
+            .map(ToolObject::tool_spec)
+            .collect()
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.tool(name).is_some()
     }

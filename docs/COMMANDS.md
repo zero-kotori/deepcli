@@ -34,7 +34,7 @@
 | /timeout | support | commands | stable | Provider-turn 超时快捷方式。 |
 | /model | core | commands | stable | Provider/model 检查与切换。 |
 | /goal | core | session | stable | 长期目标契约与 gate。 |
-| /plan | core | session | stable | 需求澄清与计划草稿。 |
+| /plan | core | session | stable | 模型驱动的只读规划与定制问题。 |
 | /fork | core | session | stable | 持久化上下文复制与恢复验证。 |
 | /diff | core | commands | stable | 工作区或会话 diff 检查。 |
 | /review | core | commands | stable | 本地 diff 风险审查。 |

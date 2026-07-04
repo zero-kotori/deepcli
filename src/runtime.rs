@@ -43,6 +43,21 @@ use tokio::time::timeout;
 const SESSION_CONTEXT_MESSAGE_LIMIT: usize = 16;
 const SESSION_CONTEXT_MESSAGE_CHARS: usize = 1_500;
 const SESSION_CONTEXT_TOTAL_CHARS: usize = 16_000;
+const PLAN_MODE_TOOLS: &[&str] = &[
+    "read_file",
+    "list_files",
+    "search",
+    "git_status",
+    "git_diff",
+    "git_branch",
+    "discover_tests",
+    "ask_user_question",
+    "prompt_list",
+    "prompt_get",
+    "prompt_render",
+    "skill_list",
+    "skill_run",
+];
 
 pub struct RuntimeOptions {
     pub workspace: PathBuf,
@@ -61,6 +76,68 @@ pub struct AgentRuntime {
     executor: ToolExecutor,
     stream_output: bool,
     progress_tx: Option<Sender<RuntimeProgress>>,
+    planning_mode_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentRunMode {
+    Normal,
+    Planning,
+}
+
+fn should_run_model_plan(args: &[String]) -> bool {
+    !matches!(args.first().map(String::as_str), None | Some("show"))
+}
+
+fn model_plan_requirement(args: &[String]) -> Result<String> {
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--json" | "--write-doc" | "--write-requirements" | "--output" | "-o"
+        ) || arg.starts_with("--write-doc=")
+            || arg.starts_with("--output=")
+    }) {
+        return Err(anyhow!(
+            "`/plan <requirement>` now uses the model-backed planning flow; legacy draft/output options are no longer supported"
+        ));
+    }
+    let requirement = args.join(" ").trim().to_string();
+    if requirement.is_empty() {
+        return Err(anyhow!("/plan requires a requirement or `show`"));
+    }
+    Ok(requirement)
+}
+
+fn build_model_plan_prompt(requirement: &str) -> String {
+    format!(
+        r#"You are in DeepCLI plan mode.
+
+Current user requirement:
+{requirement}
+
+Plan-mode rules:
+- Do not modify files or execute implementation steps.
+- Use read-only exploration before answering: inspect relevant files, search for existing patterns, and check git context when useful.
+- If the requirement or implementation approach has unresolved ambiguity, call `ask_user_question` with focused, code-context-aware questions before finalizing the plan.
+- Ask only questions that depend on this requirement and this repository. Do not use generic fixed planning questions.
+- Do not ask the user whether the plan is okay; finish with a concrete plan when enough context is available.
+- If more information is needed after queued questions, explain what is blocked.
+
+Allowed planning actions:
+- Read/search files, inspect git status/diff/branch, discover likely tests, read prompts/skills, and queue user questions.
+- Do not call write/edit/patch/commit/test-run/setup/terminal/subagent tools.
+
+Required final response:
+1. Briefly summarize the code context you inspected.
+2. List any queued or still-open custom questions.
+3. Provide a repository-specific implementation plan.
+4. End with `Critical Files for Implementation` and list 3-5 paths.
+"#
+    )
+}
+
+fn is_plan_mode_tool(name: &str) -> bool {
+    PLAN_MODE_TOOLS.contains(&name)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -548,6 +625,7 @@ impl AgentRuntime {
             executor,
             stream_output: options.stream_output,
             progress_tx: None,
+            planning_mode_active: false,
         })
     }
 
@@ -603,6 +681,9 @@ impl AgentRuntime {
                 SlashCommand::Cmd { command, attach } => {
                     return self.handle_cmd_command(command, attach).await;
                 }
+                SlashCommand::Plan { args } if should_run_model_plan(&args) => {
+                    return self.handle_model_plan_command(args).await;
+                }
                 SlashCommand::Quit => {
                     return Ok("bye".to_string());
                 }
@@ -649,6 +730,11 @@ impl AgentRuntime {
             "{}\n\nmodel response:\n{}",
             execution.report, response
         ))
+    }
+
+    async fn handle_model_plan_command(&mut self, args: Vec<String>) -> Result<String> {
+        let requirement = model_plan_requirement(&args)?;
+        self.run_planning_task(&requirement).await
     }
 
     pub fn list_sessions(&self) -> Result<Vec<crate::session::SessionMetadata>> {
@@ -1013,16 +1099,39 @@ impl AgentRuntime {
     }
 
     pub async fn run_agent_task(&mut self, task: &str) -> Result<String> {
-        self.session.auto_title_from_user_task(task)?;
+        self.run_agent_task_inner(task, task, AgentRunMode::Normal)
+            .await
+    }
+
+    async fn run_planning_task(&mut self, requirement: &str) -> Result<String> {
+        let task = build_model_plan_prompt(requirement);
+        self.planning_mode_active = true;
+        let result = self
+            .run_agent_task_inner(requirement, &task, AgentRunMode::Planning)
+            .await;
+        self.planning_mode_active = false;
+        result
+    }
+
+    async fn run_agent_task_inner(
+        &mut self,
+        title_task: &str,
+        provider_task: &str,
+        mode: AgentRunMode,
+    ) -> Result<String> {
+        self.session.auto_title_from_user_task(title_task)?;
         self.executor.set_session(Some(self.session.clone()));
         let session_context = self.build_session_context()?;
         self.session.set_state(SessionState::ContextLoading)?;
-        self.session.append_message("user", task)?;
+        self.session.append_message("user", provider_task)?;
 
         let workspace_context = WorkspaceManager::new(&self.workspace)?.collect_context()?;
-        if self.config.agent.require_plan_for_complex_tasks && is_complex_task(task) {
+        if mode == AgentRunMode::Normal
+            && self.config.agent.require_plan_for_complex_tasks
+            && is_complex_task(title_task)
+        {
             self.session.set_state(SessionState::Planning)?;
-            self.session.save_plan(&default_plan(task))?;
+            self.session.save_plan(&default_plan(title_task))?;
         }
 
         let provider_runtime = self
@@ -1044,7 +1153,7 @@ impl AgentRuntime {
             },
             ProviderMessage {
                 role: "user".to_string(),
-                content: Some(task.to_string()),
+                content: Some(provider_task.to_string()),
                 reasoning_content: None,
                 name: None,
                 tool_call_id: None,
@@ -1055,7 +1164,7 @@ impl AgentRuntime {
         let provider_turn_timeout = self.provider_turn_timeout();
 
         self.session.set_state(SessionState::Executing)?;
-        if self.stream_output && !is_complex_task(task) {
+        if mode == AgentRunMode::Normal && self.stream_output && !is_complex_task(title_task) {
             self.emit_progress(RuntimeProgress::ProviderStreamStarted);
             self.session
                 .append_audit_event("provider_stream_started", json!({}))?;
@@ -1110,7 +1219,10 @@ impl AgentRuntime {
                     "verification_calls_before_action": verification_calls_before_action,
                 }),
             )?;
-            let tool_specs = self.registry.tool_specs();
+            let tool_specs = match mode {
+                AgentRunMode::Normal => self.registry.tool_specs(),
+                AgentRunMode::Planning => self.registry.tool_specs_for_names(PLAN_MODE_TOOLS),
+            };
             let context_manager = ContextManager::from_config(&self.config);
             let prepared_context = context_manager
                 .prepare(
@@ -1839,6 +1951,22 @@ impl AgentRuntime {
                 call.function.name
             ));
         }
+        if self.planning_mode_active && !is_plan_mode_tool(&call.function.name) {
+            let output = format!(
+                "tool `{}` skipped: not available in DeepCLI plan mode. Use read-only exploration tools or ask_user_question.",
+                call.function.name
+            );
+            self.session.append_audit_event(
+                "tool_skipped_plan_mode",
+                json!({ "tool": call.function.name, "reason": "not_available_in_plan_mode" }),
+            )?;
+            self.emit_progress(RuntimeProgress::ToolCompleted {
+                tool: call.function.name.clone(),
+                ok: false,
+                summary: truncate_progress_detail(&output),
+            });
+            return Ok(output);
+        }
         let progress_detail = tool_call_progress_detail(call);
         self.emit_progress(RuntimeProgress::ToolStarted {
             tool: call.function.name.clone(),
@@ -1935,6 +2063,13 @@ impl AgentRuntime {
     }
 
     async fn execute_parallel_tool_calls(&mut self, calls: &[ToolCall]) -> Result<Vec<String>> {
+        if self.planning_mode_active {
+            let mut outputs = Vec::with_capacity(calls.len());
+            for call in calls {
+                outputs.push(self.execute_tool_call(call).await?);
+            }
+            return Ok(outputs);
+        }
         for call in calls {
             if !self.registry.has(&call.function.name) {
                 return Err(anyhow!(
@@ -3633,6 +3768,25 @@ mod tests {
     }
 
     #[test]
+    fn plan_mode_tool_specs_are_read_only_and_question_capable() {
+        let registry = ToolRegistry::mvp();
+        let tool_names = registry
+            .tool_specs_for_names(PLAN_MODE_TOOLS)
+            .into_iter()
+            .map(|spec| spec.function.name)
+            .collect::<Vec<_>>();
+
+        assert!(tool_names.contains(&"read_file".to_string()));
+        assert!(tool_names.contains(&"search".to_string()));
+        assert!(tool_names.contains(&"ask_user_question".to_string()));
+        assert!(!tool_names.contains(&"write_file".to_string()));
+        assert!(!tool_names.contains(&"apply_patch_or_write".to_string()));
+        assert!(!tool_names.contains(&"run_shell".to_string()));
+        assert!(!tool_names.contains(&"run_tests".to_string()));
+        assert!(!tool_names.contains(&"git_commit".to_string()));
+    }
+
+    #[test]
     fn session_observation_summarizes_plan_tests_and_blockers() {
         let dir = tempdir().unwrap();
         let runtime = AgentRuntime::new(
@@ -4014,6 +4168,57 @@ mod tests {
                 .any(|record| record.tool == "run_shell"
                     && record.status == ToolCallStatus::Succeeded)
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_plan_requirement_uses_provider_planning_prompt() {
+        let dir = tempdir().unwrap();
+        let mut config = AppConfig {
+            default_provider: "stub".to_string(),
+            ..AppConfig::default()
+        };
+        config.providers.insert(
+            "stub".to_string(),
+            ProviderConfig {
+                provider_type: "stub".to_string(),
+                credentials_file: ".deepcli/credentials/stub.json".into(),
+                acceptance_model: Some("stub-model".to_string()),
+                capabilities: Vec::new(),
+            },
+        );
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let error = runtime
+            .handle_input("/plan 支持根据代码上下文生成澄清问题")
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("provider type `stub` is not implemented"));
+        let messages = runtime.session.load_messages().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "user");
+        assert!(messages[0]
+            .content
+            .contains("You are in DeepCLI plan mode."));
+        assert!(messages[0]
+            .content
+            .contains("支持根据代码上下文生成澄清问题"));
+        assert!(messages[0].content.contains("ask_user_question"));
+        assert!(messages[0]
+            .content
+            .contains("Do not modify files or execute implementation steps."));
     }
 
     #[tokio::test]

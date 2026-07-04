@@ -779,13 +779,9 @@ fn parses_core_slash_commands() {
         })
     );
     assert_eq!(
-        CommandRouter::parse("/plan 做一个需求澄清工具 --write-doc docs/ai/REQ.md").unwrap(),
+        CommandRouter::parse("/plan 做一个需求澄清工具").unwrap(),
         Some(SlashCommand::Plan {
-            args: vec![
-                "做一个需求澄清工具".to_string(),
-                "--write-doc".to_string(),
-                "docs/ai/REQ.md".to_string()
-            ]
+            args: vec!["做一个需求澄清工具".to_string()]
         })
     );
     assert_eq!(
@@ -1226,37 +1222,41 @@ fn goal_gate_passes_when_plan_and_acceptance_evidence_are_complete() {
 }
 
 #[test]
-fn plan_command_generates_requirements_draft_and_side_questions() {
+fn plan_command_show_reads_saved_plan_and_rejects_local_draft_generation() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new(dir.path());
     let session = store
         .create(dir.path(), "deepseek".to_string(), None)
         .unwrap();
+    session
+        .save_plan(&Plan {
+            title: "Model-backed planning".to_string(),
+            steps: vec![PlanStep {
+                id: "context".to_string(),
+                description: "Inspect code context".to_string(),
+                status: PlanStepStatus::Pending,
+            }],
+            updated_at: Utc::now(),
+        })
+        .unwrap();
 
     let output = handle_plan_command(
         dir.path(),
         Some(session.id().to_string()),
-        vec![
-            "支持".to_string(),
-            "交互式需求澄清".to_string(),
-            "--write-doc".to_string(),
-            "docs/ai/REQUIREMENTS_DRAFT.md".to_string(),
-            "--json".to_string(),
-        ],
+        vec!["show".to_string()],
     )
     .unwrap();
     let value: Value = serde_json::from_str(&output).unwrap();
-    assert_eq!(value["schema"], "deepcli.plan.requirements_draft.v1");
-    assert_eq!(value["status"], "draft");
-    assert!(value["questions"].as_array().unwrap().len() >= 3);
-    assert!(value["document"]
-        .as_str()
-        .unwrap()
-        .contains("Requirements Draft"));
-    assert!(dir.path().join("docs/ai/REQUIREMENTS_DRAFT.md").exists());
+    assert_eq!(value["title"], "Model-backed planning");
 
-    let loaded = store.load(&session.id().to_string()).unwrap();
-    assert!(!loaded.load_side_questions().unwrap().is_empty());
+    let error = handle_plan_command(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["支持交互式需求澄清".to_string()],
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("model-backed planning flow"));
 }
 
 #[test]
@@ -2938,7 +2938,8 @@ fn command_specific_help_explains_usage_examples_and_notes() {
 
     let plan_help = CommandRouter::help_for(&["plan".to_string()]).unwrap();
     assert!(plan_help.contains("/plan <rough requirement>"));
-    assert!(plan_help.contains("requirements draft"));
+    assert!(plan_help.contains("active provider"));
+    assert!(plan_help.contains("ask_user_question"));
 
     let fork_help = CommandRouter::help_for(&["fork".to_string()]).unwrap();
     assert!(fork_help.contains("/fork --current"));

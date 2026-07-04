@@ -36,7 +36,7 @@ deepcli sessions --all --limit 20
 # 长期目标 / 需求澄清 / 复制会话 / 同目录终端
 deepcli goal "完整实现当前项目文档中的全部需求" --json
 deepcli goal status --json
-deepcli plan "做一个可以交互式澄清需求的功能" --write-doc docs/ai/PLANNED_REQUIREMENTS.md
+/plan 做一个可以交互式澄清需求的功能
 deepcli fork --current --no-open --verify --json
 deepcli terminal --dry-run --json
 deepcli cmd git status --short

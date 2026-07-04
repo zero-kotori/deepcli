@@ -55,7 +55,6 @@ pub const BENCHMARK_LIST_V1: &str = "deepcli.benchmark.list.v1";
 pub const GOAL_V1: &str = "deepcli.goal.v1";
 pub const GOAL_STATUS_V1: &str = "deepcli.goal.status.v1";
 pub const GOAL_STATUS_SUMMARY_V1: &str = "deepcli.goal.status.summary.v1";
-pub const PLAN_REQUIREMENTS_DRAFT_V1: &str = "deepcli.plan.requirements_draft.v1";
 
 // Session / resume / fork / terminal
 pub const SESSION_LIST_V1: &str = "deepcli.session.list.v1";
@@ -135,7 +134,6 @@ pub const ALL: &[&str] = &[
     GOAL_V1,
     GOAL_STATUS_V1,
     GOAL_STATUS_SUMMARY_V1,
-    PLAN_REQUIREMENTS_DRAFT_V1,
     SESSION_LIST_V1,
     SESSION_SEARCH_V1,
     SESSION_INSPECT_V1,

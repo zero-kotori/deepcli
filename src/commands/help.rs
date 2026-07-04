@@ -680,21 +680,14 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/plan",
-            listing: "/plan [requirement...] [--json] [--output path] [--write-doc path]",
-            summary: "Turn an immature request into clarification questions and a requirements draft.",
-            usage: &[
-                "/plan",
-                "/plan show",
-                "/plan <rough requirement>",
-                "/plan <rough requirement> --write-doc docs/ai/REQUIREMENTS_DRAFT.md",
-                "/plan <rough requirement> --json --output .deepcli/exports/plan.json",
-            ],
+            listing: "/plan [show|<requirement...>]",
+            summary: "Use the active model to inspect code context and produce a custom implementation plan.",
+            usage: &["/plan", "/plan show", "/plan <rough requirement>"],
             examples: &[
                 "/plan 做一个更好的会话恢复能力",
-                "/plan 支持团队共享配置 --write-doc docs/ai/REQUIREMENTS_DRAFT.md",
-                "deepcli plan '支持插件市场'",
+                "/plan 支持团队共享配置",
             ],
-            notes: &["`/plan show` preserves the old behavior and prints the saved execution plan. Passing a requirement creates a product-planning artifact: clarifying questions with 2-3 options and recommended choices, assumptions, functional requirements, acceptance criteria, and next steps. In an active session the questions are also queued as by-the-way questions so the user can answer them interactively. Use `--json` for the stable `deepcli.plan.requirements_draft.v1` schema."],
+            notes: &["`/plan show` prints the saved execution plan. Passing a requirement now goes through the active provider: the model receives a read-only planning prompt, can inspect repository context with planning-safe tools, can queue repository-specific questions through `ask_user_question`, and returns a concrete implementation plan. Legacy local draft options such as `--json`, `--output`, and `--write-doc` are no longer supported for `/plan <requirement>`."],
         },
         CommandHelp {
             name: "/fork",

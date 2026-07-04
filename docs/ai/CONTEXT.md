@@ -49,7 +49,7 @@
 3. 长期 goal、需求澄清 plan、会话 fork
    - 结果：新增 `/goal`、`/plan <rough requirement>` 和 `/fork` 三个产品闭环命令。
    - `/goal` 在当前 session 写入 `goal.json` 与守护 `plan.json`，并把 active goal contract 注入后续 Agent 上下文，约束 Agent 不能在目标、验收要求和测试通过前停止。
-   - `/plan` 无参数保留查看执行计划；带需求文本时生成带推荐选项的需求澄清草稿，可写入 docs，并在有当前 session 时把问题加入旁路问题队列。
+   - `/plan` 无参数保留查看执行计划；带需求文本时进入模型驱动的只读规划模式，模型会读代码上下文、必要时通过 `ask_user_question` 入队定制问题，并返回具体实现计划。
    - `/fork` 复制已持久化 session 上下文到新 session id，默认打开新 macOS Terminal 执行 `deepcli resume <new_id>`；Agent 运行中也可复制当前已落盘上下文，但当前运行中的后台 Agent 任务不热分叉。
 
 4. goal readiness gate
