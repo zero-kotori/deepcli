@@ -2724,6 +2724,62 @@ fn ui_module_docs_cover_dialog_owner() {
 }
 
 #[test]
+fn runtime_docs_cover_context_manager_owner() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let architecture_doc = fs::read_to_string(root.join("docs/ARCHITECTURE.md")).unwrap();
+    let lib = fs::read_to_string(root.join("src/lib.rs")).unwrap();
+    let runtime = fs::read_to_string(root.join("src/runtime.rs")).unwrap();
+    let source = "src/context_manager.rs";
+
+    assert!(
+        root.join(source).exists(),
+        "{source} should exist for context preparation ownership"
+    );
+    assert!(
+        lib.contains("pub mod context_manager;"),
+        "src/lib.rs should register the context manager owner module"
+    );
+    assert!(
+        architecture_doc.contains(source),
+        "docs/ARCHITECTURE.md should mention {source}"
+    );
+
+    let context_source = fs::read_to_string(root.join(source)).unwrap();
+    for item in [
+        "struct ContextManager",
+        "struct ContextCompactionOptions",
+        "struct ContextPreparation",
+        "fn prepare(",
+        "fn microcompact_tool_outputs",
+        "fn compact_messages_for_provider",
+        "fn provider_messages_to_retained_segment",
+        "fn message_groups_omitted_after_compaction",
+    ] {
+        assert!(
+            context_source.contains(item),
+            "{item} should live in {source}"
+        );
+        let runtime_needle = if item.starts_with("fn ") && !item.ends_with('(') {
+            format!("{item}(")
+        } else {
+            item.to_string()
+        };
+        assert!(
+            !runtime.contains(&runtime_needle),
+            "{item} should not remain in src/runtime.rs"
+        );
+        let documented_name = item
+            .trim_start_matches("struct ")
+            .trim_start_matches("fn ")
+            .trim_end_matches('(');
+        assert!(
+            architecture_doc.contains(documented_name),
+            "docs/ARCHITECTURE.md should document {item} ownership"
+        );
+    }
+}
+
+#[test]
 fn ui_module_docs_cover_command_palette_owner() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ui_doc = fs::read_to_string(root.join("docs/MODULES/ui.md")).unwrap();

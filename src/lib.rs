@@ -2,6 +2,7 @@ pub mod agents;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod context_manager;
 pub mod permissions;
 pub mod privacy;
 pub mod prompts;
