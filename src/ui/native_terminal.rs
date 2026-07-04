@@ -21,6 +21,9 @@ const NATIVE_PROGRESS_DETAIL_CHARS: usize = 120;
 struct NativeRenderState {
     assistant_open: bool,
     saw_assistant_delta: bool,
+    folded_tool_events: usize,
+    folded_tool_failures: usize,
+    latest_folded_tool: Option<String>,
 }
 
 pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()> {
@@ -589,7 +592,7 @@ fn render_native_progress(
             render_state.saw_assistant_delta = true;
         }
         other => {
-            if let Some(line) = native_progress_line(&other) {
+            for line in native_progress_lines(&other, render_state) {
                 finish_native_stream_line(render_state)?;
                 println!("{line}");
             }
@@ -598,52 +601,92 @@ fn render_native_progress(
     Ok(())
 }
 
-fn native_progress_line(event: &RuntimeProgress) -> Option<String> {
+fn native_progress_lines(
+    event: &RuntimeProgress,
+    render_state: &mut NativeRenderState,
+) -> Vec<String> {
     match event {
-        RuntimeProgress::AssistantDelta { .. } => None,
+        RuntimeProgress::AssistantDelta { .. } => Vec::new(),
         RuntimeProgress::ProviderStreamStarted => {
-            Some("deepcli | provider stream started".to_string())
+            vec!["deepcli | provider stream started".to_string()]
         }
         RuntimeProgress::ProviderTurnStarted {
             iteration,
-            max_iterations,
+            max_iterations: _,
             message_count,
             tool_count,
             request_kib,
             compacted,
         } => {
+            render_state.folded_tool_events = 0;
+            render_state.folded_tool_failures = 0;
+            render_state.latest_folded_tool = None;
             let mut line = format!(
-                "deepcli | provider {iteration}/{max_iterations} | messages {message_count} | tools {tool_count} | request {request_kib} KiB"
+                "deepcli | provider {iteration} | messages {message_count} | tools {tool_count} | request {request_kib} KiB"
             );
             if *compacted {
                 line.push_str(" | compacted");
             }
-            Some(line)
+            vec![line]
         }
         RuntimeProgress::ProviderTurnCompleted {
             elapsed_ms,
             tool_calls,
-        } => Some(format!(
-            "deepcli | provider done | {:.1}s | tool calls {tool_calls}",
-            *elapsed_ms as f64 / 1000.0
-        )),
+        } => {
+            let mut lines = Vec::new();
+            if render_state.folded_tool_events > 0 {
+                let mut folded = format!(
+                    "deepcli | tools folded | events {}",
+                    render_state.folded_tool_events
+                );
+                if render_state.folded_tool_failures > 0 {
+                    folded.push_str(&format!(" | failed {}", render_state.folded_tool_failures));
+                }
+                if let Some(latest) = render_state.latest_folded_tool.take() {
+                    folded.push_str(" | latest ");
+                    folded.push_str(&latest);
+                }
+                lines.push(folded);
+                render_state.folded_tool_events = 0;
+                render_state.folded_tool_failures = 0;
+            }
+            lines.push(format!(
+                "deepcli | provider done | {:.1}s | tool calls {tool_calls}",
+                *elapsed_ms as f64 / 1000.0
+            ));
+            lines
+        }
         RuntimeProgress::ToolStarted { tool, detail } => {
-            Some(native_tool_progress_line("run", tool, detail.as_deref()))
+            fold_native_tool_progress(render_state, "run", tool, detail.as_deref(), true);
+            Vec::new()
         }
         RuntimeProgress::ToolCompleted { tool, ok, summary } => {
             let status = if *ok { "ok" } else { "failed" };
-            Some(native_tool_progress_line(status, tool, Some(summary)))
+            if !ok {
+                render_state.folded_tool_failures += 1;
+            }
+            fold_native_tool_progress(render_state, status, tool, Some(summary), false);
+            Vec::new()
         }
     }
 }
 
-fn native_tool_progress_line(status: &str, tool: &str, detail: Option<&str>) -> String {
-    let mut line = format!("deepcli | tool {status} | {tool}");
+fn fold_native_tool_progress(
+    render_state: &mut NativeRenderState,
+    status: &str,
+    tool: &str,
+    detail: Option<&str>,
+    replace_latest_only_if_empty: bool,
+) {
+    render_state.folded_tool_events += 1;
+    let mut line = format!("{status} {tool}");
     if let Some(detail) = detail.and_then(native_progress_detail) {
         line.push_str(" | ");
         line.push_str(&detail);
     }
-    line
+    if !replace_latest_only_if_empty || render_state.latest_folded_tool.is_none() {
+        render_state.latest_folded_tool = Some(line);
+    }
 }
 
 fn native_progress_detail(value: &str) -> Option<String> {
@@ -679,6 +722,7 @@ mod tests {
 
     #[test]
     fn native_provider_progress_uses_compact_status_lines() {
+        let mut render_state = NativeRenderState::default();
         let started = RuntimeProgress::ProviderTurnStarted {
             iteration: 2,
             max_iterations: 8,
@@ -693,37 +737,52 @@ mod tests {
         };
 
         assert_eq!(
-            native_progress_line(&started),
-            Some(
-                "deepcli | provider 2/8 | messages 14 | tools 9 | request 128 KiB | compacted"
-                    .to_string()
-            )
+            native_progress_lines(&started, &mut render_state),
+            vec!["deepcli | provider 2 | messages 14 | tools 9 | request 128 KiB | compacted"]
         );
         assert_eq!(
-            native_progress_line(&completed),
-            Some("deepcli | provider done | 1.2s | tool calls 3".to_string())
+            native_progress_lines(&completed, &mut render_state),
+            vec!["deepcli | provider done | 1.2s | tool calls 3".to_string()]
         );
     }
 
     #[test]
-    fn native_tool_progress_is_visible_and_single_line() {
+    fn native_tool_progress_is_folded_until_provider_completion() {
+        let mut render_state = NativeRenderState::default();
+        let started_turn = RuntimeProgress::ProviderTurnStarted {
+            iteration: 1,
+            max_iterations: 64,
+            message_count: 12,
+            tool_count: 9,
+            request_kib: 72,
+            compacted: false,
+        };
         let started = RuntimeProgress::ToolStarted {
-            tool: "git_status".to_string(),
-            detail: Some("git status --short".to_string()),
+            tool: "read_file".to_string(),
+            detail: Some("# deepcli 架构".to_string()),
         };
         let completed = RuntimeProgress::ToolCompleted {
-            tool: "git_diff".to_string(),
+            tool: "read_file".to_string(),
             ok: true,
-            summary: "diff --git a/README.md b/README.md\n@@ -1 +1 @@".to_string(),
+            summary: "[deepcli read_file slice: lines 1-80 of 5671]".to_string(),
+        };
+        let completed_turn = RuntimeProgress::ProviderTurnCompleted {
+            elapsed_ms: 5600,
+            tool_calls: 1,
         };
 
         assert_eq!(
-            native_progress_line(&started),
-            Some("deepcli | tool run | git_status | git status --short".to_string())
+            native_progress_lines(&started_turn, &mut render_state),
+            vec!["deepcli | provider 1 | messages 12 | tools 9 | request 72 KiB"]
         );
+        assert!(native_progress_lines(&started, &mut render_state).is_empty());
+        assert!(native_progress_lines(&completed, &mut render_state).is_empty());
         assert_eq!(
-            native_progress_line(&completed),
-            Some("deepcli | tool ok | git_diff | diff --git a/README.md b/README.md".to_string())
+            native_progress_lines(&completed_turn, &mut render_state),
+            vec![
+                "deepcli | tools folded | events 2 | latest ok read_file | [deepcli read_file slice: lines 1-80 of 5671]".to_string(),
+                "deepcli | provider done | 5.6s | tool calls 1".to_string()
+            ]
         );
     }
 

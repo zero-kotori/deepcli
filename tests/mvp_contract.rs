@@ -541,7 +541,7 @@ fn default_config_matches_documented_mvp_defaults() {
     assert!(config.sandbox.enabled_by_default);
     assert!(config.agent.require_plan_for_complex_tasks);
     assert_eq!(config.agent.max_subagent_depth, 2);
-    assert_eq!(config.agent.max_tool_iterations, 64);
+    assert_eq!(config.agent.max_tool_iterations, 512);
     assert_eq!(config.agent.provider_turn_timeout_seconds, 600);
     assert!(config
         .providers

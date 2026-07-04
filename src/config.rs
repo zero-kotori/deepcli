@@ -574,7 +574,7 @@ fn default_subagent_depth() -> u8 {
 }
 
 fn default_tool_iterations() -> usize {
-    64
+    512
 }
 
 fn default_provider_turn_timeout_seconds() -> u64 {

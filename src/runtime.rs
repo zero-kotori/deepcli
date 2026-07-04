@@ -524,13 +524,13 @@ impl RuntimeProgress {
             RuntimeProgress::AssistantDelta { .. } => "deepcli: assistant streaming".to_string(),
             RuntimeProgress::ProviderTurnStarted {
                 iteration,
-                max_iterations,
+                max_iterations: _,
                 message_count,
                 tool_count,
                 request_kib,
                 compacted,
             } => format!(
-                "deepcli: provider turn {iteration}/{max_iterations} (messages={message_count}, tools={tool_count}, request~{request_kib} KiB{})",
+                "deepcli: provider turn {iteration} (messages={message_count}, tools={tool_count}, request~{request_kib} KiB{})",
                 if *compacted { ", compacted" } else { "" }
             ),
             RuntimeProgress::ProviderTurnCompleted {
@@ -577,7 +577,7 @@ enum AgentLoopTransitionReason {
     ToolsCompleted,
     CompletionAccepted,
     CompletionBlocked,
-    BudgetGuardStopped,
+    BudgetGuardRecovered,
     MaxIterationsReached,
     ProviderFailed,
 }
@@ -1665,13 +1665,21 @@ impl AgentRuntime {
                     self.record_agent_loop_transition(
                         &mut loop_tracker,
                         Some(iteration_number),
-                        AgentLoopState::Completed,
-                        AgentLoopTransitionReason::BudgetGuardStopped,
+                        AgentLoopState::RecoveringProvider,
+                        AgentLoopTransitionReason::BudgetGuardRecovered,
                         json!({ "turns": consecutive_budget_skipped_turns }),
                     )?;
-                    return self.finish_repeated_budget_skipped_tool_calls(
-                        consecutive_budget_skipped_turns,
-                    );
+                    messages.push(ProviderMessage {
+                        role: "user".to_string(),
+                        content: Some(budget_skip_recovery_prompt(
+                            consecutive_budget_skipped_turns,
+                        )),
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    });
+                    consecutive_budget_skipped_turns = 0;
                 }
             } else {
                 consecutive_budget_skipped_turns = 0;
@@ -1704,19 +1712,6 @@ impl AgentRuntime {
 
     fn provider_turn_timeout(&self) -> Duration {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
-    }
-
-    fn finish_repeated_budget_skipped_tool_calls(&mut self, turns: usize) -> Result<String> {
-        let content = format!(
-            "已停止继续执行重复的工具调用预算请求：模型连续 {turns} 轮请求的工具调用都被预算护栏跳过。请基于当前已有上下文继续，或明确说明需要放宽预算后再重试。"
-        );
-        self.session.append_message("assistant", &content)?;
-        self.session
-            .update_plan_step("review", PlanStepStatus::Completed)?;
-        self.session.complete_pending_plan_steps()?;
-        self.session.set_state(SessionState::Completed)?;
-        self.session.write_summary(&content)?;
-        Ok(content)
     }
 
     fn build_session_context(&self) -> Result<Option<String>> {
@@ -3268,7 +3263,7 @@ fn context_tool_limit() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(12)
+        .unwrap_or(usize::MAX)
 }
 
 fn verification_tool_limit() -> usize {
@@ -3276,7 +3271,7 @@ fn verification_tool_limit() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(12)
+        .unwrap_or(usize::MAX)
 }
 
 fn budget_skip_turn_limit() -> usize {
@@ -3285,6 +3280,12 @@ fn budget_skip_turn_limit() -> usize {
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(3)
+}
+
+fn budget_skip_recovery_prompt(turns: usize) -> String {
+    format!(
+        "你连续 {turns} 轮请求的工具调用被 deepcli 的工具预算护栏跳过。不要停止，也不要把这个作为最终答案。请自行诊断为什么反复请求了被跳过的工具，基于当前已有上下文调整策略，优先继续完成任务；如果确实缺少关键信息，请提出一个具体、最小的替代读取或向用户说明唯一阻塞点。"
+    )
 }
 
 fn completion_hook_continuation_limit() -> usize {
@@ -3808,6 +3809,8 @@ mod tests {
         Arc, Mutex,
     };
     use tempfile::tempdir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn complex_task_detection_covers_chinese_and_english() {
@@ -5712,31 +5715,23 @@ mod tests {
     }
 
     #[test]
-    fn budget_skipped_exhaustion_completes_with_user_facing_message() {
-        let dir = tempdir().unwrap();
-        let mut runtime = AgentRuntime::new(
-            AppConfig::default(),
-            RuntimeOptions {
-                workspace: dir.path().to_path_buf(),
-                provider: None,
-                model: None,
-                assume_yes: true,
-                resume_session: None,
-                stream_output: false,
-            },
-        )
-        .unwrap();
+    fn budget_skipped_exhaustion_creates_recovery_prompt_for_model() {
+        let prompt = budget_skip_recovery_prompt(3);
 
-        let output = runtime
-            .finish_repeated_budget_skipped_tool_calls(3)
-            .unwrap();
+        assert!(prompt.contains("连续 3 轮"));
+        assert!(prompt.contains("不要停止"));
+        assert!(prompt.contains("自行诊断"));
+        assert!(prompt.contains("继续完成任务"));
+    }
 
-        assert!(!output.contains("agent repeated budget-skipped"));
-        assert!(output.contains("工具调用预算"));
-        assert_eq!(runtime.session.metadata.state, SessionState::Completed);
-        let messages = runtime.session.load_messages().unwrap();
-        assert_eq!(messages.last().unwrap().role, "assistant");
-        assert_eq!(messages.last().unwrap().content, output);
+    #[test]
+    fn tool_budget_guards_are_disabled_by_default() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("DEEPCLI_MAX_CONTEXT_TOOL_CALLS");
+        std::env::remove_var("DEEPCLI_MAX_VERIFICATION_TOOL_CALLS");
+
+        assert_eq!(context_tool_limit(), usize::MAX);
+        assert_eq!(verification_tool_limit(), usize::MAX);
     }
 
     #[test]
