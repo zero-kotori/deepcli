@@ -138,9 +138,9 @@ async fn prepare_messages_with_options(
     provider_turn_timeout: Duration,
 ) -> Result<ContextPreparation> {
     let threshold_tokens = options.input_token_budget();
-    let microcompact = microcompact_tool_outputs(messages, options);
-    let mut prepared_messages = microcompact.messages;
+    let mut prepared_messages = messages.to_vec();
     let mut estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
+    let mut microcompacted_tool_results = 0usize;
     let mut full_compacted = false;
     let mut tail_compacted = false;
     let mut full_compact_error = None;
@@ -148,6 +148,13 @@ async fn prepare_messages_with_options(
     let mut compact_boundary_omitted_groups = 0usize;
     let mut compact_boundary_reasons = Vec::new();
     let message_count_before = messages.len();
+
+    if should_microcompact_before_provider_request(estimated_tokens, threshold_tokens) {
+        let microcompact = microcompact_tool_outputs(messages, options);
+        prepared_messages = microcompact.messages;
+        microcompacted_tool_results = microcompact.compacted_tool_results;
+        estimated_tokens = estimate_request_tokens(provider, &prepared_messages, tools);
+    }
 
     if estimated_tokens > threshold_tokens {
         let attempt = full_compact_messages_with_provider(
@@ -201,12 +208,20 @@ async fn prepare_messages_with_options(
         messages: prepared_messages,
         estimated_tokens,
         threshold_tokens,
-        microcompacted_tool_results: microcompact.compacted_tool_results,
+        microcompacted_tool_results,
         full_compacted,
         tail_compacted,
         full_compact_error,
         compact_boundary,
     })
+}
+
+fn should_microcompact_before_provider_request(
+    estimated_tokens: usize,
+    threshold_tokens: usize,
+) -> bool {
+    let near_threshold_tokens = threshold_tokens.saturating_mul(9) / 10;
+    estimated_tokens >= near_threshold_tokens
 }
 
 pub(crate) fn microcompact_tool_outputs(

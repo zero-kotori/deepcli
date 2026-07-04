@@ -43,8 +43,11 @@ use tokio::time::timeout;
 const SESSION_CONTEXT_MESSAGE_LIMIT: usize = 16;
 const SESSION_CONTEXT_MESSAGE_CHARS: usize = 1_500;
 const SESSION_CONTEXT_TOTAL_CHARS: usize = 16_000;
+const AGENTS_INSTRUCTION_CONTENT_CHARS: usize = 16_000;
 const PLAN_CRITICAL_FILES_BLOCKER: &str =
     "final plan must include `Critical Files for Implementation` with 3-5 file paths";
+const PLAN_USER_QUESTION_BLOCKER: &str =
+    "plan mode must call `ask_user_question` with repository-specific questions before finalizing";
 const PLAN_MODE_TOOLS: &[&str] = &[
     "read_file",
     "list_files",
@@ -79,6 +82,7 @@ pub struct AgentRuntime {
     stream_output: bool,
     progress_tx: Option<Sender<RuntimeProgress>>,
     planning_mode_active: bool,
+    planning_initial_side_question_count: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +124,7 @@ Current user requirement:
 Plan-mode rules:
 - Do not modify files or execute implementation steps.
 - Use read-only exploration before answering: inspect relevant files, search for existing patterns, and check git context when useful.
-- If the requirement or implementation approach has unresolved ambiguity, call `ask_user_question` with focused, code-context-aware questions before finalizing the plan.
+- After initial read-only exploration, call `ask_user_question` with 1-3 focused, code-context-aware questions before finalizing the plan.
 - Ask only questions that depend on this requirement and this repository. Do not use generic fixed planning questions.
 - Do not ask the user whether the plan is okay; finish with a concrete plan when enough context is available.
 - If more information is needed after queued questions, explain what is blocked.
@@ -704,6 +708,7 @@ impl AgentRuntime {
             stream_output: options.stream_output,
             progress_tx: None,
             planning_mode_active: false,
+            planning_initial_side_question_count: 0,
         })
     }
 
@@ -1183,6 +1188,7 @@ impl AgentRuntime {
 
     async fn run_planning_task(&mut self, requirement: &str) -> Result<String> {
         let task = build_model_plan_prompt(requirement);
+        self.planning_initial_side_question_count = self.session.load_side_questions()?.len();
         self.planning_mode_active = true;
         let result = self
             .run_agent_task_inner(requirement, &task, AgentRunMode::Planning)
@@ -1779,6 +1785,11 @@ impl AgentRuntime {
         if self.planning_mode_active {
             if let Some(blocker) = planning_critical_files_blocker(content) {
                 blockers.push(blocker);
+            }
+            if self.session.load_side_questions()?.len()
+                <= self.planning_initial_side_question_count
+            {
+                blockers.push(PLAN_USER_QUESTION_BLOCKER.to_string());
             }
         }
 
@@ -3754,6 +3765,7 @@ fn system_prompt(
         .map(|file| file.path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
+    let agents_instructions = agents_instructions_for_prompt(context);
     let mut prompt = json!({
         "role": "deepcli agent",
         "language": config.agent.language,
@@ -3771,6 +3783,7 @@ fn system_prompt(
         ],
         "workspace": context.root,
         "agents_files": agents,
+        "agents_instructions": agents_instructions,
         "docs_files": docs,
         "git_diff_present": context.git_diff_present
     });
@@ -3781,6 +3794,22 @@ fn system_prompt(
         });
     }
     prompt.to_string()
+}
+
+fn agents_instructions_for_prompt(
+    context: &crate::workspace::WorkspaceContext,
+) -> Vec<serde_json::Value> {
+    context
+        .agents_files
+        .iter()
+        .filter_map(|file| {
+            let content = std::fs::read_to_string(&file.path).ok()?;
+            Some(json!({
+                "path": file.path.display().to_string(),
+                "content": truncate_chars(&content, AGENTS_INSTRUCTION_CONTENT_CHARS),
+            }))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -3893,6 +3922,64 @@ mod tests {
         assert_eq!(plan.steps.len(), 3);
         assert_eq!(plan.steps[0].description, "Review or update src/runtime.rs");
         assert!(plan.title.contains("实现 plan 文档"));
+    }
+
+    #[test]
+    fn planning_completion_requires_model_queued_user_question() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime.planning_mode_active = true;
+        let valid_plan = "## Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n";
+
+        let decision = runtime.evaluate_completion_hooks(valid_plan, 1, 0).unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Continue);
+        assert!(decision
+            .follow_up_prompt
+            .unwrap()
+            .contains("ask_user_question"));
+    }
+
+    #[test]
+    fn planning_completion_accepts_after_answered_user_question() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime.planning_mode_active = true;
+        let question = runtime
+            .session
+            .enqueue_side_question("Which module should the plan prioritize?")
+            .unwrap();
+        runtime
+            .session
+            .answer_side_question(&question.id.to_string(), "runtime")
+            .unwrap();
+        let valid_plan = "## Plan\n\n### Critical Files for Implementation\n- src/runtime.rs\n- src/session.rs\n- src/commands/plan.rs\n";
+
+        let decision = runtime.evaluate_completion_hooks(valid_plan, 1, 0).unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Accept);
     }
 
     #[test]
@@ -4085,6 +4172,36 @@ mod tests {
         assert!(value["rules"].as_array().unwrap().iter().any(|rule| rule
             .as_str()
             .is_some_and(|rule| rule.contains("prompt_list/prompt_get"))));
+    }
+
+    #[test]
+    fn system_prompt_includes_agents_file_contents() {
+        let dir = tempdir().unwrap();
+        let agents_path = dir.path().join("AGENTS.md");
+        fs::write(
+            &agents_path,
+            "# Agent Rules\n\n- Default user-facing language is Chinese.\n",
+        )
+        .unwrap();
+        let config = AppConfig::default();
+        let workspace_context = crate::workspace::WorkspaceContext {
+            root: dir.path().to_path_buf(),
+            agents_files: vec![crate::workspace::summarize_file(&agents_path).unwrap()],
+            docs_files: Vec::new(),
+            readme_files: Vec::new(),
+            git_diff_present: false,
+        };
+
+        let prompt = system_prompt(&workspace_context, &config, None);
+        let value: serde_json::Value = serde_json::from_str(&prompt).unwrap();
+
+        let instructions = value["agents_instructions"].as_array().unwrap();
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0]["path"], agents_path.display().to_string());
+        assert!(instructions[0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("Default user-facing language is Chinese"));
     }
 
     #[test]
@@ -4680,6 +4797,86 @@ mod tests {
             tool_call_id: Some(id.to_string()),
             tool_calls: None,
         }
+    }
+
+    struct LowTokenProvider;
+
+    #[async_trait::async_trait]
+    impl ProviderClient for LowTokenProvider {
+        async fn chat(&self, _request: ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn chat_with_stream_events(
+            &self,
+            _request: ChatRequest,
+            _on_event: Option<crate::providers::StreamEventCallback<'_>>,
+        ) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: Some("ok".to_string()),
+                reasoning_content: None,
+                tool_calls: Vec::new(),
+                usage: Usage::default(),
+            })
+        }
+
+        async fn stream(&self, _request: ChatRequest) -> Result<Vec<StreamEvent>> {
+            Ok(Vec::new())
+        }
+
+        fn count_tokens(&self, _messages: &[ProviderMessage]) -> usize {
+            100
+        }
+
+        fn supports(&self, _capability: ProviderCapability) -> bool {
+            false
+        }
+
+        fn metadata(&self) -> ProviderMetadata {
+            ProviderMetadata {
+                name: "low-token".to_string(),
+                provider_type: "test".to_string(),
+                model: None,
+                capabilities: Vec::new(),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_messages_skips_microcompact_when_context_is_not_near_budget() {
+        let mut messages = vec![
+            test_provider_message("system", "system"),
+            test_provider_message("user", "task"),
+        ];
+        for index in 0..10 {
+            messages.push(test_tool_message(
+                &format!("call_{index}"),
+                "read_file",
+                &"a".repeat(5_000),
+            ));
+        }
+        let mut config = AppConfig::default();
+        config.agent.max_context_tokens = 1_000_000;
+        config.agent.reserved_output_tokens = 384_000;
+
+        let prepared = prepare_messages_for_provider(
+            &LowTokenProvider,
+            &messages,
+            &[],
+            &config,
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+
+        assert!(!prepared.compacted());
+        assert_eq!(prepared.microcompacted_tool_results, 0);
+        assert_eq!(prepared.messages, messages);
     }
 
     #[test]
