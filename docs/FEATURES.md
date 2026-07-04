@@ -257,7 +257,7 @@ deepcli 提供可扩展的任务能力库：
 - `deepcli skill list|run`
 - `deepcli agent list|show|resume|logs`
 
-这些命令支持 JSON 输出，可用于 TUI 面板、外部 UI 或脚本化集成；`prompt list|get|render --json`、`skill list|run --json` 和 `agent list|show|resume|logs --json` 会从可执行 `nextActions` 派生 `checklist[]`，Library 面板可直接渲染打开、渲染、运行 skill、查看/恢复子 Agent 和日志动作。`spawn_subagent` 会持久化子 Agent lifecycle 字段，尝试启动后台子进程，并把 child session、事件日志、输出日志和后续动作写入结构化工具结果；`agent resume` 复用真实 `AgentRuntime` 执行或恢复子任务，失败也会落盘为可观察事件。
+这些命令支持 JSON 输出，可用于 TUI 面板、外部 UI 或脚本化集成；`prompt list|get|render --json`、`skill list|run --json` 和 `agent list|show|resume|logs --json` 会从可执行 `nextActions` 派生 `checklist[]`，Library 面板可直接渲染打开、渲染、运行 skill、查看/恢复子 Agent 和日志动作。`spawn_subagent` 会持久化子 Agent lifecycle 字段，尝试异步启动后台 `agent resume` 子进程，并把启动状态、child session、事件日志、输出日志和后续动作写入结构化工具结果；该工具不同步等待子任务完成，测试环境或后台启动失败时会保留为可观察、可手动 `agent resume` 的任务。`agent resume` 复用真实 `AgentRuntime` 执行或恢复子任务，失败也会落盘为可观察事件。
 
 ## 安全与权限
 

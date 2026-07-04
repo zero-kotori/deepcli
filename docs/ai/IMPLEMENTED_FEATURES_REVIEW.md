@@ -49,7 +49,7 @@
 | `src/config.rs` | 默认配置、项目/全局配置加载、Provider runtime config、凭据引用、隐私和代理配置 | `AppConfig`、`ProviderConfig`、默认配置 |
 | `src/permissions.rs` | 权限模式、sandbox 判定、风险分级、危险 shell/Git/Docker/安装命令处理 | `PermissionEngine`、`DecisionOutcome`、`RiskLevel` |
 | `src/workspace.rs` | 工作区授权、文件上下文、ignore 规则、敏感文件默认排除 | `WorkspaceManager`、`DeepIgnore` |
-| `src/prompts.rs` / `src/skills.rs` / `src/agents.rs` | Prompt、Skill、Subagent 描述符的本地库与基础 CRUD/读取/渲染能力 | `PromptStore`、`SkillStore`、`AgentStore` |
+| `src/prompts.rs` / `src/skills.rs` / `src/agents.rs` | Prompt、Skill 本地库，以及 Subagent 任务 lifecycle、事件日志与恢复元数据 | `PromptStore`、`SkillStore`、`AgentStore` |
 | `src/privacy.rs` | 文本脱敏与敏感值检测，用于日志、trace、diff、隐私扫描等输出 | `redact_sensitive_text`、`looks_sensitive` |
 
 ## 4. 已实现功能清单
@@ -236,13 +236,13 @@
 
 - Prompt：内置 prompt 包含 `code-review`、`fix-tests`、`implementation-plan`；支持项目 prompt 覆盖、list/get/render/delete，render 支持 file、diff、自定义变量等上下文。
 - Skill：支持项目 skill list/run/generate；run 输出 metadata、instructions、nextActions。
-- Agent：支持 subagent task descriptor 持久化、list/show、短 id 前缀。
+- Agent：支持 subagent 任务持久化、后台启动、真实 runtime resume、lifecycle 事件日志、list/show/logs 和短 id 前缀。
 
 实现证据：
 
 - 实际 `prompt list --json` 输出 3 个内置 prompt。
 - `src/prompts.rs`、`src/skills.rs`、`src/agents.rs`。
-- 测试覆盖 prompt render、prompt JSON、skill list/run JSON、agent list/show JSON、subagent spawn 持久化。
+- 测试覆盖 prompt render、prompt JSON、skill list/run JSON、agent list/show/logs/resume JSON、subagent spawn 持久化与后台启动/调度元数据。
 
 ## 5. 稳定 JSON schema 盘点
 

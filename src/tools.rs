@@ -2296,7 +2296,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_subagent_persists_task_descriptor() {
+    async fn spawn_subagent_starts_or_schedules_runnable_task() {
         let dir = tempdir().unwrap();
         let permissions = PermissionEngine::new(
             dir.path(),

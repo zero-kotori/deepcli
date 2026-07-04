@@ -311,7 +311,7 @@ impl ToolRegistry {
                 ),
                 declaration(
                     "spawn_subagent",
-                    "Spawn a bounded sub-agent task descriptor with read/write scope and allowed tool hints.",
+                    "Spawn a bounded runnable sub-agent task, start it in the background when possible, and return lifecycle metadata.",
                     ToolSurface::Subagent,
                     true,
                     false,
