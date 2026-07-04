@@ -2780,6 +2780,55 @@ fn runtime_docs_cover_context_manager_owner() {
 }
 
 #[test]
+fn agent_docs_cover_subagent_lifecycle_owner() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let architecture_doc = fs::read_to_string(root.join("docs/ARCHITECTURE.md")).unwrap();
+    let commands_doc = fs::read_to_string(root.join("docs/MODULES/commands.md")).unwrap();
+    let features_doc = fs::read_to_string(root.join("docs/FEATURES.md")).unwrap();
+    let agents_source = fs::read_to_string(root.join("src/agents.rs")).unwrap();
+    let tools_source = fs::read_to_string(root.join("src/tools.rs")).unwrap();
+    let agent_command_source = fs::read_to_string(root.join("src/commands/agent.rs")).unwrap();
+
+    for item in [
+        "struct SubagentEvent",
+        "fn mark_subagent_started",
+        "fn heartbeat_subagent",
+        "fn complete_subagent",
+        "fn fail_subagent",
+        "fn read_subagent_events",
+    ] {
+        assert!(
+            agents_source.contains(item),
+            "{item} should live in src/agents.rs"
+        );
+    }
+    for item in [
+        "fn start_subagent_background",
+        "\"background_start\"",
+        "fn subagent_next_actions",
+    ] {
+        assert!(
+            tools_source.contains(item),
+            "{item} should live in src/tools.rs"
+        );
+    }
+    for item in [
+        "async fn run_subagent_command",
+        "AgentRuntime::new",
+        "fn format_agent_logs_json",
+    ] {
+        assert!(
+            agent_command_source.contains(item),
+            "{item} should live in src/commands/agent.rs"
+        );
+    }
+    assert!(architecture_doc.contains("子 Agent task、lifecycle、事件日志和恢复元数据"));
+    assert!(commands_doc.contains("/agent run|resume|logs"));
+    assert!(features_doc.contains("spawn_subagent"));
+    assert!(features_doc.contains("agent list|show|run|resume|logs --json"));
+}
+
+#[test]
 fn ui_module_docs_cover_command_palette_owner() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let ui_doc = fs::read_to_string(root.join("docs/MODULES/ui.md")).unwrap();

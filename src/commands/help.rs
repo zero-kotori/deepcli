@@ -969,19 +969,24 @@ fn help_topics() -> &'static [CommandHelp] {
         },
         CommandHelp {
             name: "/agent",
-            listing: "/agent list [--json] [--output path]|show <id> [--json] [--output path]|spawn <task>",
-            summary: "Manage sub-agent task descriptors.",
+            listing: "/agent list|show|run|resume|logs [--json] [--output path]|spawn <task>",
+            summary: "Manage runnable, resumable sub-agent tasks.",
             usage: &[
                 "/agent list [--json] [--output path]",
                 "/agent show <id> [--json] [--output path]",
+                "/agent run <id> [--json] [--output path]",
+                "/agent resume <id> [--json] [--output path]",
+                "/agent logs <id> [--json] [--output path]",
                 "/agent spawn <task>",
             ],
             examples: &[
                 "/agent list --json --output .deepcli/exports/agents.json",
                 "/agent show 6155c14e --json --output .deepcli/exports/agent.json",
+                "/agent run 6155c14e --json",
+                "/agent logs 6155c14e --json",
                 "/agent spawn inspect failing compiler tests",
             ],
-            notes: &["Sub-agent depth is bounded by configuration.", "`/agent show` accepts a unique id prefix. Use `--json` for the stable `deepcli.agent.inspect.v1` schema on read-only agent commands and `--output` to write the selected format to a workspace-contained file."],
+            notes: &["Sub-agent depth is bounded by configuration.", "`/agent show|run|resume|logs` accept a unique id prefix. `run|resume` execute through a real child `AgentRuntime`; failures are persisted on the task with event logs and child session metadata. Use `--json` for the stable `deepcli.agent.inspect.v1` schema and `--output` to write the selected format to a workspace-contained file."],
         },
         CommandHelp {
             name: "/btw",

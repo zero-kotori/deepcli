@@ -2,7 +2,7 @@
 
 ## 职责
 
-`src/tools.rs` 负责工具执行，涵盖文件读写、打补丁、shell、Git、测试、网络搜索、终端启动、prompt/skill 辅助以及 subagent 派生。`src/tools/declarations.rs` 负责 `ToolDeclaration`、`ToolRegistry` 以及权限请求的构建。`src/tools/schema.rs` 负责用于构建 `ToolSpec` 的 provider 参数 schema。`src/tools/process.rs` 负责 shell 命令的输出模型与进程执行辅助；shell 执行默认走 `bash -lc`，可通过 `DEEPCLI_SHELL` 环境变量覆盖所用解释器（按程序名推断命令标志：`bash`/`sh`/`zsh` 用 `-lc`、`cmd` 用 `/C`、`powershell`/`pwsh` 用 `-Command`），便于在 Windows 等无 bash 环境指定 Git Bash 绝对路径或改用 `cmd`/`pwsh`。`src/tools/file.rs` 负责工作区路径解析、补丁规范化、写入保护、文本切片以及 unified diff 辅助。`src/tools/git.rs` 负责 Git 辅助校验与提交信息派生。`src/tools/environment.rs` 负责环境检查/设置模型、Docker/编译器就绪检测、设置动作以及环境报告格式化。`src/tools/test_discovery.rs` 负责项目测试命令发现与已发现测试的格式化。`src/tools/web.rs` 负责网络搜索响应的格式化。
+`src/tools.rs` 负责工具执行，涵盖文件读写、打补丁、shell、Git、测试、网络搜索、终端启动、prompt/skill 辅助以及 subagent 派生；`spawn_subagent` 负责创建可运行子 Agent 任务、尝试启动后台 `agent run` 子进程，并返回 task、启动状态、事件日志、输出日志和后续动作。`src/tools/declarations.rs` 负责 `ToolDeclaration`、`ToolRegistry` 以及权限请求的构建。`src/tools/schema.rs` 负责用于构建 `ToolSpec` 的 provider 参数 schema。`src/tools/process.rs` 负责 shell 命令的输出模型与进程执行辅助；shell 执行默认走 `bash -lc`，可通过 `DEEPCLI_SHELL` 环境变量覆盖所用解释器（按程序名推断命令标志：`bash`/`sh`/`zsh` 用 `-lc`、`cmd` 用 `/C`、`powershell`/`pwsh` 用 `-Command`），便于在 Windows 等无 bash 环境指定 Git Bash 绝对路径或改用 `cmd`/`pwsh`。`src/tools/file.rs` 负责工作区路径解析、补丁规范化、写入保护、文本切片以及 unified diff 辅助。`src/tools/git.rs` 负责 Git 辅助校验与提交信息派生。`src/tools/environment.rs` 负责环境检查/设置模型、Docker/编译器就绪检测、设置动作以及环境报告格式化。`src/tools/test_discovery.rs` 负责项目测试命令发现与已发现测试的格式化。`src/tools/web.rs` 负责网络搜索响应的格式化。
 
 ## 边界
 

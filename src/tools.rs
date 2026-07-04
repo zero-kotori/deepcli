@@ -1,4 +1,4 @@
-use crate::agents::AgentStore;
+use crate::agents::{AgentStore, SubagentStatus, SubagentTask};
 use crate::permissions::{
     DecisionOutcome, PermissionDecision, PermissionEngine, RiskLevel, ToolRequest, ToolSurface,
 };
@@ -126,6 +126,14 @@ impl ToolExecution {
         }))
         .unwrap_or_else(|_| self.content.clone())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct SubagentBackgroundStart {
+    status: String,
+    pid: Option<u32>,
+    reason: Option<String>,
+    command: Vec<String>,
 }
 
 pub struct ToolExecutor {
@@ -1314,11 +1322,19 @@ impl ToolExecutor {
                 allowed_tools,
                 context,
             })?;
+        let background_start = start_subagent_background(&store, &self.workspace, subagent.id);
+        let subagent = store.load(subagent.id)?;
+        let next_actions = subagent_next_actions(&subagent);
         let content = format!(
-            "sub-agent queued at depth {depth}: {task} ({})",
+            "sub-agent {} at depth {depth}: {task} ({})",
+            subagent_status_text(&subagent.status),
             subagent.id
         );
-        let raw = json!(subagent);
+        let mut raw = serde_json::to_value(&subagent)?;
+        if let Value::Object(map) = &mut raw {
+            map.insert("background_start".to_string(), json!(background_start));
+            map.insert("next_actions".to_string(), json!(next_actions));
+        }
         Ok(
             ToolExecution::new("spawn_subagent", content.clone(), raw.clone(), decision)
                 .with_structured("subagent_task", content, raw, false),
@@ -1587,6 +1603,159 @@ fn string_array_arg(args: &Value, key: &str) -> Vec<PathBuf> {
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default()
+}
+
+fn start_subagent_background(
+    store: &AgentStore,
+    workspace: &Path,
+    id: uuid::Uuid,
+) -> SubagentBackgroundStart {
+    #[cfg(test)]
+    {
+        let _ = workspace;
+        return subagent_background_scheduled(
+            store,
+            id,
+            "background start disabled in tests".to_string(),
+        );
+    }
+
+    #[cfg(not(test))]
+    {
+        let exe = match std::env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                return subagent_background_scheduled(
+                    store,
+                    id,
+                    format!("failed to resolve current executable: {error}"),
+                );
+            }
+        };
+        let output_log = store.subagent_output_log_path(id);
+        if let Some(parent) = output_log.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                return subagent_background_scheduled(
+                    store,
+                    id,
+                    format!("failed to create {}: {error}", parent.display()),
+                );
+            }
+        }
+        let stdout = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&output_log)
+        {
+            Ok(file) => file,
+            Err(error) => {
+                return subagent_background_scheduled(
+                    store,
+                    id,
+                    format!("failed to open {}: {error}", output_log.display()),
+                );
+            }
+        };
+        let stderr = match stdout.try_clone() {
+            Ok(file) => file,
+            Err(error) => {
+                return subagent_background_scheduled(
+                    store,
+                    id,
+                    format!("failed to clone {}: {error}", output_log.display()),
+                );
+            }
+        };
+        let command = vec![
+            exe.display().to_string(),
+            "-C".to_string(),
+            workspace.display().to_string(),
+            "--yes".to_string(),
+            "agent".to_string(),
+            "run".to_string(),
+            id.to_string(),
+            "--background-child".to_string(),
+            "--json".to_string(),
+        ];
+        let mut process = std::process::Command::new(&exe);
+        process
+            .arg("-C")
+            .arg(workspace)
+            .arg("--yes")
+            .arg("agent")
+            .arg("run")
+            .arg(id.to_string())
+            .arg("--background-child")
+            .arg("--json")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::from(stdout))
+            .stderr(std::process::Stdio::from(stderr));
+
+        match process.spawn() {
+            Ok(child) => {
+                let pid = child.id();
+                if let Err(error) = store.record_subagent_background_process(id, Some(pid)) {
+                    return subagent_background_scheduled(
+                        store,
+                        id,
+                        format!("background process spawned but lifecycle update failed: {error}"),
+                    );
+                }
+                SubagentBackgroundStart {
+                    status: "started".to_string(),
+                    pid: Some(pid),
+                    reason: None,
+                    command,
+                }
+            }
+            Err(error) => subagent_background_scheduled(
+                store,
+                id,
+                format!("failed to start background process: {error}"),
+            ),
+        }
+    }
+}
+
+fn subagent_background_scheduled(
+    store: &AgentStore,
+    id: uuid::Uuid,
+    reason: String,
+) -> SubagentBackgroundStart {
+    let _ = store.record_subagent_scheduled(id, &reason);
+    SubagentBackgroundStart {
+        status: "scheduled".to_string(),
+        pid: None,
+        reason: Some(reason),
+        command: Vec::new(),
+    }
+}
+
+fn subagent_next_actions(task: &SubagentTask) -> Vec<String> {
+    let id = task.id.to_string();
+    let mut actions = vec![
+        format!("deepcli agent show {id}"),
+        format!("deepcli agent logs {id} --json"),
+    ];
+    match task.status {
+        SubagentStatus::Queued | SubagentStatus::Failed => {
+            actions.push(format!("deepcli agent run {id} --json"));
+        }
+        SubagentStatus::Running => {
+            actions.push(format!("deepcli agent resume {id} --json"));
+        }
+        SubagentStatus::Completed => {}
+    }
+    actions
+}
+
+fn subagent_status_text(status: &SubagentStatus) -> &'static str {
+    match status {
+        SubagentStatus::Queued => "queued",
+        SubagentStatus::Running => "running",
+        SubagentStatus::Completed => "completed",
+        SubagentStatus::Failed => "failed",
+    }
 }
 
 fn validate_allowed_subagent_tools(allowed_tools: &[String]) -> Result<()> {
@@ -2134,6 +2303,27 @@ mod tests {
             .join(".deepcli/agents/tasks")
             .join(format!("{id}.json"))
             .exists());
+        assert_eq!(
+            execution.raw["event_log_path"],
+            format!(".deepcli/agents/events/{id}.jsonl")
+        );
+        assert_eq!(
+            execution.raw["output_log_path"],
+            format!(".deepcli/agents/logs/{id}.log")
+        );
+        assert!(matches!(
+            execution.raw["background_start"]["status"].as_str(),
+            Some("started") | Some("scheduled")
+        ));
+        let events = AgentStore::new(dir.path())
+            .read_subagent_events(uuid::Uuid::parse_str(id).unwrap())
+            .unwrap();
+        assert!(events.iter().any(|event| event.event_type == "scheduled"));
+        assert!(execution.raw["next_actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action == &json!(format!("deepcli agent logs {id} --json"))));
     }
 
     #[tokio::test]
@@ -2165,6 +2355,12 @@ mod tests {
         assert_eq!(execution.raw["write_scope"][0], "src/tools.rs");
         assert_eq!(execution.raw["allowed_tools"][0], "read_file");
         assert_eq!(execution.raw["context"], "only inspect tool batching");
+        assert!(execution.raw["child_session_id"].is_null());
+        assert!(execution.raw["attempts"].as_u64().unwrap() <= 1);
+        assert!(
+            execution.raw["background_start"]["pid"].is_u64()
+                || execution.raw["background_start"]["pid"].is_null()
+        );
     }
 
     #[tokio::test]

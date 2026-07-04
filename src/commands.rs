@@ -90,6 +90,7 @@ mod web;
 pub(crate) use action_checklist::{
     benchmark_action_checklist, local_action_checklist, scorecard_action_checklist,
 };
+#[cfg(test)]
 pub(crate) use agent::handle_agent;
 pub(crate) use approval::handle_approval;
 pub(crate) use benchmark_artifacts::*;
@@ -389,7 +390,14 @@ impl CommandRouter {
             }
             SlashCommand::Skill { args } => handle_skill(context.workspace, args),
             SlashCommand::Agent { args } => {
-                handle_agent(context.workspace, context.executor, args).await
+                agent::handle_agent_with_config(
+                    context.workspace,
+                    context.config,
+                    context.provider_override,
+                    context.executor,
+                    args,
+                )
+                .await
             }
             SlashCommand::Btw { args } => handle_btw(context.workspace, context.session_id, args),
             SlashCommand::Approval { args } => {

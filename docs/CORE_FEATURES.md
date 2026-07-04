@@ -41,7 +41,7 @@
 ## 诊断、隐私与本地库
 
 - `version`/`doctor`/`diagnose`/`support`/`logs`/`trace`/`privacy`：版本元数据、健康检查、脱敏支持包、审计、隐私扫描。
-- `prompt`/`skill`/`agent`：本地库 list/get/render/run、子 Agent 任务描述持久化。
+- `prompt`/`skill`/`agent`：本地库 list/get/render/run、子 Agent 任务持久化、后台运行、恢复与日志观察。
 
 ## 稳定 JSON schema 约定
 

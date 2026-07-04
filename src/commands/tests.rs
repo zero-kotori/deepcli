@@ -1,5 +1,6 @@
 use super::*;
-use crate::agents::AgentStore;
+use crate::agents::{AgentStore, SubagentStatus};
+use crate::config::AppConfig;
 use crate::config::ProviderCredentials;
 use crate::config::{GitIdentityConfig, ProviderConfig};
 use crate::permissions::PermissionEngine;
@@ -2996,7 +2997,11 @@ fn command_specific_help_explains_usage_examples_and_notes() {
     let agent_help = CommandRouter::help_for(&["agent".to_string()]).unwrap();
     assert!(agent_help.contains("/agent list [--json] [--output path]"));
     assert!(agent_help.contains("/agent show <id> [--json] [--output path]"));
+    assert!(agent_help.contains("/agent run <id> [--json] [--output path]"));
+    assert!(agent_help.contains("/agent resume <id> [--json] [--output path]"));
+    assert!(agent_help.contains("/agent logs <id> [--json] [--output path]"));
     assert!(agent_help.contains("deepcli.agent.inspect.v1"));
+    assert!(agent_help.contains("real child `AgentRuntime`"));
     assert!(agent_help.contains("workspace-contained file"));
 
     let test_help = CommandRouter::help_for(&["test".to_string()]).unwrap();
@@ -8285,6 +8290,114 @@ async fn agent_read_output_rejects_path_traversal() {
 
     assert!(error.contains("path traversal is not allowed"));
     assert!(!dir.path().join("../agents.json").exists());
+}
+
+#[tokio::test]
+async fn agent_logs_json_output_reports_lifecycle_events() {
+    let dir = tempdir().unwrap();
+    let store = AgentStore::new(dir.path());
+    let task = store
+        .create_subagent_task(None, "inspect parser", 1, Vec::new())
+        .unwrap();
+    store
+        .mark_subagent_started(task.id, None, Some(123))
+        .unwrap();
+    store
+        .fail_subagent(task.id, "provider credentials missing")
+        .unwrap();
+    let executor = test_executor(dir.path());
+
+    let output = handle_agent(
+        dir.path(),
+        &executor,
+        vec![
+            "logs".into(),
+            short_id(&task.id),
+            "--json".into(),
+            "--output=.deepcli/exports/agent-logs.json".into(),
+        ],
+    )
+    .await
+    .unwrap();
+
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["schema"], "deepcli.agent.inspect.v1");
+    assert_eq!(value["kind"], "logs");
+    assert_eq!(value["agent"]["id"], task.id.to_string());
+    assert_eq!(value["eventCount"], 3);
+    assert_eq!(value["events"][0]["type"], "created");
+    assert_eq!(value["events"][1]["type"], "started");
+    assert_eq!(value["events"][2]["type"], "failed");
+    assert!(value["eventLogPath"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!(".deepcli/agents/events/{}.jsonl", task.id)));
+    let next_actions = json_string_array(&value["nextActions"]);
+    assert_executable_deepcli_actions(&next_actions);
+    assert!(next_actions
+        .iter()
+        .any(|action| action == &format!("deepcli agent resume {}", short_id(&task.id))));
+    let written = fs::read_to_string(dir.path().join(".deepcli/exports/agent-logs.json")).unwrap();
+    assert_eq!(written, output);
+}
+
+#[tokio::test]
+async fn agent_run_json_uses_runtime_and_persists_failure_for_resume() {
+    let dir = tempdir().unwrap();
+    let store = AgentStore::new(dir.path());
+    let task = store
+        .create_subagent_task(None, "inspect parser", 1, Vec::new())
+        .unwrap();
+    let executor = test_executor(dir.path());
+    let mut config = AppConfig::default();
+    config.default_provider = "missing-subagent-test".to_string();
+    config.providers.insert(
+        "missing-subagent-test".to_string(),
+        ProviderConfig {
+            provider_type: "deepseek".to_string(),
+            credentials_file: PathBuf::from(".deepcli/credentials/missing-subagent-test.json"),
+            acceptance_model: Some("missing-model".to_string()),
+            capabilities: Vec::new(),
+        },
+    );
+
+    let output = agent::handle_agent_with_config(
+        dir.path(),
+        &config,
+        None,
+        &executor,
+        vec!["run".into(), short_id(&task.id), "--json".into()],
+    )
+    .await
+    .unwrap();
+
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["schema"], "deepcli.agent.inspect.v1");
+    assert_eq!(value["kind"], "run");
+    assert_eq!(value["status"], "failed");
+    assert!(value["error"]
+        .as_str()
+        .unwrap()
+        .contains("apiKey is missing"));
+    let loaded = store.load(task.id).unwrap();
+    assert_eq!(loaded.status, SubagentStatus::Failed);
+    assert_eq!(loaded.attempts, 1);
+    assert!(loaded.child_session_id.is_some());
+    assert!(loaded
+        .last_error
+        .as_deref()
+        .unwrap()
+        .contains("apiKey is missing"));
+    let event_types = store
+        .read_subagent_events(task.id)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        event_types,
+        vec!["created", "started", "heartbeat", "failed"]
+    );
 }
 
 fn write_minimal_cargo_project(dir: &Path) {

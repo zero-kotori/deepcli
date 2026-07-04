@@ -49,7 +49,7 @@
 | /web | support | tools | stable | 经权限检查的 web 搜索。 |
 | /prompt | support | commands | stable | 本地 prompt 库。 |
 | /skill | support | commands | stable | 本地 skill 库。 |
-| /agent | support | commands | stable | 子 agent 任务描述。 |
+| /agent | support | commands | stable | 子 agent 任务、运行、恢复与日志观察。 |
 | /btw | core | session | stable | 旁路问题队列。 |
 | /approval | core | session | stable | 审批队列检查与处理。 |
 | /session | core | session | stable | 持久化会话检查与维护。 |
