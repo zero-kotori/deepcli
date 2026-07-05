@@ -1,79 +1,64 @@
 # deepcli
 
-deepcli 是一个 local-first 的 AI 编程代理 CLI，面向日常工程协作：启动原生终端聊天、切换 Provider/模型、恢复会话、检查健康状态、准备本地环境、运行测试，以及生成验收或交付报告。
+deepcli 是一个 local-first 的 AI 编程代理 CLI。它把原生终端聊天、Provider/模型切换、会话恢复、受控工具调用、权限审批、测试验收、诊断和交付报告放在同一个本地命令行工作流里。
 
-本文是快速入口。命令清单、功能契约与架构见下方 [文档](#文档)。
+## 我们做了什么
 
-## 当前状态
+- 做了一个 Rust CLI 和 `scripts/deepcli` wrapper，默认在当前工作区启动原生终端聊天，也支持 `ask`/`stream` 一次性任务。
+- 接入 DeepSeek-compatible Provider，并保留 Kimi 与其它兼容 Provider 的配置扩展点。
+- 做了持久化会话系统：消息、工具调用、审计、plan、goal、diff、backup、审批和旁路问题都会落到 `.deepcli/sessions/`，可以 resume、搜索、诊断和 fork。
+- 做了统一工具层：文件、shell、Git、测试、环境、web、terminal、prompt、skill、子 Agent 等能力通过声明、参数校验和权限层执行。
+- 做了本地安全边界：工作区授权、ignore/隐私过滤、sandbox、危险命令识别、审批队列、凭据脱敏和隐私扫描。
+- 做了交付与验证闭环：`test`、`diff`、`review`、`verify`、`handoff`、`preflight`、`gate`、`scorecard`、`round`、`benchmark` 都输出可脚本消费的 JSON 和可执行 next actions。
 
-产品仍在快速迭代中。命令面正在按 harness 重构计划收束为"核心 + support/legacy"，文档以当前已落地并可验收的能力为准。
+## 怎么做的
+
+请求从 `scripts/deepcli` 进入 `src/cli.rs`。CLI 会先归一化 provider/模式别名，识别本地 one-shot 命令；能本地处理的命令直接走 `src/commands/*`，需要模型参与的任务才创建或恢复 `AgentRuntime`。
+
+`src/runtime.rs` 负责 Agent 主循环：准备上下文、调用 Provider、执行工具调用、记录会话事件并把结果返回 UI。Agent 不直接访问文件系统、shell、网络或 Git，所有动作都经 `src/tools/*` 和 `src/permissions.rs`。
+
+`src/session.rs` 是持久化状态边界。`src/context_manager.rs` 负责上下文预算和压缩。`src/schema_ids.rs` 拥有稳定 JSON schema 标识符。命令、模块和架构边界分别由 `docs/COMMANDS.md`、`docs/MODULES/`、`docs/ARCHITECTURE.md` 维护。
 
 ## 快速开始
 
 ```bash
-# 构建并在当前项目启动原生终端聊天
 cargo build
-./scripts/deepcli            # 或 deepcli（若已在 PATH）
+./scripts/deepcli
 
-# 本地自检，不调用 Provider
-deepcli selftest --json
-deepcli doctor --quick --json
-deepcli doctor shell --json
-
-# 配置凭据并查看状态
-printf '%s' "$DEEPSEEK_API_KEY" | deepcli login deepseek --stdin --force
-deepcli credentials status --json
-
-# 切换 Provider / 模型
-deepcli model set deepseek deepseek-v4-pro
-deepcli model list --json
-
-# 恢复历史任务
-deepcli resume
-deepcli resume <session_id> --dry-run --json
-deepcli sessions --all --limit 20
-
-# 长期目标 / 需求澄清 / 复制会话 / 同目录终端
-deepcli goal "完整实现当前项目文档中的全部需求" --json
-deepcli goal status --json
-/plan 做一个可以交互式澄清需求的功能
-deepcli fork --current --no-open --verify --json
-deepcli terminal --dry-run --json
-deepcli cmd git status --short
+./scripts/deepcli ask "检查这个项目的测试入口"
+./scripts/deepcli selftest --json
+./scripts/deepcli doctor --quick --json
+./scripts/deepcli credentials status --json
+./scripts/deepcli model list --json
+./scripts/deepcli resume --dry-run --json
+./scripts/deepcli preflight --quick --json
 ```
 
-更多命令与一次性 JSON 入口见 `docs/COMMANDS.md` 与 `docs/CORE_FEATURES.md`。
-
-## 文档
-
-- [命令分组](docs/COMMANDS.md)：命令、分组、所有权与状态。
-- [核心功能契约](docs/CORE_FEATURES.md)：稳定行为与 JSON 约定。
-- [架构](docs/ARCHITECTURE.md)、[Harness](docs/HARNESS.md)、[模块说明](docs/MODULES/)：分层、边界、模块所有权。
-- [功能介绍](docs/FEATURES.md)：面向用户的能力清单。
-- [架构决策记录](docs/ADR/)：不可逆的架构决策。
-- 设计背景：[需求](docs/ai/REQUIREMENTS.md)、[技术方案（历史）](docs/ai/TECHNICAL_PLAN.md)、[重构计划](docs/ai/HARNESS_REFACTOR_PLAN.md)。
-
-## 本地验证
+## 常用验证
 
 ```bash
+cargo fmt --check
 cargo test
 cargo clippy --all-targets -- -D warnings
-cargo fmt --check
 git diff --check
 ./scripts/deepcli selftest --json
 ./scripts/deepcli doctor --quick --json
-./scripts/deepcli scorecard --json
-./scripts/deepcli round --json
+./scripts/deepcli privacy --no-history --json
+```
+
+完整提交前可运行：
+
+```bash
 ./scripts/deepcli preflight --json
-./scripts/deepcli privacy --json
 ```
 
-`selftest` 与 `doctor` 会对比 `.deepcli/config.json` 的 `project.gitIdentity` 与当前 Git 仓库的有效 `user.name`/`user.email`，用于提交前发现错误作者身份。
+## 文档
 
-`preflight` 是提交/推送前的一键本地检查（fmt、diff whitespace、clippy、selftest、doctor、privacy、gate）；`--dry-run` 预览、`--quick` 跳过较慢的 clippy/gate。`privacy` 用于开源前的 Git 历史隐私审计，可用 `privacy.allowed*` / `privacy.blockedTerms` 配置允许项与禁用词。
-
-## 仓库
-
-```text
-https://github.com/zero-kotori/deepcli
-```
+- [核心功能契约](docs/CORE_FEATURES.md)
+- [命令分组](docs/COMMANDS.md)
+- [架构](docs/ARCHITECTURE.md)
+- [Harness](docs/HARNESS.md)
+- [模块说明](docs/MODULES/)
+- [功能介绍](docs/FEATURES.md)
+- [当前范围](docs/ai/REQUIREMENTS.md)
+- [技术说明](docs/ai/TECHNICAL_PLAN.md)

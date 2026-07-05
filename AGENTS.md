@@ -1,22 +1,23 @@
 # deepcli Agent Context
 
-This repository is the active workspace for the deepcli product loop. Prefer the current worktree over prior chat memory.
+This repository is the active workspace for deepcli. Prefer the current worktree and the authoritative docs in this repository over prior chat memory.
 
 ## Project Goal
 
-Continue iterating deepcli toward a SOTA local-first AI coding CLI:
+Maintain deepcli as a local-first AI coding CLI with real, testable product behavior:
 
-1. Act as a product designer and identify missing, inconvenient, or underpowered product behavior.
-2. Act as an engineer and implement the highest-value improvement.
-3. Verify with focused tests and product gates.
-4. Repeat the loop; do not treat one iteration as final completion.
+1. Keep the native terminal, provider/runtime, tool, permission, session, verification, and documentation paths coherent.
+2. Use the current codebase and docs as the source of truth before editing.
+3. Implement narrowly scoped improvements that connect to the real runtime/provider/tool/session path.
+4. Verify changes with focused tests and local checks before committing.
+
+Old product-loop wording is historical context, not a standing product requirement. The `recipes sota` command/topic remains a compatibility name for the existing product-loop recipe; do not treat that name as permission to add broad benchmark or aspirational requirements.
 
 ## Current Operating Rules
 
 - Default user-facing language is Chinese.
 - Keep changes scoped to the current product gap.
-- Use the current repository state as authoritative before editing.
-- Never ship demo-only, simulated, or fake implementations as product behavior; product changes must connect to the real runtime/provider/tool/session path, with fake fixtures limited to tests or harnesses.
+- Never ship demo-only, simulated, or fake implementations as product behavior; fake fixtures belong only in tests or harnesses.
 - Do not leave local benchmark/export artifacts in the worktree.
 - Keep credentials, logs, sessions, and generated local evidence out of commits.
 - Expected Git commit identity: `zero-kotori <kotorizero8@gmail.com>`.
@@ -25,7 +26,7 @@ Continue iterating deepcli toward a SOTA local-first AI coding CLI:
 
 ## Product Context
 
-- Product documentation lives in `README.md`, `docs/FEATURES.md`, `docs/ai/REQUIREMENTS.md`, and `docs/ai/TECHNICAL_PLAN.md`.
+- Product documentation lives in `README.md`, `docs/FEATURES.md`, `docs/CORE_FEATURES.md`, `docs/COMMANDS.md`, `docs/ARCHITECTURE.md`, `docs/HARNESS.md`, `docs/MODULES/`, `docs/ai/REQUIREMENTS.md`, and `docs/ai/TECHNICAL_PLAN.md`.
 - Current handoff context lives in `docs/ai/CONTEXT.md`.
-- The product loop commands are `deepcli scorecard --json`, `deepcli round --json`, and `deepcli round --json --run-benchmark --fail-on-command`.
+- Local health/evidence commands include `deepcli scorecard --json`, `deepcli round --json`, `deepcli benchmark status --json`, and `deepcli preflight --json`.
 - Benchmark evidence is intentionally local under `.deepcli/benchmarks/` and should not be committed.

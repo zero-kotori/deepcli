@@ -7,7 +7,7 @@
 | /help | support | commands | stable | 命令发现与主题帮助。 |
 | /version | support | commands | stable | 本地元数据与 support 报告。 |
 | /quickstart | support | commands | stable | 首次运行引导与 setup 检查。 |
-| /recipes | support | commands | stable | 工作流目录；SOTA recipe 作为导航辅助。 |
+| /recipes | support | commands | stable | 工作流目录；`sota` 是历史兼容主题名，用作产品证据工作流导航。 |
 | /scorecard | core | commands | stable | 产品能力评分。 |
 | /opportunities | experimental | commands | stable | 非阻断的机会点报告。 |
 | /benchmark | support | commands | stable | 本地 benchmark 证据管理；细分子命令保持 support。 |
