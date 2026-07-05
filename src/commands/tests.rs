@@ -1067,6 +1067,94 @@ fn goal_command_creates_contract_and_guard_plan() {
 }
 
 #[test]
+fn goal_command_supports_codex_style_lifecycle_controls_and_budget() {
+    let dir = tempdir().unwrap();
+    let store = SessionStore::new(dir.path());
+    let session = store
+        .create(dir.path(), "deepseek".to_string(), None)
+        .unwrap();
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec![
+            "start".to_string(),
+            "完成迁移并保持测试通过".to_string(),
+            "--token-budget".to_string(),
+            "1200".to_string(),
+            "--json".to_string(),
+        ],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["goal"]["status"], "active");
+    assert_eq!(value["goal"]["token_budget"], 1200);
+    assert_eq!(value["goal"]["tokens_used"], 0);
+    assert_eq!(value["goal"]["time_used_seconds"], 0);
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["pause".to_string(), "--json".to_string()],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["status"], "paused");
+    assert_eq!(value["goal"]["status"], "paused");
+
+    let error = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["gate".to_string(), "--json".to_string()],
+    )
+    .unwrap_err();
+    let exit = error.downcast_ref::<CommandExit>().unwrap();
+    let value: Value = serde_json::from_str(&exit.output).unwrap();
+    assert!(value["blockers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|item| item.as_str().unwrap().contains("Paused")));
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["resume".to_string(), "--json".to_string()],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["status"], "resumed");
+    assert_eq!(value["goal"]["status"], "active");
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec![
+            "edit".to_string(),
+            "完成迁移、更新文档并保持测试通过".to_string(),
+            "--json".to_string(),
+        ],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["status"], "updated");
+    assert!(value["goal"]["objective"]
+        .as_str()
+        .unwrap()
+        .contains("更新文档"));
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["block".to_string(), "--json".to_string()],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["status"], "blocked");
+    assert_eq!(value["goal"]["status"], "blocked");
+}
+
+#[test]
 fn goal_gate_fails_until_plan_and_acceptance_evidence_are_complete() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new(dir.path());
@@ -1106,6 +1194,84 @@ fn goal_gate_fails_until_plan_and_acceptance_evidence_are_complete() {
         .unwrap()
         .iter()
         .any(|item| item.as_str().unwrap().contains("cargo test")));
+}
+
+#[test]
+fn goal_complete_requires_readiness_and_marks_ready_goal_complete() {
+    let dir = tempdir().unwrap();
+    fs::write(dir.path().join("README.md"), "# test\n").unwrap();
+    fs::create_dir_all(dir.path().join("docs/ai")).unwrap();
+    fs::write(dir.path().join("docs/FEATURES.md"), "# test\n").unwrap();
+    fs::write(dir.path().join("docs/ai/REQUIREMENTS.md"), "# test\n").unwrap();
+    fs::write(dir.path().join("docs/ai/TECHNICAL_PLAN.md"), "# test\n").unwrap();
+    fs::write(dir.path().join("docs/ai/CONTEXT.md"), "# test\n").unwrap();
+    let store = SessionStore::new(dir.path());
+    let session = store
+        .create(dir.path(), "deepseek".to_string(), None)
+        .unwrap();
+
+    handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec![
+            "实现全部需求".to_string(),
+            "--acceptance-cmd".to_string(),
+            "cargo test".to_string(),
+        ],
+    )
+    .unwrap();
+
+    let error = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["complete".to_string(), "--json".to_string()],
+    )
+    .unwrap_err();
+    let exit = error.downcast_ref::<CommandExit>().unwrap();
+    assert_eq!(exit.code, 1);
+    let value: Value = serde_json::from_str(&exit.output).unwrap();
+    assert_eq!(value["status"], "blocked");
+    assert_eq!(value["goal"]["status"], "active");
+
+    let loaded = store.load(&session.id().to_string()).unwrap();
+    let goal = loaded.load_goal().unwrap().unwrap();
+    for step in loaded.load_plan().unwrap().unwrap().steps {
+        loaded
+            .update_plan_step(&step.id, PlanStepStatus::Completed)
+            .unwrap();
+    }
+    for command in goal.acceptance_commands {
+        loaded
+            .append_test_run(&TestRunRecord {
+                command,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+                passed: true,
+                created_at: Utc::now(),
+            })
+            .unwrap();
+    }
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["complete".to_string(), "--json".to_string()],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["status"], "completed");
+    assert_eq!(value["goal"]["status"], "complete");
+
+    let output = handle_goal(
+        dir.path(),
+        Some(session.id().to_string()),
+        vec!["gate".to_string(), "--json".to_string()],
+    )
+    .unwrap();
+    let value: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(value["ready"], true);
+    assert_eq!(value["goal"]["status"], "complete");
 }
 
 #[test]
@@ -2944,6 +3110,10 @@ fn command_specific_help_explains_usage_examples_and_notes() {
 
     let goal_help = CommandRouter::help_for(&["goal".to_string()]).unwrap();
     assert!(goal_help.contains("/goal <objective>"));
+    assert!(goal_help.contains("/goal pause"));
+    assert!(goal_help.contains("/goal resume"));
+    assert!(goal_help.contains("/goal complete"));
+    assert!(goal_help.contains("--token-budget"));
     assert!(goal_help.contains("/goal status"));
     assert!(goal_help.contains("/goal gate"));
     assert!(goal_help.contains("deepcli.goal.status.v1"));
@@ -8375,8 +8545,10 @@ async fn agent_resume_json_uses_runtime_and_persists_failure_for_resume() {
         .create_subagent_task(None, "inspect parser", 1, Vec::new())
         .unwrap();
     let executor = test_executor(dir.path());
-    let mut config = AppConfig::default();
-    config.default_provider = "missing-subagent-test".to_string();
+    let mut config = AppConfig {
+        default_provider: "missing-subagent-test".to_string(),
+        ..AppConfig::default()
+    };
     config.providers.insert(
         "missing-subagent-test".to_string(),
         ProviderConfig {

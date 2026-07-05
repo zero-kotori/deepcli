@@ -33,7 +33,7 @@
 | /config | core | commands | stable | 有效配置检查与编辑。 |
 | /timeout | support | commands | stable | Provider-turn 超时快捷方式。 |
 | /model | core | commands | stable | Provider/model 检查与切换。 |
-| /goal | core | session | stable | 长期目标契约与 gate。 |
+| /goal | core | session | stable | 长期目标契约、生命周期控制与 gate。 |
 | /plan | core | session | stable | 模型驱动的只读规划与定制问题。 |
 | /fork | core | session | stable | 持久化上下文复制与恢复验证。 |
 | /diff | core | commands | stable | 工作区或会话 diff 检查。 |

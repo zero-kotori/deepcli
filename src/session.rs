@@ -141,6 +141,12 @@ pub struct GoalContract {
     pub stop_conditions: Vec<String>,
     pub acceptance_commands: Vec<String>,
     pub status: GoalStatus,
+    #[serde(default)]
+    pub token_budget: Option<u64>,
+    #[serde(default)]
+    pub tokens_used: u64,
+    #[serde(default)]
+    pub time_used_seconds: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -149,8 +155,11 @@ pub struct GoalContract {
 #[serde(rename_all = "snake_case")]
 pub enum GoalStatus {
     Active,
-    Complete,
+    Paused,
     Blocked,
+    UsageLimited,
+    BudgetLimited,
+    Complete,
     Cancelled,
 }
 

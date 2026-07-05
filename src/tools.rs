@@ -1631,11 +1631,7 @@ fn start_subagent_background(
     #[cfg(test)]
     {
         let _ = workspace;
-        return subagent_background_scheduled(
-            store,
-            id,
-            "background start disabled in tests".to_string(),
-        );
+        subagent_background_scheduled(store, id, "background start disabled in tests".to_string())
     }
 
     #[cfg(not(test))]

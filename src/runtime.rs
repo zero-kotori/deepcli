@@ -2828,9 +2828,16 @@ fn render_goal_context(goal: &GoalContract) -> String {
         .map(|item| format!("- `{item}`"))
         .collect::<Vec<_>>()
         .join("\n");
+    let token_budget = goal
+        .token_budget
+        .map(|budget| budget.to_string())
+        .unwrap_or_else(|| "none".to_string());
     format!(
-        "Goal:\nActive goal contract:\nObjective: {}\nRequirement sources:\n{}\nStop conditions:\n{}\nAcceptance commands:\n{}\nYou must not claim this goal is complete or stop the implementation loop until the objective is achieved, all explicit requirements are verified, all acceptance commands pass, and residual risks are reported.",
+        "Goal:\nActive goal contract:\nObjective: {}\nTime used seconds: {}\nTokens used: {}\nToken budget: {}\nRequirement sources:\n{}\nStop conditions:\n{}\nAcceptance commands:\n{}\nYou must not claim this goal is complete or stop the implementation loop until the objective is achieved, all explicit requirements are verified, all acceptance commands pass, and residual risks are reported.",
         truncate_chars(&goal.objective, SESSION_CONTEXT_MESSAGE_CHARS),
+        goal.time_used_seconds,
+        goal.tokens_used,
+        token_budget,
         if sources.is_empty() { "- <none>".to_string() } else { sources },
         if stop_conditions.is_empty() { "- <none>".to_string() } else { stop_conditions },
         if acceptance.is_empty() { "- <none>".to_string() } else { acceptance }
@@ -5354,6 +5361,9 @@ mod tests {
                 stop_conditions: vec!["tests pass".to_string()],
                 acceptance_commands: vec!["cargo test --lib".to_string()],
                 status: GoalStatus::Active,
+                token_budget: None,
+                tokens_used: 0,
+                time_used_seconds: 0,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             })

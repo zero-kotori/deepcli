@@ -16,6 +16,7 @@ struct GoalOptions {
     mode: GoalMode,
     objective: Option<String>,
     acceptance_commands: Vec<String>,
+    token_budget: Option<u64>,
     json_output: bool,
     output_path: Option<String>,
 }
@@ -24,6 +25,11 @@ struct GoalOptions {
 enum GoalMode {
     Show,
     Start,
+    Edit,
+    Pause,
+    Resume,
+    Complete,
+    Block,
     Clear,
     Status,
     Gate,
@@ -82,7 +88,8 @@ pub(crate) fn handle_goal(
                         (report, false)
                     }
                 } else if !explicit_show {
-                    let goal = default_goal_contract(options.acceptance_commands);
+                    let goal =
+                        default_goal_contract(options.acceptance_commands, options.token_budget);
                     session.save_goal(&goal)?;
                     session.save_plan(&goal_contract_plan(&goal))?;
                     let report =
@@ -165,7 +172,7 @@ pub(crate) fn handle_goal(
                 )
             })?;
             let session = store.load(session_id)?;
-            let mut goal = default_goal_contract(options.acceptance_commands);
+            let mut goal = default_goal_contract(options.acceptance_commands, options.token_budget);
             if let Some(objective) = options.objective {
                 goal.objective = objective;
             }
@@ -193,6 +200,136 @@ pub(crate) fn handle_goal(
                 )
             } else {
                 (report, false)
+            }
+        }
+        GoalMode::Edit => {
+            let session = current_goal_session(&store, current.as_deref(), "edit")?;
+            let mut goal = session
+                .load_goal()?
+                .ok_or_else(|| anyhow::anyhow!("no goal to edit"))?;
+            let objective = options
+                .objective
+                .ok_or_else(|| anyhow::anyhow!("`/goal edit` requires an objective"))?;
+            goal.objective = objective;
+            goal.acceptance_commands.extend(options.acceptance_commands);
+            if let Some(token_budget) = options.token_budget {
+                goal.token_budget = Some(token_budget);
+            }
+            goal.status = edited_goal_status(&goal);
+            goal.updated_at = Utc::now();
+            session.save_goal(&goal)?;
+            session.append_audit_event(
+                "goal_updated",
+                json!({
+                    "objective": redact_sensitive_text(&goal.objective),
+                    "status": goal.status,
+                    "token_budget": goal.token_budget,
+                }),
+            )?;
+            let report = format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
+            if options.json_output {
+                (
+                    format_goal_json(
+                        workspace,
+                        &session,
+                        &goal,
+                        "updated",
+                        GoalSessionSource::Current,
+                        &report,
+                    )?,
+                    false,
+                )
+            } else {
+                (report, false)
+            }
+        }
+        GoalMode::Pause => set_current_goal_status(
+            workspace,
+            &store,
+            current.as_deref(),
+            GoalStatusUpdate {
+                status: GoalStatus::Paused,
+                action: "pause",
+                response_status: "paused",
+                audit_event: "goal_paused",
+            },
+            options.json_output,
+        )?,
+        GoalMode::Resume => set_current_goal_status(
+            workspace,
+            &store,
+            current.as_deref(),
+            GoalStatusUpdate {
+                status: GoalStatus::Active,
+                action: "resume",
+                response_status: "resumed",
+                audit_event: "goal_resumed",
+            },
+            options.json_output,
+        )?,
+        GoalMode::Block => set_current_goal_status(
+            workspace,
+            &store,
+            current.as_deref(),
+            GoalStatusUpdate {
+                status: GoalStatus::Blocked,
+                action: "block",
+                response_status: "blocked",
+                audit_event: "goal_blocked",
+            },
+            options.json_output,
+        )?,
+        GoalMode::Complete => {
+            let session = current_goal_session(&store, current.as_deref(), "complete")?;
+            let mut goal = session
+                .load_goal()?
+                .ok_or_else(|| anyhow::anyhow!("no goal to complete"))?;
+            let readiness = collect_goal_readiness(workspace, &session, &goal)?;
+            if !readiness.ready {
+                let output = if options.json_output {
+                    format_goal_status_json(
+                        workspace,
+                        &session,
+                        &goal,
+                        GoalSessionSource::Current,
+                        &readiness,
+                    )?
+                } else {
+                    format_goal_status_text_with_source(
+                        readiness.report.clone(),
+                        &session,
+                        GoalSessionSource::Current,
+                    )
+                };
+                (output, true)
+            } else {
+                goal.status = GoalStatus::Complete;
+                goal.updated_at = Utc::now();
+                session.save_goal(&goal)?;
+                session.append_audit_event(
+                    "goal_completed",
+                    json!({
+                        "tokens_used": goal.tokens_used,
+                        "time_used_seconds": goal.time_used_seconds,
+                    }),
+                )?;
+                let report =
+                    format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
+                if options.json_output {
+                    (
+                        format_goal_json(
+                            workspace,
+                            &session,
+                            &goal,
+                            "completed",
+                            GoalSessionSource::Current,
+                            &report,
+                        )?,
+                        false,
+                    )
+                } else {
+                    (report, false)
+                }
             }
         }
         GoalMode::Clear => {
@@ -300,10 +437,77 @@ fn latest_session_with_goal(
     Ok(None)
 }
 
+fn current_goal_session(
+    store: &SessionStore,
+    current: Option<&str>,
+    action: &str,
+) -> Result<Session> {
+    let session_id = current.ok_or_else(|| {
+        anyhow::anyhow!(
+            "`/goal {action}` requires an active session; use `/goal show` to inspect older goals"
+        )
+    })?;
+    store.load(session_id)
+}
+
+struct GoalStatusUpdate {
+    status: GoalStatus,
+    action: &'static str,
+    response_status: &'static str,
+    audit_event: &'static str,
+}
+
+fn set_current_goal_status(
+    workspace: &Path,
+    store: &SessionStore,
+    current: Option<&str>,
+    update: GoalStatusUpdate,
+    json_output: bool,
+) -> Result<(String, bool)> {
+    let session = current_goal_session(store, current, update.action)?;
+    let mut goal = session
+        .load_goal()?
+        .ok_or_else(|| anyhow::anyhow!("no goal to {}", update.action))?;
+    if goal.status == GoalStatus::Cancelled && update.status == GoalStatus::Active {
+        bail!("cannot resume a cancelled goal; start a new goal instead");
+    }
+    goal.status = update.status;
+    goal.updated_at = Utc::now();
+    session.save_goal(&goal)?;
+    session.append_audit_event(update.audit_event, json!({}))?;
+    let report = format_goal_text_with_source(&goal, &session, GoalSessionSource::Current);
+    let output = if json_output {
+        format_goal_json(
+            workspace,
+            &session,
+            &goal,
+            update.response_status,
+            GoalSessionSource::Current,
+            &report,
+        )?
+    } else {
+        report
+    };
+    Ok((output, false))
+}
+
+fn edited_goal_status(goal: &GoalContract) -> GoalStatus {
+    match goal.status {
+        GoalStatus::Complete | GoalStatus::BudgetLimited | GoalStatus::Cancelled => {
+            GoalStatus::Active
+        }
+        GoalStatus::Active
+        | GoalStatus::Paused
+        | GoalStatus::Blocked
+        | GoalStatus::UsageLimited => goal.status.clone(),
+    }
+}
+
 fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
     let mut mode = GoalMode::Show;
     let mut objective_parts = Vec::new();
     let mut acceptance_commands = Vec::new();
+    let mut token_budget = None;
     let mut json_output = false;
     let mut output_path = None;
     let mut index = 0;
@@ -315,6 +519,26 @@ fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
             }
             "start" if objective_parts.is_empty() && mode == GoalMode::Show => {
                 mode = GoalMode::Start;
+                index += 1;
+            }
+            "edit" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Edit;
+                index += 1;
+            }
+            "pause" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Pause;
+                index += 1;
+            }
+            "resume" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Resume;
+                index += 1;
+            }
+            "complete" | "done" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Complete;
+                index += 1;
+            }
+            "block" | "blocked" if objective_parts.is_empty() && mode == GoalMode::Show => {
+                mode = GoalMode::Block;
                 index += 1;
             }
             "status" | "check" if objective_parts.is_empty() && mode == GoalMode::Show => {
@@ -355,9 +579,28 @@ fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
                 acceptance_commands.push(raw.to_string());
                 index += 1;
             }
+            "--token-budget" => {
+                let raw = required_arg(args, index + 1, "token budget")?;
+                token_budget = Some(parse_token_budget(raw)?);
+                index += 2;
+            }
+            value if value.starts_with("--token-budget=") => {
+                let raw = value.trim_start_matches("--token-budget=").trim();
+                token_budget = Some(parse_token_budget(raw)?);
+                index += 1;
+            }
             value if value.starts_with('-') => bail!("unsupported /goal option `{value}`"),
             value => {
-                if matches!(mode, GoalMode::Status | GoalMode::Gate | GoalMode::Clear) {
+                if matches!(
+                    mode,
+                    GoalMode::Status
+                        | GoalMode::Gate
+                        | GoalMode::Clear
+                        | GoalMode::Pause
+                        | GoalMode::Resume
+                        | GoalMode::Complete
+                        | GoalMode::Block
+                ) {
                     bail!("unexpected /goal argument `{value}`");
                 }
                 if mode == GoalMode::Show {
@@ -374,12 +617,26 @@ fn parse_goal_options(args: &[String]) -> Result<GoalOptions> {
         mode,
         objective,
         acceptance_commands,
+        token_budget,
         json_output,
         output_path,
     })
 }
 
-fn default_goal_contract(extra_acceptance_commands: Vec<String>) -> GoalContract {
+fn parse_token_budget(raw: &str) -> Result<u64> {
+    let budget = raw
+        .parse::<u64>()
+        .map_err(|_| anyhow::anyhow!("--token-budget requires a positive integer"))?;
+    if budget == 0 {
+        bail!("--token-budget requires a positive integer");
+    }
+    Ok(budget)
+}
+
+fn default_goal_contract(
+    extra_acceptance_commands: Vec<String>,
+    token_budget: Option<u64>,
+) -> GoalContract {
     let now = Utc::now();
     let mut acceptance_commands = vec![
         "cargo fmt --check".to_string(),
@@ -407,6 +664,9 @@ fn default_goal_contract(extra_acceptance_commands: Vec<String>) -> GoalContract
         ],
         acceptance_commands,
         status: GoalStatus::Active,
+        token_budget,
+        tokens_used: 0,
+        time_used_seconds: 0,
         created_at: now,
         updated_at: now,
     }
@@ -458,6 +718,14 @@ fn format_goal_text(goal: &GoalContract) -> String {
         "active goal contract".to_string(),
         format!("status: {:?}", goal.status),
         format!("objective: {}", redact_sensitive_text(&goal.objective)),
+        format!("time used seconds: {}", goal.time_used_seconds),
+        format!("tokens used: {}", goal.tokens_used),
+        format!(
+            "token budget: {}",
+            goal.token_budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
         "requirement sources:".to_string(),
     ];
     lines.extend(
@@ -688,6 +956,14 @@ fn format_goal_status_text(
         format!("ready: {ready}"),
         format!("goal status: {:?}", goal.status),
         format!("objective: {}", redact_sensitive_text(&goal.objective)),
+        format!("time used seconds: {}", goal.time_used_seconds),
+        format!("tokens used: {}", goal.tokens_used),
+        format!(
+            "token budget: {}",
+            goal.token_budget
+                .map(|budget| budget.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
         format!(
             "plan: present={} total={} completed={} pending={} in_progress={} failed={}",
             plan.present, plan.total, plan.completed, plan.pending, plan.in_progress, plan.failed
