@@ -42,9 +42,27 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
         if input.trim() == "/quit" {
             break;
         }
-        if let Some(output) = answer_native_side_question(&mut runtime, &input)? {
-            println!("{output}");
+        if let Some(answer) = answer_native_side_question(&mut runtime, &input)? {
+            println!("{}", answer.message);
             print_native_open_questions(&runtime)?;
+            if answer.continue_planning {
+                runtime.set_progress_sender(Some(progress_tx.clone()));
+                let (done_tx, done_rx) = mpsc::channel();
+                let mut task_runtime = runtime;
+                tokio::spawn(async move {
+                    let result = task_runtime
+                        .continue_planning_after_side_question_answer()
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = done_tx.send(WorkerDone {
+                        runtime: task_runtime,
+                        result,
+                    });
+                });
+
+                let mut render_state = NativeRenderState::default();
+                runtime = wait_for_native_task(done_rx, &progress_rx, &mut render_state).await?;
+            }
             continue;
         }
 
@@ -721,7 +739,16 @@ fn finish_native_stream_line(render_state: &mut NativeRenderState) -> io::Result
     Ok(())
 }
 
-fn answer_native_side_question(runtime: &mut AgentRuntime, input: &str) -> Result<Option<String>> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeSideQuestionAnswer {
+    message: String,
+    continue_planning: bool,
+}
+
+fn answer_native_side_question(
+    runtime: &mut AgentRuntime,
+    input: &str,
+) -> Result<Option<NativeSideQuestionAnswer>> {
     let answer = input.trim();
     if answer.is_empty() || answer.starts_with('/') {
         return Ok(None);
@@ -734,13 +761,17 @@ fn answer_native_side_question(runtime: &mut AgentRuntime, input: &str) -> Resul
     let message = runtime.answer_current_side_question(&question.id, &resolved_answer)?;
     let remaining = monitor.open_questions.len().saturating_sub(1);
     if remaining == 0 {
-        Ok(Some(format!(
-            "{message}\ndeepcli | plan interview answered"
-        )))
+        Ok(Some(NativeSideQuestionAnswer {
+            message: format!("{message}\ndeepcli | plan interview answered"),
+            continue_planning: true,
+        }))
     } else {
-        Ok(Some(format!(
-            "{message}\ndeepcli | plan interview answered | remaining {remaining}"
-        )))
+        Ok(Some(NativeSideQuestionAnswer {
+            message: format!(
+                "{message}\ndeepcli | plan interview answered | remaining {remaining}"
+            ),
+            continue_planning: false,
+        }))
     }
 }
 
@@ -794,7 +825,11 @@ fn native_side_question_answer(question: &SessionObservationQuestion, input: &st
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::AppConfig;
+    use crate::runtime::RuntimeOptions;
+    use crate::session::SessionStore;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tempfile::tempdir;
 
     #[test]
     fn native_provider_progress_uses_compact_status_lines() {
@@ -897,6 +932,45 @@ mod tests {
             native_side_question_answer(&question, "自定义路线"),
             "自定义路线"
         );
+    }
+
+    #[test]
+    fn native_answer_last_plan_question_requests_continuation() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        let session = SessionStore::new(dir.path())
+            .load(&runtime.session_id())
+            .unwrap();
+        session
+            .enqueue_side_question_with_options(
+                "优先增强哪个 plan 方向？",
+                vec!["JSON 输出".to_string(), "质量校验".to_string()],
+            )
+            .unwrap();
+
+        let outcome = answer_native_side_question(&mut runtime, "2")
+            .unwrap()
+            .unwrap();
+
+        assert!(outcome.continue_planning);
+        assert!(outcome.message.contains("plan interview answered"));
+        assert!(!outcome.message.contains("btw"));
+        let session = SessionStore::new(dir.path())
+            .load(&runtime.session_id())
+            .unwrap();
+        let answered = session.load_side_questions().unwrap();
+        assert_eq!(answered[0].answer.as_deref(), Some("质量校验"));
     }
 
     #[test]

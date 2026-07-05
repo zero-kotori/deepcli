@@ -142,6 +142,28 @@ Required final response:
     )
 }
 
+fn build_model_plan_continuation_prompt(requirement: &str) -> String {
+    format!(
+        r#"Continue DeepCLI plan mode after the user answered the plan interview question.
+
+Current user requirement:
+{requirement}
+
+Use the answered side questions from the session context. Respond to the user's answer in the next planning turn:
+- If the answer is enough, produce the repository-specific implementation plan.
+- If a new detail is still required, call `ask_user_question` again with focused options.
+- Do not stop after only acknowledging the answer.
+- Do not modify files or execute implementation steps.
+
+Required final response when no more information is needed:
+1. Briefly summarize the code context you inspected.
+2. List any queued or still-open custom questions.
+3. Provide a repository-specific implementation plan.
+4. End with `Critical Files for Implementation` and list exactly 3-5 file paths.
+"#
+    )
+}
+
 fn is_plan_mode_tool(name: &str) -> bool {
     PLAN_MODE_TOOLS.contains(&name)
 }
@@ -972,7 +994,7 @@ impl AgentRuntime {
         }
         let item = self.session.answer_side_question(id, answer)?;
         self.executor.set_session(Some(self.session.clone()));
-        Ok(format!("answered btw question {}", item.id))
+        Ok(format!("answered user question {}", item.id))
     }
 
     pub fn resume_session(&mut self, id: &str) -> Result<String> {
@@ -1200,6 +1222,26 @@ impl AgentRuntime {
         self.planning_mode_active = true;
         let result = self
             .run_agent_task_inner(requirement, &task, AgentRunMode::Planning)
+            .await;
+        self.planning_mode_active = false;
+        result
+    }
+
+    pub async fn continue_planning_after_side_question_answer(&mut self) -> Result<String> {
+        if self.has_open_side_questions()? {
+            return self.pause_for_user_questions();
+        }
+        let requirement = self
+            .session
+            .metadata
+            .title
+            .clone()
+            .unwrap_or_else(|| "Continue active /plan".to_string());
+        let task = build_model_plan_continuation_prompt(&requirement);
+        self.planning_initial_side_question_count = self.session.load_side_questions()?.len();
+        self.planning_mode_active = true;
+        let result = self
+            .run_agent_task_inner(&requirement, &task, AgentRunMode::Planning)
             .await;
         self.planning_mode_active = false;
         result
@@ -1834,12 +1876,16 @@ impl AgentRuntime {
         continuation_count: usize,
     ) -> Result<CompletionDecision> {
         let mut blockers = Vec::new();
+        let side_questions = self.session.load_side_questions()?;
         if self.planning_mode_active {
             if let Some(blocker) = planning_critical_files_blocker(content) {
                 blockers.push(blocker);
             }
-            if self.session.load_side_questions()?.len()
-                <= self.planning_initial_side_question_count
+            let has_answered_plan_question = side_questions
+                .iter()
+                .any(|question| question.status == SideQuestionStatus::Answered);
+            if side_questions.len() <= self.planning_initial_side_question_count
+                && !has_answered_plan_question
             {
                 blockers.push(PLAN_USER_QUESTION_BLOCKER.to_string());
             }
@@ -1857,9 +1903,7 @@ impl AgentRuntime {
             ));
         }
 
-        let open_questions = self
-            .session
-            .load_side_questions()?
+        let open_questions = side_questions
             .iter()
             .filter(|question| question.status == SideQuestionStatus::Open)
             .count();
@@ -4111,6 +4155,64 @@ mod tests {
         let decision = runtime.evaluate_completion_hooks(valid_plan, 1, 0).unwrap();
 
         assert_eq!(decision.action, CompletionAction::Accept);
+    }
+
+    #[tokio::test]
+    async fn planning_continuation_after_answer_reenters_plan_mode() {
+        let dir = tempdir().unwrap();
+        let mut config = AppConfig {
+            default_provider: "stub".to_string(),
+            ..AppConfig::default()
+        };
+        config.providers.insert(
+            "stub".to_string(),
+            ProviderConfig {
+                provider_type: "stub".to_string(),
+                credentials_file: ".deepcli/credentials/stub.json".into(),
+                acceptance_model: Some("stub-model".to_string()),
+                capabilities: Vec::new(),
+            },
+        );
+        let mut runtime = AgentRuntime::new(
+            config,
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime.session.rename("增强 /plan 的交互能力").unwrap();
+        let question = runtime
+            .session
+            .enqueue_side_question_with_options(
+                "优先增强哪个 plan 方向？",
+                vec!["JSON 输出".to_string(), "质量校验".to_string()],
+            )
+            .unwrap();
+        runtime
+            .session
+            .answer_side_question(&question.id.to_string(), "质量校验")
+            .unwrap();
+
+        let error = runtime
+            .continue_planning_after_side_question_answer()
+            .await
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("provider type `stub` is not implemented"));
+        let messages = runtime.session.load_messages().unwrap();
+        let continuation = messages.last().unwrap();
+        assert_eq!(continuation.role, "user");
+        assert!(continuation.content.contains("Continue DeepCLI plan mode"));
+        assert!(continuation.content.contains("ask_user_question"));
+        assert!(continuation
+            .content
+            .contains("Critical Files for Implementation"));
     }
 
     #[test]
