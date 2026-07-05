@@ -1237,14 +1237,90 @@ impl AgentRuntime {
             .title
             .clone()
             .unwrap_or_else(|| "Continue active /plan".to_string());
-        let task = build_model_plan_continuation_prompt(&requirement);
+        let messages = self.planning_continuation_messages()?;
         self.planning_initial_side_question_count = self.session.load_side_questions()?.len();
         self.planning_mode_active = true;
         let result = self
-            .run_agent_task_inner(&requirement, &task, AgentRunMode::Planning)
+            .run_agent_loop(&requirement, messages, AgentRunMode::Planning)
             .await;
         self.planning_mode_active = false;
         result
+    }
+
+    fn planning_continuation_messages(&self) -> Result<Vec<ProviderMessage>> {
+        let mut messages = if let Some(messages) =
+            self.session.load_pending_plan_provider_messages()?
+        {
+            messages
+        } else {
+            let requirement = self
+                .session
+                .metadata
+                .title
+                .clone()
+                .unwrap_or_else(|| "Continue active /plan".to_string());
+            let session_context = self.build_session_context()?;
+            let workspace_context = WorkspaceManager::new(&self.workspace)?.collect_context()?;
+            vec![
+                ProviderMessage {
+                    role: "system".to_string(),
+                    content: Some(system_prompt(
+                        &workspace_context,
+                        &self.config,
+                        session_context.as_deref(),
+                    )),
+                    reasoning_content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                },
+                ProviderMessage {
+                    role: "user".to_string(),
+                    content: Some(build_model_plan_continuation_prompt(&requirement)),
+                    reasoning_content: None,
+                    name: None,
+                    tool_call_id: None,
+                    tool_calls: None,
+                },
+            ]
+        };
+        messages.push(ProviderMessage {
+            role: "user".to_string(),
+            content: Some(self.planning_answer_context_prompt()?),
+            reasoning_content: None,
+            name: None,
+            tool_call_id: None,
+            tool_calls: None,
+        });
+        Ok(messages)
+    }
+
+    fn planning_answer_context_prompt(&self) -> Result<String> {
+        let answered = self
+            .session
+            .load_side_questions()?
+            .into_iter()
+            .filter(|question| question.status == SideQuestionStatus::Answered)
+            .collect::<Vec<_>>();
+        let answer_lines = answered
+            .iter()
+            .map(|question| {
+                format!(
+                    "- Question: {}\n  Answer: {}",
+                    question.question,
+                    question.answer.as_deref().unwrap_or("")
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(format!(
+            "The user answered the pending plan interview question(s):\n{}\n\nContinue from the existing provider message chain above. Use already inspected code and tool results from that chain; do not repeat broad implementation review unless a specific missing detail blocks the plan. If the answer is enough, produce the final repository-specific plan. If another detail is still required, call `ask_user_question` again.",
+            if answer_lines.trim().is_empty() {
+                "- No answered plan interview questions were found.".to_string()
+            } else {
+                answer_lines
+            }
+        ))
     }
 
     async fn run_agent_task_inner(
@@ -1268,11 +1344,7 @@ impl AgentRuntime {
             self.session.save_plan(&default_plan(title_task))?;
         }
 
-        let provider_runtime = self
-            .config
-            .provider_runtime(&self.workspace, Some(&self.session.metadata.provider))?;
-        let provider = create_provider(provider_runtime)?;
-        let mut messages = vec![
+        let messages = vec![
             ProviderMessage {
                 role: "system".to_string(),
                 content: Some(system_prompt(
@@ -1294,6 +1366,19 @@ impl AgentRuntime {
                 tool_calls: None,
             },
         ];
+        self.run_agent_loop(title_task, messages, mode).await
+    }
+
+    async fn run_agent_loop(
+        &mut self,
+        title_task: &str,
+        mut messages: Vec<ProviderMessage>,
+        mode: AgentRunMode,
+    ) -> Result<String> {
+        let provider_runtime = self
+            .config
+            .provider_runtime(&self.workspace, Some(&self.session.metadata.provider))?;
+        let provider = create_provider(provider_runtime)?;
         let estimated_tokens = provider.count_tokens(&messages);
         let provider_turn_timeout = self.provider_turn_timeout();
 
@@ -1530,6 +1615,19 @@ impl AgentRuntime {
                 )?;
                 if decision.action == CompletionAction::Continue {
                     if decision.waits_for_user_input() {
+                        if mode == AgentRunMode::Planning {
+                            let mut pending_messages = messages.clone();
+                            pending_messages.push(ProviderMessage {
+                                role: "assistant".to_string(),
+                                content: Some(provider_content.clone()),
+                                reasoning_content: response.reasoning_content.clone(),
+                                name: None,
+                                tool_call_id: None,
+                                tool_calls: None,
+                            });
+                            self.session
+                                .save_pending_plan_provider_messages(&pending_messages)?;
+                        }
                         let content = self.pause_for_user_questions()?;
                         self.record_agent_loop_transition(
                             &mut loop_tracker,
@@ -1577,6 +1675,7 @@ impl AgentRuntime {
 
                 if mode == AgentRunMode::Planning {
                     self.save_planning_artifacts(title_task, &provider_content)?;
+                    self.session.clear_pending_plan_provider_messages()?;
                 }
                 let content = with_token_estimate(provider_content, estimated_tokens);
                 self.session.append_message("assistant", &content)?;
@@ -1724,6 +1823,8 @@ impl AgentRuntime {
             )?;
 
             if mode == AgentRunMode::Planning && self.has_open_side_questions()? {
+                self.session
+                    .save_pending_plan_provider_messages(&messages)?;
                 let content = self.pause_for_user_questions()?;
                 self.record_agent_loop_transition(
                     &mut loop_tracker,
@@ -4157,24 +4258,11 @@ mod tests {
         assert_eq!(decision.action, CompletionAction::Accept);
     }
 
-    #[tokio::test]
-    async fn planning_continuation_after_answer_reenters_plan_mode() {
+    #[test]
+    fn planning_continuation_without_pending_chain_builds_fallback_prompt() {
         let dir = tempdir().unwrap();
-        let mut config = AppConfig {
-            default_provider: "stub".to_string(),
-            ..AppConfig::default()
-        };
-        config.providers.insert(
-            "stub".to_string(),
-            ProviderConfig {
-                provider_type: "stub".to_string(),
-                credentials_file: ".deepcli/credentials/stub.json".into(),
-                acceptance_model: Some("stub-model".to_string()),
-                capabilities: Vec::new(),
-            },
-        );
         let mut runtime = AgentRuntime::new(
-            config,
+            AppConfig::default(),
             RuntimeOptions {
                 workspace: dir.path().to_path_buf(),
                 provider: None,
@@ -4198,21 +4286,75 @@ mod tests {
             .answer_side_question(&question.id.to_string(), "质量校验")
             .unwrap();
 
-        let error = runtime
-            .continue_planning_after_side_question_answer()
-            .await
-            .unwrap_err()
-            .to_string();
+        let messages = runtime.planning_continuation_messages().unwrap();
 
-        assert!(error.contains("provider type `stub` is not implemented"));
-        let messages = runtime.session.load_messages().unwrap();
-        let continuation = messages.last().unwrap();
-        assert_eq!(continuation.role, "user");
-        assert!(continuation.content.contains("Continue DeepCLI plan mode"));
-        assert!(continuation.content.contains("ask_user_question"));
-        assert!(continuation
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[1].role, "user");
+        assert!(messages[1]
             .content
+            .as_deref()
+            .unwrap()
+            .contains("Continue DeepCLI plan mode"));
+        assert!(messages[1]
+            .content
+            .as_deref()
+            .unwrap()
             .contains("Critical Files for Implementation"));
+        assert!(messages[2].content.as_deref().unwrap().contains("质量校验"));
+    }
+
+    #[test]
+    fn planning_continuation_messages_reuse_pending_provider_chain() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: true,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .save_pending_plan_provider_messages(&[
+                test_provider_message("system", "system prompt with workspace context"),
+                test_provider_message("user", "original /plan prompt"),
+                test_provider_message("assistant", "I inspected goal.rs"),
+                test_tool_message("call_read_goal", "read_file", "goal.rs contents"),
+            ])
+            .unwrap();
+        let question = runtime
+            .session
+            .enqueue_side_question_with_options(
+                "优先增强哪个 goal 方向？",
+                vec!["complete + edit".to_string(), "CLI 参数".to_string()],
+            )
+            .unwrap();
+        runtime
+            .session
+            .answer_side_question(&question.id.to_string(), "complete + edit")
+            .unwrap();
+
+        let messages = runtime.planning_continuation_messages().unwrap();
+
+        assert_eq!(
+            messages[0].content.as_deref(),
+            Some("system prompt with workspace context")
+        );
+        assert_eq!(
+            messages[1].content.as_deref(),
+            Some("original /plan prompt")
+        );
+        assert_eq!(messages[2].content.as_deref(), Some("I inspected goal.rs"));
+        assert_eq!(messages[3].content.as_deref(), Some("goal.rs contents"));
+        let answer_context = messages.last().unwrap().content.as_deref().unwrap();
+        assert!(answer_context.contains("The user answered"));
+        assert!(answer_context.contains("complete + edit"));
+        assert!(!answer_context.contains("Current user requirement"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::permissions::PermissionDecision;
 use crate::privacy::redact_sensitive_text;
+use crate::providers::ProviderMessage;
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -475,6 +476,25 @@ impl Session {
         let records = self.load_provider_transcript()?;
         let skip = records.len().saturating_sub(limit);
         Ok(records.into_iter().skip(skip).collect())
+    }
+
+    pub fn save_pending_plan_provider_messages(&self, messages: &[ProviderMessage]) -> Result<()> {
+        self.write_json("pending_plan_provider_messages.json", &messages)?;
+        self.touch_metadata()
+    }
+
+    pub fn load_pending_plan_provider_messages(&self) -> Result<Option<Vec<ProviderMessage>>> {
+        self.read_json_if_exists("pending_plan_provider_messages.json")
+    }
+
+    pub fn clear_pending_plan_provider_messages(&self) -> Result<()> {
+        let path = self.path.join("pending_plan_provider_messages.json");
+        if path.exists() {
+            fs::remove_file(&path)
+                .with_context(|| format!("failed to remove {}", path.display()))?;
+            self.touch_metadata()?;
+        }
+        Ok(())
     }
 
     pub fn append_compact_boundary(&self, record: &CompactBoundaryRecord) -> Result<()> {
