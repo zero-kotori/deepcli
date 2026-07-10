@@ -16,7 +16,7 @@ deepcli 是一个 local-first 的 AI 编程代理 CLI。它围绕当前工作区
 - `deepcli help` / `deepcli <command> --help`：查看命令帮助。
 - `deepcli completion json`：输出机器可读命令目录。
 
-原生终端聊天不使用 fullscreen alternate screen。输出写入普通 stdout，终端原生 scrollback、复制和滚动行为保持可用。输入会成对启用/关闭 bracketed paste，多行粘贴进入同一编辑缓冲；Provider、工具和审批文本在写终端前移除控制序列。普通 Agent turn 统一携带对应工具 schema 并消费流式文本/工具事件，不再为短请求切换到无工具的 Provider 快速路径；`ToolBatchCompleted` 驱动终端在一批工具结束后输出折叠汇总和失败计数。
+原生终端聊天不使用 fullscreen alternate screen。输出写入普通 stdout，终端原生 scrollback、复制和滚动行为保持可用。输入会成对启用/关闭 bracketed paste，多行粘贴进入同一编辑缓冲；Provider、工具和审批文本在写终端前移除控制序列。普通 Agent turn 统一携带对应工具 schema 并消费流式文本/工具事件，不再为短请求切换到无工具的 Provider 快速路径。默认界面使用短 session header 和 `you`/`deepcli` 角色标签，隐藏 Provider 生命周期、消息/工具数量、请求体积和成功工具进度；工具失败、审批与计划问题仍可见，完整事件继续进入会话审计。
 
 ## Provider、模型与凭据
 

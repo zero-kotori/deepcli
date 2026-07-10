@@ -5,7 +5,7 @@
 当前 UI 只保留原生终端聊天路径，不再包含 fullscreen TUI/Ratatui 实现。
 
 - `src/ui.rs` 是薄入口：注册 `src/ui/native_terminal.rs` 和 `src/ui/resume_picker.rs`，对外导出 `run_basic_repl`、`pick_resume_session` 和 `ResumeSelection`。
-- `src/ui/native_terminal.rs` 拥有默认交互聊天：session header、彩色 `user` 输入标签、raw-mode 多行输入编辑、方向键移动、assistant delta 流式输出、provider turn 状态线、折叠工具进度摘要，以及 plan 采访问题的文本选项展示和回答记录。
+- `src/ui/native_terminal.rs` 拥有默认交互聊天：短 session header、彩色 `you`/`deepcli` 角色标签、raw-mode 多行输入编辑、方向键移动、assistant delta 流式输出、工具失败/审批状态，以及 plan 采访问题的文本选项展示和回答记录。Provider 生命周期、请求指标和成功工具进度默认不进入对话区。
 - `src/ui/resume_picker.rs` 拥有 `--resume-picker` 的原生终端选择循环：打印可恢复 session 列表，支持数字、唯一 session id 前缀、空输入选择第一项和 `q` 取消。
 
 ## 边界
@@ -17,7 +17,7 @@
 
 ## 测试
 
-- `cargo test ui::native_terminal::tests --lib` 覆盖原生终端输入编辑、提示符、工具进度折叠和 plan 采访问题文本展示。
+- `cargo test ui::native_terminal::tests --lib` 覆盖原生终端输入编辑、角色标签、Provider/成功工具遥测静默、工具失败和 plan 采访问题文本展示。
 - `cargo test ui_entrypoint_is_native_terminal_only_boundary --test mvp_contract` 防止旧 TUI 标记回到 `src/ui.rs`。
 - `scripts/native-terminal-smoke` 用真实 pty 启动默认入口、发送 `/quit`，并检查原生终端聊天关键输出。
 

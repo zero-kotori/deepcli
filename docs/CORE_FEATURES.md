@@ -14,7 +14,7 @@
 - Agent 循环：分析 → 计划 → 修改 → 测试 → 修复 → 汇报。
 - 工具注册表覆盖文件、shell、Git、测试、环境、web、terminal、prompt、skill、子 Agent；Provider schema 只拥有业务参数，host 根据工具与已解析参数构造权限请求。
 - 普通 Agent turn 使用同一 tool-capable 流式循环；工具执行结果携带真实 `success`，Provider 上下文、生命周期审计和 UI 状态不会把非零退出或测试失败记为成功。
-- 所有写入/shell/Git/网络/Docker/终端/setup 操作经权限层；工具调用全生命周期审计、输出脱敏，原生终端在 `ToolBatchCompleted` 后汇总折叠工具进度。
+- 所有写入/shell/Git/网络/Docker/终端/setup 操作经权限层；工具调用全生命周期审计、输出脱敏，原生终端默认隐藏 Provider 与成功工具遥测，仅保留工具失败和审批等可执行状态。
 - `/cmd <bash command>` 复用本地 `run_shell` 工具在当前 workspace 执行命令并把 command/exit code/stdout/stderr 回显到 UI；默认不调用 provider，`/cmd --attach <bash command>` 会把格式化输出作为下一条用户上下文交给模型。
 
 ## 权限与 sandbox

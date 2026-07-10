@@ -11,7 +11,7 @@
 | `src/tools.rs` | `docs/MODULES/tools.md` | 文件、shell、Git、测试、环境、web、prompt、skill、子 agent 等工具的声明与执行。 | `ToolDeclaration` / `ToolRegistry` / provider schema / `permission_request` 契约已落地并由 contract tests 覆盖；后续可继续增强审计生命周期类型化。 |
 | `src/session.rs` | `docs/MODULES/session.md` | 持久化会话、元数据、消息、审计事件、plan、goal、审批、旁路问题、测试、diff、备份。 | 多模块依赖会话结构，schema 改动需注意迁移。 |
 | `src/permissions.rs` | `docs/MODULES/permissions.md` | 文件系统、shell、Git、网络、Docker、终端、setup 等操作的权限决策。 | 工具的写入/高风险操作不得绕过本层。 |
-| `src/ui.rs` / `src/ui/native_terminal.rs` / `src/ui/resume_picker.rs` | `docs/MODULES/ui.md` | 原生终端聊天入口、输入编辑、流式输出、工具进度折叠、plan 采访文本选项和文本 resume picker。 | Fullscreen TUI/Ratatui 已删除；后续 UI 改动应围绕 native terminal 交互体验和真实 pty smoke 验证。 |
+| `src/ui.rs` / `src/ui/native_terminal.rs` / `src/ui/resume_picker.rs` | `docs/MODULES/ui.md` | 原生终端聊天入口、输入编辑、低噪声流式对话、失败/审批状态、plan 采访文本选项和文本 resume picker。 | Fullscreen TUI/Ratatui 已删除；后续 UI 改动应围绕 native terminal 交互体验和真实 pty smoke 验证。 |
 
 其它支撑模块：
 

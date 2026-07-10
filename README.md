@@ -15,7 +15,7 @@ deepcli 是一个 local-first 的 AI 编程代理 CLI。它把原生终端聊天
 
 请求从 `scripts/deepcli` 进入 `src/cli.rs`。CLI 会先归一化 provider/模式别名，识别本地 one-shot 命令；能本地处理的命令直接走 `src/commands/*`，需要模型参与的任务才创建或恢复 `AgentRuntime`。
 
-`src/runtime.rs` 负责 Agent 主循环：准备上下文、通过统一的 tool-capable 流式 Provider turn 接收文本与工具调用、执行工具、记录会话事件并把结果返回 UI。工具结果携带真实成功状态，原生终端在每个工具批次结束时汇总折叠进度。Agent 不直接访问文件系统、shell、网络或 Git，所有动作都经 `src/tools/*` 和 `src/permissions.rs`。
+`src/runtime.rs` 负责 Agent 主循环：准备上下文、通过统一的 tool-capable 流式 Provider turn 接收文本与工具调用、执行工具、记录会话事件并把结果返回 UI。工具结果携带真实成功状态；原生终端默认隐藏 Provider 请求指标和正常工具进度，只保留对话正文、失败、审批与问题，完整生命周期仍写入会话审计。Agent 不直接访问文件系统、shell、网络或 Git，所有动作都经 `src/tools/*` 和 `src/permissions.rs`。
 
 `src/session.rs` 是持久化状态边界。`src/context_manager.rs` 负责上下文预算和压缩。子 Agent 的工具白名单、canonical 读写 scope 和宿主计算深度由 runtime/executor capability 共同强制。`src/config.rs` 在原始 JSON 层按全局、项目递归合并，再应用环境变量。`src/schema_ids.rs` 拥有稳定 JSON schema 标识符。命令、模块和架构边界分别由 `docs/COMMANDS.md`、`docs/MODULES/`、`docs/ARCHITECTURE.md` 维护。
 

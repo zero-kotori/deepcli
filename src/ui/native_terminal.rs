@@ -15,8 +15,10 @@ use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use unicode_width::UnicodeWidthChar;
 
-const NATIVE_INPUT_PROMPT_LABEL: &str = "user ";
-const NATIVE_INPUT_PROMPT: &str = "\x1b[36muser\x1b[0m ";
+const NATIVE_INPUT_PROMPT_LABEL: &str = "you  ";
+const NATIVE_INPUT_PROMPT: &str = "\x1b[1;36myou\x1b[0m  ";
+const NATIVE_ASSISTANT_LABEL: &str = "\x1b[1;32mdeepcli\x1b[0m";
+const NATIVE_ERROR_LABEL: &str = "\x1b[1;31merror\x1b[0m";
 const NATIVE_PROGRESS_DETAIL_CHARS: usize = 120;
 
 struct WorkerDone {
@@ -108,15 +110,25 @@ impl TerminalTextSanitizer {
 struct NativeRenderState {
     assistant_open: bool,
     saw_assistant_delta: bool,
-    folded_tool_events: usize,
-    folded_tool_failures: usize,
-    latest_folded_tool: Option<String>,
+    assistant_ended_with_newline: bool,
     assistant_sanitizer: TerminalTextSanitizer,
 }
 
+impl NativeRenderState {
+    fn sanitize_assistant_delta(&mut self, delta: &str) -> Option<String> {
+        let delta = self.assistant_sanitizer.sanitize_chunk(delta);
+        if delta.is_empty() {
+            return None;
+        }
+        self.saw_assistant_delta = true;
+        self.assistant_ended_with_newline = delta.ends_with('\n');
+        Some(delta)
+    }
+}
+
 pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()> {
-    println!("deepcli session {}", runtime.session_id());
-    println!("Type /help for commands, /quit to exit.");
+    println!("{}", native_session_banner(&runtime.session_id()));
+    println!();
 
     let (progress_tx, progress_rx) = mpsc::channel();
     let mut stdout = io::stdout();
@@ -418,6 +430,15 @@ fn native_input_prompt() -> &'static str {
     NATIVE_INPUT_PROMPT
 }
 
+fn native_assistant_label() -> &'static str {
+    NATIVE_ASSISTANT_LABEL
+}
+
+fn native_session_banner(session_id: &str) -> String {
+    let short_id = session_id.chars().take(8).collect::<String>();
+    format!("{NATIVE_ASSISTANT_LABEL}  \x1b[2msession {short_id}\x1b[0m")
+}
+
 fn read_native_input(stdout: &mut io::Stdout) -> io::Result<Option<String>> {
     enable_raw_mode()?;
     if let Err(error) = execute!(stdout, EnableBracketedPaste) {
@@ -667,11 +688,11 @@ async fn wait_for_native_task(
                     Ok(output) => {
                         if should_print_native_task_output(render_state.saw_assistant_delta, &state)
                         {
-                            println!("{}", terminal_safe_text(&output));
+                            print_native_assistant_output(&output)?;
                         }
                     }
                     Err(error) => {
-                        println!("error: {}", terminal_safe_text(&error));
+                        print_native_error(&error)?;
                     }
                 }
                 print_native_pending_approvals(&runtime)?;
@@ -705,23 +726,20 @@ fn render_native_progress(
 ) -> io::Result<()> {
     match event {
         RuntimeProgress::AssistantDelta { delta } => {
-            if delta.is_empty() {
+            let Some(delta) = render_state.sanitize_assistant_delta(&delta) else {
                 return Ok(());
-            }
+            };
             if !render_state.assistant_open {
+                println!("{}", native_assistant_label());
                 render_state.assistant_open = true;
             }
-            let delta = render_state.assistant_sanitizer.sanitize_chunk(&delta);
-            if !delta.is_empty() {
-                print!("{delta}");
-                io::stdout().flush()?;
-            }
-            render_state.saw_assistant_delta = true;
+            print!("{delta}");
+            io::stdout().flush()?;
         }
         other => {
             for line in native_progress_lines(&other, render_state) {
                 finish_native_stream_line(render_state)?;
-                println!("{}", terminal_safe_text(&line));
+                print_native_progress_line(&line);
             }
         }
     }
@@ -730,92 +748,25 @@ fn render_native_progress(
 
 fn native_progress_lines(
     event: &RuntimeProgress,
-    render_state: &mut NativeRenderState,
+    _render_state: &mut NativeRenderState,
 ) -> Vec<String> {
     match event {
-        RuntimeProgress::AssistantDelta { .. } => Vec::new(),
-        RuntimeProgress::ProviderStreamStarted => {
-            vec!["deepcli | provider stream started".to_string()]
-        }
-        RuntimeProgress::ProviderTurnStarted {
-            iteration,
-            message_count,
-            tool_count,
-            request_kib,
-            compacted,
-        } => {
-            let mut lines = flush_folded_native_tool_progress(render_state);
-            let mut line = format!(
-                "deepcli | provider {iteration} | messages {message_count} | tools {tool_count} | request {request_kib} KiB"
-            );
-            if *compacted {
-                line.push_str(" | compacted");
-            }
-            lines.push(line);
-            lines
-        }
-        RuntimeProgress::ProviderTurnCompleted {
-            elapsed_ms,
-            tool_calls,
-        } => {
-            vec![format!(
-                "deepcli | provider done | {:.1}s | tool calls {tool_calls}",
-                *elapsed_ms as f64 / 1000.0
-            )]
-        }
-        RuntimeProgress::ToolStarted { tool, detail } => {
-            fold_native_tool_progress(render_state, "run", tool, detail.as_deref(), true);
-            Vec::new()
-        }
+        RuntimeProgress::AssistantDelta { .. }
+        | RuntimeProgress::ProviderStreamStarted
+        | RuntimeProgress::ProviderTurnStarted { .. }
+        | RuntimeProgress::ProviderTurnCompleted { .. }
+        | RuntimeProgress::ToolStarted { .. }
+        | RuntimeProgress::ToolBatchCompleted { .. } => Vec::new(),
         RuntimeProgress::ToolCompleted { tool, ok, summary } => {
-            let status = if *ok { "ok" } else { "failed" };
-            if !ok {
-                render_state.folded_tool_failures += 1;
+            if *ok {
+                return Vec::new();
             }
-            fold_native_tool_progress(render_state, status, tool, Some(summary), false);
-            Vec::new()
+            let tool = terminal_safe_text(tool);
+            let detail = native_progress_detail(summary)
+                .map(|summary| format!(": {summary}"))
+                .unwrap_or_default();
+            vec![format!("error  {}{detail}", tool.trim())]
         }
-        RuntimeProgress::ToolBatchCompleted { .. } => {
-            flush_folded_native_tool_progress(render_state)
-        }
-    }
-}
-
-fn flush_folded_native_tool_progress(render_state: &mut NativeRenderState) -> Vec<String> {
-    if render_state.folded_tool_events == 0 {
-        return Vec::new();
-    }
-    let mut folded = format!(
-        "deepcli | tools folded | events {}",
-        render_state.folded_tool_events
-    );
-    if render_state.folded_tool_failures > 0 {
-        folded.push_str(&format!(" | failed {}", render_state.folded_tool_failures));
-    }
-    if let Some(latest) = render_state.latest_folded_tool.take() {
-        folded.push_str(" | latest ");
-        folded.push_str(&latest);
-    }
-    render_state.folded_tool_events = 0;
-    render_state.folded_tool_failures = 0;
-    vec![folded]
-}
-
-fn fold_native_tool_progress(
-    render_state: &mut NativeRenderState,
-    status: &str,
-    tool: &str,
-    detail: Option<&str>,
-    replace_latest_only_if_empty: bool,
-) {
-    render_state.folded_tool_events += 1;
-    let mut line = format!("{status} {tool}");
-    if let Some(detail) = detail.and_then(native_progress_detail) {
-        line.push_str(" | ");
-        line.push_str(&detail);
-    }
-    if !replace_latest_only_if_empty || render_state.latest_folded_tool.is_none() {
-        render_state.latest_folded_tool = Some(line);
     }
 }
 
@@ -842,12 +793,43 @@ fn compact_native_progress_detail(value: &str) -> String {
 
 fn finish_native_stream_line(render_state: &mut NativeRenderState) -> io::Result<()> {
     if render_state.assistant_open {
+        if !render_state.assistant_ended_with_newline {
+            println!();
+        }
         println!();
         io::stdout().flush()?;
         render_state.assistant_open = false;
+        render_state.assistant_ended_with_newline = false;
     }
     render_state.assistant_sanitizer.reset();
     Ok(())
+}
+
+fn print_native_assistant_output(output: &str) -> io::Result<()> {
+    let output = terminal_safe_text(output);
+    let output = output.trim_end_matches('\n');
+    if output.is_empty() {
+        return Ok(());
+    }
+    println!("{}", native_assistant_label());
+    println!("{output}");
+    println!();
+    io::stdout().flush()
+}
+
+fn print_native_error(error: &str) -> io::Result<()> {
+    println!("{NATIVE_ERROR_LABEL}  {}", terminal_safe_text(error));
+    println!();
+    io::stdout().flush()
+}
+
+fn print_native_progress_line(line: &str) {
+    let line = terminal_safe_text(line);
+    if let Some(message) = line.strip_prefix("error  ") {
+        println!("{NATIVE_ERROR_LABEL}  {message}");
+    } else {
+        println!("{line}");
+    }
 }
 
 fn should_print_native_task_output(saw_assistant_delta: bool, state: &str) -> bool {
@@ -982,8 +964,9 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
-    fn native_provider_progress_uses_compact_status_lines() {
+    fn native_provider_transport_progress_is_hidden() {
         let mut render_state = NativeRenderState::default();
+        let stream_started = RuntimeProgress::ProviderStreamStarted;
         let started = RuntimeProgress::ProviderTurnStarted {
             iteration: 2,
             message_count: 14,
@@ -996,26 +979,14 @@ mod tests {
             tool_calls: 3,
         };
 
-        assert_eq!(
-            native_progress_lines(&started, &mut render_state),
-            vec!["deepcli | provider 2 | messages 14 | tools 9 | request 128 KiB | compacted"]
-        );
-        assert_eq!(
-            native_progress_lines(&completed, &mut render_state),
-            vec!["deepcli | provider done | 1.2s | tool calls 3".to_string()]
-        );
+        assert!(native_progress_lines(&stream_started, &mut render_state).is_empty());
+        assert!(native_progress_lines(&started, &mut render_state).is_empty());
+        assert!(native_progress_lines(&completed, &mut render_state).is_empty());
     }
 
     #[test]
-    fn native_tool_progress_is_folded_until_tool_batch_completion() {
+    fn native_routine_tool_progress_is_hidden() {
         let mut render_state = NativeRenderState::default();
-        let started_turn = RuntimeProgress::ProviderTurnStarted {
-            iteration: 1,
-            message_count: 12,
-            tool_count: 9,
-            request_kib: 72,
-            compacted: false,
-        };
         let started = RuntimeProgress::ToolStarted {
             tool: "read_file".to_string(),
             detail: Some("# deepcli 架构".to_string()),
@@ -1025,25 +996,25 @@ mod tests {
             ok: true,
             summary: "[deepcli read_file slice: lines 1-80 of 5671]".to_string(),
         };
-        let completed_turn = RuntimeProgress::ProviderTurnCompleted {
-            elapsed_ms: 5600,
-            tool_calls: 1,
-        };
         let completed_batch = RuntimeProgress::ToolBatchCompleted { tool_calls: 1 };
 
-        assert_eq!(
-            native_progress_lines(&started_turn, &mut render_state),
-            vec!["deepcli | provider 1 | messages 12 | tools 9 | request 72 KiB"]
-        );
-        assert_eq!(
-            native_progress_lines(&completed_turn, &mut render_state),
-            vec!["deepcli | provider done | 5.6s | tool calls 1".to_string()]
-        );
         assert!(native_progress_lines(&started, &mut render_state).is_empty());
         assert!(native_progress_lines(&completed, &mut render_state).is_empty());
+        assert!(native_progress_lines(&completed_batch, &mut render_state).is_empty());
+    }
+
+    #[test]
+    fn native_tool_failures_remain_actionable_without_batch_telemetry() {
+        let mut render_state = NativeRenderState::default();
+        let failed = RuntimeProgress::ToolCompleted {
+            tool: "run_shell\x1b[31m".to_string(),
+            ok: false,
+            summary: "permission denied\x1b[0m\nignored detail".to_string(),
+        };
+
         assert_eq!(
-            native_progress_lines(&completed_batch, &mut render_state),
-            vec!["deepcli | tools folded | events 2 | latest ok read_file | [deepcli read_file slice: lines 1-80 of 5671]".to_string()]
+            native_progress_lines(&failed, &mut render_state),
+            vec!["error  run_shell: permission denied".to_string()]
         );
     }
 
@@ -1089,6 +1060,22 @@ mod tests {
         assert_eq!(sanitizer.sanitize_chunk("YXR0YWNr\x1b\\after"), "after");
         assert_eq!(sanitizer.sanitize_chunk("\x1b[3"), "");
         assert_eq!(sanitizer.sanitize_chunk("1mred"), "red");
+    }
+
+    #[test]
+    fn native_assistant_state_ignores_control_only_deltas_and_tracks_newlines() {
+        let mut state = NativeRenderState::default();
+
+        assert_eq!(state.sanitize_assistant_delta("\x1b[31m"), None);
+        assert!(!state.saw_assistant_delta);
+        assert!(!state.assistant_ended_with_newline);
+
+        assert_eq!(
+            state.sanitize_assistant_delta("answer\n"),
+            Some("answer\n".to_string())
+        );
+        assert!(state.saw_assistant_delta);
+        assert!(state.assistant_ended_with_newline);
     }
 
     #[test]
@@ -1213,13 +1200,18 @@ mod tests {
     }
 
     #[test]
-    fn native_input_prompt_uses_user_label_without_angle_prompt() {
+    fn native_conversation_chrome_uses_compact_role_labels() {
+        let banner = native_session_banner("d2deb496-9a30-44a1-8785-e9b0cdcf00f3");
         let prompt = native_input_prompt();
-        let plain = strip_ansi_for_test(prompt);
+        let assistant = native_assistant_label();
 
-        assert_eq!(plain, "user ");
+        assert_eq!(strip_ansi_for_test(&banner), "deepcli  session d2deb496");
+        assert_eq!(strip_ansi_for_test(prompt), "you  ");
+        assert_eq!(strip_ansi_for_test(assistant), "deepcli");
+        assert!(banner.contains("\x1b["));
         assert!(prompt.contains("\x1b["));
-        assert!(!plain.contains('>'));
+        assert!(assistant.contains("\x1b["));
+        assert!(!strip_ansi_for_test(prompt).contains('>'));
     }
 
     #[test]

@@ -63,7 +63,7 @@ user input
 
 当前 UI 是原生终端聊天，不再维护旧 fullscreen TUI。入口位于 `src/ui.rs`，主要实现位于：
 
-- `src/ui/native_terminal.rs`：bracketed paste 原生输入、终端控制序列清洗、流式输出、按 `ToolBatchCompleted` 刷新的工具进度折叠/失败汇总、审批提示和计划采访选项。
+- `src/ui/native_terminal.rs`：短 session header、`you`/`deepcli` 角色标签、bracketed paste 原生输入、终端控制序列清洗、低噪声流式输出、工具失败、审批提示和计划采访选项；Provider 请求指标与成功工具进度仅保留在 runtime/session 观测路径。
 - `src/ui/resume_picker.rs`：文本 resume picker。
 
 默认 `deepcli` 和 `deepcli repl` 都进入同一 native terminal 路径。
