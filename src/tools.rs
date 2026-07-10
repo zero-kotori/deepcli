@@ -1,6 +1,8 @@
 use crate::agents::{AgentStore, SubagentStatus, SubagentTask};
+#[cfg(test)]
+use crate::permissions::RiskLevel;
 use crate::permissions::{
-    DecisionOutcome, PermissionDecision, PermissionEngine, RiskLevel, ToolRequest, ToolSurface,
+    DecisionOutcome, PermissionDecision, PermissionEngine, ToolRequest, ToolSurface,
 };
 use crate::privacy::{looks_sensitive, redact_sensitive_value};
 use crate::prompts::{render_prompt_body, Prompt, PromptRenderContext, PromptStore};
@@ -8,7 +10,7 @@ use crate::session::{
     Plan, PlanStep, PlanStepStatus, Session, TestRunRecord, ToolCallRecord, ToolCallStatus,
 };
 use crate::skills::{SkillMetadata, SkillStore};
-use crate::workspace::WorkspaceManager;
+use crate::workspace::{DeepIgnore, WorkspaceManager};
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
 use globset::{Glob, GlobSet};
@@ -19,6 +21,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+pub(crate) mod authorization;
 mod declarations;
 mod environment;
 mod file;
@@ -29,6 +32,7 @@ mod test_discovery;
 mod validation;
 mod web;
 
+use authorization::{invocation_digest, invocation_summary, validate_test_command};
 pub use declarations::{ToolDeclaration, ToolObject, ToolPermissionContext, ToolRegistry};
 use environment::{
     check_environment_in, environment_target_arg, format_environment_report,
@@ -41,8 +45,9 @@ pub use environment::{EnvironmentCheck, EnvironmentReport, EnvironmentSetupResul
 use file::normalize_unified_diff_hunk_counts;
 pub use file::resolve_workspace_path;
 use file::{
-    normalize_patch_input, reject_large_destructive_rewrite, reject_large_existing_rewrite,
-    reject_placeholder_overwrite, slice_text_by_line, unified_diff,
+    normalize_patch_input, patch_target_paths, reject_large_destructive_rewrite,
+    reject_large_existing_rewrite, reject_placeholder_overwrite, slice_text_by_line, unified_diff,
+    validate_patch_paths,
 };
 use git::{generate_commit_message, validate_branch_name};
 use process::{
@@ -55,7 +60,10 @@ pub use process::{
 use test_discovery::format_discovered_test_command;
 pub use test_discovery::{discover_tests_in, DiscoveredTestCommand};
 use validation::validate_tool_arguments;
-use web::{format_web_fetch_text, format_web_search_result};
+use web::{
+    bounded_web_fetch_chars, format_web_fetch_text, format_web_search_result,
+    read_bounded_response_body, safe_web_get,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ToolExecution {
@@ -64,6 +72,8 @@ pub struct ToolExecution {
     pub raw: Value,
     pub structured: StructuredToolResult,
     pub decision: PermissionDecision,
+    #[serde(default = "default_tool_success")]
+    pub success: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -72,6 +82,10 @@ pub struct StructuredToolResult {
     pub summary: String,
     pub data: Value,
     pub truncated: bool,
+}
+
+fn default_tool_success() -> bool {
+    true
 }
 
 impl ToolExecution {
@@ -95,7 +109,13 @@ impl ToolExecution {
             },
             raw,
             decision,
+            success: true,
         }
+    }
+
+    fn with_success(mut self, success: bool) -> Self {
+        self.success = success;
+        self
     }
 
     fn with_structured(
@@ -117,7 +137,7 @@ impl ToolExecution {
     pub fn prompt_content(&self) -> String {
         serde_json::to_string(&json!({
             "tool": self.tool,
-            "ok": true,
+            "ok": self.success,
             "kind": self.structured.kind,
             "summary": self.structured.summary,
             "content": self.content,
@@ -136,12 +156,39 @@ struct SubagentBackgroundStart {
     command: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+struct SubagentCapability {
+    allowed_tools: Option<BTreeSet<String>>,
+    read_scope: Option<Vec<PathBuf>>,
+    write_scope: Option<Vec<PathBuf>>,
+}
+
+impl SubagentCapability {
+    fn from_task(workspace: &Path, task: &SubagentTask) -> Result<Self> {
+        let allowed_tools = (!task.allowed_tools.is_empty())
+            .then(|| task.allowed_tools.iter().cloned().collect::<BTreeSet<_>>());
+        let read_scope = resolve_capability_scope(workspace, &task.read_scope)?;
+        let write_scope = resolve_capability_scope(workspace, &task.write_scope)?;
+        Ok(Self {
+            allowed_tools,
+            read_scope,
+            write_scope,
+        })
+    }
+
+    fn has_path_restrictions(&self) -> bool {
+        self.read_scope.is_some() || self.write_scope.is_some()
+    }
+}
+
 pub struct ToolExecutor {
     workspace: PathBuf,
     permissions: PermissionEngine,
     session: Option<Session>,
     max_subagent_depth: u8,
+    current_subagent_depth: u8,
     assume_yes: bool,
+    subagent_capability: Option<SubagentCapability>,
 }
 
 impl ToolExecutor {
@@ -151,12 +198,18 @@ impl ToolExecutor {
         session: Option<Session>,
         max_subagent_depth: u8,
     ) -> Self {
+        let workspace = workspace.as_ref();
+        let workspace = workspace
+            .canonicalize()
+            .unwrap_or_else(|_| workspace.to_path_buf());
         Self {
-            workspace: workspace.as_ref().to_path_buf(),
+            workspace,
             permissions,
             session,
             max_subagent_depth,
+            current_subagent_depth: 0,
             assume_yes: false,
+            subagent_capability: None,
         }
     }
 
@@ -167,6 +220,40 @@ impl ToolExecutor {
 
     pub fn set_session(&mut self, session: Option<Session>) {
         self.session = session;
+    }
+
+    pub(crate) fn restrict_to_subagent(&mut self, task: &SubagentTask) -> Result<()> {
+        if task.depth == 0 || task.depth > self.max_subagent_depth {
+            bail!(
+                "sub-agent depth {} is outside the configured range 1..={}",
+                task.depth,
+                self.max_subagent_depth
+            );
+        }
+        validate_allowed_subagent_tools(&task.allowed_tools)?;
+        let capability = SubagentCapability::from_task(&self.workspace, task)?;
+        self.current_subagent_depth = task.depth;
+        self.subagent_capability = Some(capability);
+        Ok(())
+    }
+
+    pub(crate) fn subagent_read_scope(&self) -> Option<&[PathBuf]> {
+        self.subagent_capability
+            .as_ref()
+            .and_then(|capability| capability.read_scope.as_deref())
+    }
+
+    pub async fn execute_user_action(&self, name: &str, args: Value) -> Result<ToolExecution> {
+        let executor = Self {
+            workspace: self.workspace.clone(),
+            permissions: self.permissions.clone(),
+            session: self.session.clone(),
+            max_subagent_depth: self.max_subagent_depth,
+            current_subagent_depth: self.current_subagent_depth,
+            assume_yes: true,
+            subagent_capability: self.subagent_capability.clone(),
+        };
+        executor.execute(name, args).await
     }
 
     pub fn execute_open_terminal_now(&self) -> Result<ToolExecution> {
@@ -206,7 +293,10 @@ impl ToolExecutor {
         let result = self.open_terminal_app_now(app);
         if let Some(session) = &self.session {
             let (status, output) = match &result {
-                Ok(execution) => (ToolCallStatus::Succeeded, execution.raw.clone()),
+                Ok(execution) if execution.success => {
+                    (ToolCallStatus::Succeeded, execution.raw.clone())
+                }
+                Ok(execution) => (ToolCallStatus::Failed, execution.raw.clone()),
                 Err(error) => (ToolCallStatus::Failed, json!({"error": error.to_string()})),
             };
             let decision = result
@@ -259,11 +349,13 @@ impl ToolExecutor {
                 ToolCallStatus::Running,
             )?;
         }
-        let validation = if let Some(tool) = ToolRegistry::mvp().tool(name) {
-            tool.validate_arguments(&args)
-        } else {
-            validate_tool_arguments(name, &args)
-        };
+        let validation = self.ensure_subagent_tool_allowed(name).and_then(|_| {
+            if let Some(tool) = ToolRegistry::mvp().tool(name) {
+                tool.validate_arguments(&args)
+            } else {
+                validate_tool_arguments(name, &args)
+            }
+        });
         let result = if let Err(error) = validation {
             Err(error)
         } else {
@@ -310,7 +402,10 @@ impl ToolExecutor {
 
         if let Some(session) = &self.session {
             let (status, output) = match &result {
-                Ok(execution) => (ToolCallStatus::Succeeded, execution.raw.clone()),
+                Ok(execution) if execution.success => {
+                    (ToolCallStatus::Succeeded, execution.raw.clone())
+                }
+                Ok(execution) => (ToolCallStatus::Failed, execution.raw.clone()),
                 Err(error) => (ToolCallStatus::Failed, json!({"error": error.to_string()})),
             };
             let decision = result
@@ -366,7 +461,7 @@ impl ToolExecutor {
             .and_then(Value::as_u64)
             .map(|value| value as usize);
         let decision = self.evaluate_filesystem("read_file", &path, false)?;
-        self.ensure_allowed("read_file", &decision, false)?;
+        self.ensure_allowed("read_file", &decision, &args)?;
         let content = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         let content = slice_text_by_line(&content, start_line.max(1), limit);
@@ -383,7 +478,7 @@ impl ToolExecutor {
             .resolve_optional_path(&args)?
             .unwrap_or(self.workspace.clone());
         let decision = self.evaluate_filesystem("list_files", &base_path, false)?;
-        self.ensure_allowed("list_files", &decision, false)?;
+        self.ensure_allowed("list_files", &decision, &args)?;
         let manager = WorkspaceManager::new(&self.workspace)?;
         let glob = optional_glob(&args)?;
         let walk_limit = limit
@@ -428,7 +523,7 @@ impl ToolExecutor {
             .resolve_optional_path(&args)?
             .unwrap_or(self.workspace.clone());
         let decision = self.evaluate_filesystem("search", &base_path, false)?;
-        self.ensure_allowed("search", &decision, false)?;
+        self.ensure_allowed("search", &decision, &args)?;
         let manager = WorkspaceManager::new(&self.workspace)?;
         let glob = optional_glob(&args)?;
         let case_sensitive = args
@@ -525,9 +620,9 @@ impl ToolExecutor {
     async fn write_file(&self, name: &str, args: Value) -> Result<ToolExecution> {
         let path = self.resolve_required_path(&args)?;
         let content = required_str(&args, "content")?;
-        let approved = bool_arg(&args, "approved", false);
         let decision = self.evaluate_filesystem(name, &path, true)?;
-        self.ensure_allowed(name, &decision, approved)?;
+        let authorization_args = authorization_args_with_resolved_path(&args, &path);
+        self.ensure_allowed(name, &decision, &authorization_args)?;
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -566,11 +661,25 @@ impl ToolExecutor {
 
     async fn apply_patch(&self, args: Value) -> Result<ToolExecution> {
         let patch = required_str(&args, "patch")?;
-        let approved = bool_arg(&args, "approved", false);
-        let decision = self.evaluate_filesystem("apply_patch_or_write", &self.workspace, true)?;
-        self.ensure_allowed("apply_patch_or_write", &decision, approved)?;
-
         let patch_to_apply = normalize_patch_input(patch, args.get("path").and_then(Value::as_str));
+        validate_patch_paths(&self.workspace, &patch_to_apply)?;
+        let mut resolved_targets = Vec::new();
+        for target in patch_target_paths(&patch_to_apply)? {
+            let target = target
+                .to_str()
+                .ok_or_else(|| anyhow!("patch path is not valid UTF-8: {}", target.display()))?;
+            resolved_targets.push(self.resolve_provider_path(target)?);
+        }
+        for target in &resolved_targets {
+            self.ensure_subagent_path_allowed(target, true)?;
+        }
+        let permission_path = resolved_targets.first().unwrap_or(&self.workspace);
+        let decision = self.evaluate_filesystem("apply_patch_or_write", permission_path, true)?;
+        let authorization_args = json!({
+            "patch": patch_to_apply,
+            "targets": resolved_targets,
+        });
+        self.ensure_allowed("apply_patch_or_write", &decision, &authorization_args)?;
         let check =
             run_command_with_stdin(&self.workspace, "git apply --check -", &patch_to_apply).await?;
         if check.exit_code != Some(0) {
@@ -598,9 +707,9 @@ impl ToolExecutor {
         let path = self.resolve_required_path(&args)?;
         let old = required_str(&args, "old")?;
         let new = required_str(&args, "new")?;
-        let approved = bool_arg(&args, "approved", false);
         let decision = self.evaluate_filesystem(name, &path, true)?;
-        self.ensure_allowed(name, &decision, approved)?;
+        let authorization_args = authorization_args_with_resolved_path(&args, &path);
+        self.ensure_allowed(name, &decision, &authorization_args)?;
 
         let before = fs::read_to_string(&path)
             .with_context(|| format!("failed to read {}", path.display()))?;
@@ -644,25 +753,17 @@ impl ToolExecutor {
 
     async fn run_shell(&self, args: Value) -> Result<ToolExecution> {
         let command = required_str(&args, "command")?;
-        let approved = bool_arg(&args, "approved", false);
         let decision = self.evaluate_declared_tool(
             "run_shell",
             ToolPermissionContext {
                 command: Some(command.to_string()),
                 path: Some(self.workspace.clone()),
-                writes_files: Some(bool_arg(&args, "writes_files", false)),
                 creates_process: true,
-                requires_network: Some(bool_arg(&args, "requires_network", false)),
-                explicit_approval: approved,
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("run_shell", &decision, approved)?;
-        let timeout_seconds = args
-            .get("timeout_seconds")
-            .and_then(Value::as_u64)
-            .filter(|value| *value > 0)
-            .unwrap_or_else(default_shell_timeout_seconds);
+        self.ensure_allowed("run_shell", &decision, &args)?;
+        let timeout_seconds = bounded_timeout_seconds(&args, default_shell_timeout_seconds());
         let output = run_command_with_timeout(
             &self.workspace,
             command,
@@ -670,25 +771,73 @@ impl ToolExecutor {
         )
         .await?;
         let content = output_text(&output);
+        let success = output.exit_code == Some(0);
         let raw = json!(output);
         Ok(
             ToolExecution::new("run_shell", content.clone(), raw.clone(), decision)
-                .with_structured("command_output", first_line(&content), raw, false),
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
         )
     }
 
     async fn git_status(&self) -> Result<ToolExecution> {
-        self.git_read_tool("git_status", "git status --short").await
+        let command =
+            "git -c core.fsmonitor=false status --porcelain=v1 --untracked-files=all --no-renames";
+        let decision = self.evaluate_declared_tool(
+            "git_status",
+            ToolPermissionContext {
+                command: Some(command.to_string()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
+        self.ensure_allowed("git_status", &decision, &json!({}))?;
+        let output = self.safe_git_status().await?;
+        let content = output_text(&output);
+        let success = output.exit_code == Some(0);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("git_status", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
+        )
     }
 
     async fn git_diff(&self, args: Value) -> Result<ToolExecution> {
         let staged = args.get("staged").and_then(Value::as_bool).unwrap_or(false);
         let command = if staged {
-            "git diff --cached"
+            "git --literal-pathspecs diff --cached --no-renames -- <non-ignored paths>"
         } else {
-            "git diff"
+            "git --literal-pathspecs diff --no-renames -- <non-ignored paths>"
         };
-        self.git_read_tool("git_diff", command).await
+        let decision = self.evaluate_declared_tool(
+            "git_diff",
+            ToolPermissionContext {
+                command: Some(command.to_string()),
+                path: Some(self.workspace.clone()),
+                creates_process: true,
+                ..ToolPermissionContext::default()
+            },
+        )?;
+        self.ensure_allowed("git_diff", &decision, &args)?;
+        let output = match self.safe_git_diff_paths(staged).await {
+            Ok(paths) => self.run_safe_git_diff(staged, &paths, false).await?,
+            Err(error) => CommandOutput {
+                command: command.to_string(),
+                exit_code: Some(128),
+                stdout: String::new(),
+                stderr: error.to_string(),
+            },
+        };
+        let content = output_text(&output);
+        let success = output.exit_code == Some(0);
+        let raw = json!(output);
+        Ok(
+            ToolExecution::new("git_diff", content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
+        )
     }
 
     async fn git_branch(&self) -> Result<ToolExecution> {
@@ -702,7 +851,6 @@ impl ToolExecutor {
     async fn git_create_branch(&self, args: Value) -> Result<ToolExecution> {
         let name = required_str(&args, "name")?;
         validate_branch_name(name)?;
-        let approved = bool_arg(&args, "approved", false);
         let command = format!("git switch -c {}", shell_words::quote(name));
         let decision = self.evaluate_declared_tool(
             "git_create_branch",
@@ -710,17 +858,18 @@ impl ToolExecutor {
                 command: Some(command.clone()),
                 path: Some(self.workspace.clone()),
                 creates_process: true,
-                explicit_approval: approved,
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("git_create_branch", &decision, approved)?;
+        self.ensure_allowed("git_create_branch", &decision, &args)?;
         let output = run_command(&self.workspace, &command).await?;
         let content = output_text(&output);
+        let success = output.exit_code == Some(0);
         let raw = json!(output);
         Ok(
             ToolExecution::new("git_create_branch", content.clone(), raw.clone(), decision)
-                .with_structured("command_output", first_line(&content), raw, false),
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
         )
     }
 
@@ -734,44 +883,78 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("git_commit_message", &decision, false)?;
-        let status = run_command(&self.workspace, "git status --short").await?;
-        let names = run_command(&self.workspace, "git diff --name-only").await?;
-        let stat = run_command(&self.workspace, "git diff --stat").await?;
-        let message = generate_commit_message(&status.stdout, &names.stdout);
+        self.ensure_allowed("git_commit_message", &decision, &json!({}))?;
+        let status = self.safe_git_status().await?;
+        let (changed_files, stat) = match self.safe_git_diff_paths(false).await {
+            Ok(changed_files) => {
+                let stat = self.run_safe_git_diff(false, &changed_files, true).await?;
+                (changed_files, stat)
+            }
+            Err(error) => (
+                Vec::new(),
+                CommandOutput {
+                    command: "git diff --stat".to_string(),
+                    exit_code: Some(128),
+                    stdout: String::new(),
+                    stderr: error.to_string(),
+                },
+            ),
+        };
+        let names = changed_files.join("\n");
+        let message = generate_commit_message(&status.stdout, &names);
         let raw = json!({
             "message": message,
             "status": status,
-            "changed_files": names.stdout.lines().collect::<Vec<_>>(),
+            "changed_files": changed_files,
             "stat": stat.stdout
         });
+        let success = status.exit_code == Some(0) && stat.exit_code == Some(0);
         Ok(
             ToolExecution::new("git_commit_message", message.clone(), raw.clone(), decision)
-                .with_structured("git_commit_message", message, raw, false),
+                .with_structured("git_commit_message", message, raw, false)
+                .with_success(success),
         )
     }
 
     async fn git_commit(&self, args: Value) -> Result<ToolExecution> {
         let message = required_str(&args, "message")?;
-        let approved = bool_arg(&args, "approved", false);
-        let command = format!("git commit -m {}", shell_words::quote(message));
+        let (staged_paths, staged_digest) = self.staged_commit_snapshot().await?;
+        if staged_paths.is_empty() {
+            bail!("git_commit requires at least one staged change");
+        }
+        let command = "git commit-tree <approved-tree> && git update-ref HEAD <commit> <old-head>";
         let decision = self.evaluate_declared_tool(
             "git_commit",
             ToolPermissionContext {
-                command: Some(command.clone()),
+                command: Some(command.to_string()),
                 path: Some(self.workspace.clone()),
                 creates_process: true,
-                explicit_approval: approved,
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("git_commit", &decision, approved)?;
-        let output = run_command(&self.workspace, &command).await?;
+        let mut authorization_args = args.clone();
+        if let Value::Object(arguments) = &mut authorization_args {
+            arguments.insert(
+                "_staged_digest".to_string(),
+                Value::String(staged_digest.clone()),
+            );
+            arguments.insert("_staged_files".to_string(), json!(staged_paths));
+        }
+        self.ensure_allowed("git_commit", &decision, &authorization_args)?;
+        let (_, current_digest) = self.staged_commit_snapshot().await?;
+        if current_digest != staged_digest {
+            bail!("staged changes changed after approval; review and approve the new snapshot");
+        }
+        let output = self
+            .create_commit_from_approved_tree(message, &staged_digest)
+            .await?;
         let content = output_text(&output);
+        let success = output.exit_code == Some(0);
         let raw = json!(output);
         Ok(
             ToolExecution::new("git_commit", content.clone(), raw.clone(), decision)
-                .with_structured("command_output", first_line(&content), raw, false),
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
         )
     }
 
@@ -785,23 +968,183 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed(name, &decision, false)?;
+        self.ensure_allowed(name, &decision, &json!({ "command": command }))?;
         let output = run_command(&self.workspace, command).await?;
         let content = output_text(&output);
+        let success = output.exit_code == Some(0);
         let raw = json!(output);
         Ok(
-            ToolExecution::new(name, content.clone(), raw.clone(), decision).with_structured(
-                "command_output",
-                first_line(&content),
-                raw,
-                false,
-            ),
+            ToolExecution::new(name, content.clone(), raw.clone(), decision)
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
         )
+    }
+
+    async fn safe_git_diff_paths(&self, staged: bool) -> Result<Vec<String>> {
+        let paths = self.raw_git_diff_paths(staged).await?;
+        let ignore = DeepIgnore::load(&self.workspace)?;
+        Ok(paths
+            .into_iter()
+            .filter(|path| !ignore.is_ignored(self.workspace.join(path)))
+            .collect())
+    }
+
+    async fn raw_git_diff_paths(&self, staged: bool) -> Result<Vec<String>> {
+        let command = if staged {
+            "git --literal-pathspecs diff --cached --no-renames --no-ext-diff --no-textconv --name-only -z"
+        } else {
+            "git --literal-pathspecs diff --no-renames --no-ext-diff --no-textconv --name-only -z"
+        };
+        let output = run_command(&self.workspace, command).await?;
+        if output.exit_code != Some(0) {
+            bail!(
+                "failed to enumerate safe git diff paths: {}",
+                output_text(&output)
+            );
+        }
+        Ok(output
+            .stdout
+            .split('\0')
+            .filter(|path| !path.is_empty())
+            .map(str::to_string)
+            .collect())
+    }
+
+    async fn staged_commit_snapshot(&self) -> Result<(Vec<String>, String)> {
+        let paths = self.raw_git_diff_paths(true).await?;
+        let ignore = DeepIgnore::load(&self.workspace)?;
+        if paths
+            .iter()
+            .any(|path| ignore.is_ignored(self.workspace.join(path)))
+        {
+            bail!("git_commit refused because staged changes include paths blocked by workspace policy");
+        }
+        if paths.is_empty() {
+            return Ok((paths, String::new()));
+        }
+        self.ensure_no_in_progress_git_operation().await?;
+        let output = run_command(&self.workspace, "git write-tree").await?;
+        if output.exit_code != Some(0) {
+            bail!(
+                "failed to fingerprint staged changes: {}",
+                output_text(&output)
+            );
+        }
+        let tree = parse_git_oid(&output.stdout, "staged tree")?;
+        Ok((paths, tree))
+    }
+
+    async fn ensure_no_in_progress_git_operation(&self) -> Result<()> {
+        for reference in ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD"] {
+            let output = run_command(
+                &self.workspace,
+                &format!("git rev-parse -q --verify {reference}"),
+            )
+            .await?;
+            if output.exit_code == Some(0) {
+                bail!("git_commit does not support repositories with an active {reference}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn create_commit_from_approved_tree(
+        &self,
+        message: &str,
+        approved_tree: &str,
+    ) -> Result<CommandOutput> {
+        let tree = parse_git_oid(approved_tree, "approved tree")?;
+        let head_output =
+            run_command(&self.workspace, "git rev-parse -q --verify HEAD^{commit}").await?;
+        let parent = if head_output.exit_code == Some(0) {
+            Some(parse_git_oid(&head_output.stdout, "HEAD")?)
+        } else {
+            None
+        };
+        let mut commit_tree_command = format!("git commit-tree {tree}");
+        if let Some(parent) = &parent {
+            commit_tree_command.push_str(" -p ");
+            commit_tree_command.push_str(parent);
+        }
+        let commit_output = run_command_with_stdin(
+            &self.workspace,
+            &commit_tree_command,
+            &format!("{}\n", message.trim_end()),
+        )
+        .await?;
+        if commit_output.exit_code != Some(0) {
+            return Ok(commit_output);
+        }
+        let commit = parse_git_oid(&commit_output.stdout, "created commit")?;
+        let expected_head = parent.unwrap_or_else(|| "0".repeat(tree.len()));
+        let update_command =
+            format!("git update-ref -m deepcli-git-commit HEAD {commit} {expected_head}");
+        let update_output = run_command(&self.workspace, &update_command).await?;
+        if update_output.exit_code != Some(0) {
+            bail!(
+                "HEAD changed while creating the approved commit: {}",
+                output_text(&update_output)
+            );
+        }
+        Ok(CommandOutput {
+            command: format!("{commit_tree_command} && git update-ref HEAD"),
+            exit_code: Some(0),
+            stdout: format!("created commit {commit}\n"),
+            stderr: commit_output.stderr,
+        })
+    }
+
+    async fn run_safe_git_diff(
+        &self,
+        staged: bool,
+        paths: &[String],
+        stat: bool,
+    ) -> Result<CommandOutput> {
+        let mut command =
+            "git --literal-pathspecs diff --no-renames --no-ext-diff --no-textconv".to_string();
+        if staged {
+            command.push_str(" --cached");
+        }
+        if stat {
+            command.push_str(" --stat");
+        }
+        command.push_str(" --");
+        for path in paths {
+            command.push(' ');
+            command.push_str(&shell_words::quote(path));
+        }
+        if paths.is_empty() {
+            return Ok(CommandOutput {
+                command,
+                exit_code: Some(0),
+                stdout: String::new(),
+                stderr: String::new(),
+            });
+        }
+        run_command(&self.workspace, &command).await
+    }
+
+    async fn safe_git_status(&self) -> Result<CommandOutput> {
+        let command =
+            "git -c core.fsmonitor=false status --porcelain=v1 -z --untracked-files=all --no-renames";
+        let mut output = run_command(&self.workspace, command).await?;
+        if output.exit_code != Some(0) {
+            return Ok(output);
+        }
+        let ignore = DeepIgnore::load(&self.workspace)?;
+        output.stdout = output
+            .stdout
+            .split('\0')
+            .filter(|record| record.len() >= 4)
+            .filter(|record| !ignore.is_ignored(self.workspace.join(&record[3..])))
+            .collect::<Vec<_>>()
+            .join("\n");
+        Ok(output)
     }
 
     async fn discover_tests_tool(&self) -> Result<ToolExecution> {
         let decision = self.evaluate_filesystem("discover_tests", &self.workspace, false)?;
-        self.ensure_allowed("discover_tests", &decision, false)?;
+        self.ensure_allowed("discover_tests", &decision, &json!({}))?;
         let commands = self.discover_tests()?;
         let content = commands
             .iter()
@@ -825,18 +1168,27 @@ impl ToolExecutor {
                 .map(|command| command.command)
                 .ok_or_else(|| anyhow!("no available test command discovered"))?
         };
+        validate_test_command(&self.workspace, &command)?;
+        let mut authorization_args = args.clone();
+        if let Value::Object(arguments) = &mut authorization_args {
+            arguments.insert("command".to_string(), Value::String(command.clone()));
+        }
         let decision = self.evaluate_declared_tool(
             "run_tests",
             ToolPermissionContext {
                 command: Some(command.clone()),
                 path: Some(self.workspace.clone()),
                 creates_process: true,
-                explicit_approval: true,
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("run_tests", &decision, true)?;
-        let output = run_command(&self.workspace, &command).await?;
+        self.ensure_allowed("run_tests", &decision, &authorization_args)?;
+        let output = run_command_with_timeout(
+            &self.workspace,
+            &command,
+            Duration::from_secs(default_shell_timeout_seconds()),
+        )
+        .await?;
         let passed = output.exit_code == Some(0);
         if let Some(session) = &self.session {
             session.append_test_run(&TestRunRecord {
@@ -861,7 +1213,8 @@ impl ToolExecutor {
                     },
                     raw,
                     false,
-                ),
+                )
+                .with_success(passed),
         )
     }
 
@@ -876,7 +1229,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("check_environment", &decision, false)?;
+        self.ensure_allowed("check_environment", &decision, &args)?;
         let report = check_environment_in(&self.workspace, &target).await?;
         let content = format_environment_report(&report);
         let raw = json!(report);
@@ -888,7 +1241,6 @@ impl ToolExecutor {
 
     async fn setup_environment(&self, args: Value) -> Result<ToolExecution> {
         let target = environment_target_arg(&args)?;
-        let approved = bool_arg(&args, "approved", false);
         let install_missing = bool_arg(&args, "install_missing", true);
         let smoke_test = bool_arg(&args, "smoke_test", false);
         let decision = self.evaluate_declared_tool(
@@ -898,18 +1250,19 @@ impl ToolExecutor {
                 path: Some(self.workspace.clone()),
                 network_target: Some("ghcr.io, docker.io".to_string()),
                 creates_process: true,
-                explicit_approval: approved,
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("setup_environment", &decision, approved)?;
+        self.ensure_allowed("setup_environment", &decision, &args)?;
         let setup =
             setup_environment_in(&self.workspace, &target, install_missing, smoke_test).await?;
         let content = format_environment_setup(&setup);
+        let success = setup.ready;
         let raw = json!(setup);
         Ok(
             ToolExecution::new("setup_environment", content.clone(), raw.clone(), decision)
-                .with_structured("environment_setup", first_line(&content), raw, false),
+                .with_structured("environment_setup", first_line(&content), raw, false)
+                .with_success(success),
         )
     }
 
@@ -921,7 +1274,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("todo_write", &decision, false)?;
+        self.ensure_allowed("todo_write", &decision, &args)?;
         let title = args
             .get("title")
             .and_then(Value::as_str)
@@ -964,7 +1317,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("ask_user_question", &decision, false)?;
+        self.ensure_allowed("ask_user_question", &decision, &args)?;
         let session = self
             .session
             .as_ref()
@@ -994,12 +1347,21 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("web_search", &decision, false)?;
+        self.ensure_allowed("web_search", &decision, &args)?;
         let url = reqwest::Url::parse_with_params(
             "https://api.duckduckgo.com/",
             &[("q", query), ("format", "json"), ("no_html", "1")],
         )?;
-        let value: Value = reqwest::get(url).await?.json().await?;
+        let (_, response) =
+            safe_web_get(url, Duration::from_secs(20), "deepcli-web-search/0.1").await?;
+        if !response.status().is_success() {
+            bail!("web_search returned HTTP {}", response.status().as_u16());
+        }
+        let body = read_bounded_response_body(response, 100_000).await?;
+        if body.truncated {
+            bail!("web_search response exceeded the host response limit");
+        }
+        let value: Value = serde_json::from_str(&body.text).context("invalid web_search JSON")?;
         let content = format_web_search_result(query, &value);
         let raw = value;
         Ok(
@@ -1028,28 +1390,23 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("web_fetch", &decision, false)?;
-        let max_chars = args
-            .get("max_chars")
-            .and_then(Value::as_u64)
-            .unwrap_or(20_000) as usize;
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
-            .user_agent("deepcli-web-fetch/0.1")
-            .build()?;
-        let response = client.get(url.clone()).send().await?;
+        self.ensure_allowed("web_fetch", &decision, &args)?;
+        let max_chars = bounded_web_fetch_chars(args.get("max_chars").and_then(Value::as_u64));
+        let (url, response) =
+            safe_web_get(url, Duration::from_secs(20), "deepcli-web-fetch/0.1").await?;
         let status = response.status().as_u16();
+        let success = (200..400).contains(&status);
         let content_type = response
             .headers()
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_string();
-        let body = response.text().await?;
-        let extracted = format_web_fetch_text(&body, &content_type);
-        let original_chars = extracted.chars().count();
-        let truncated = original_chars > max_chars;
-        let text = if truncated {
+        let body = read_bounded_response_body(response, max_chars).await?;
+        let extracted = format_web_fetch_text(&body.text, &content_type);
+        let observed_chars = extracted.chars().count();
+        let truncated = body.truncated || observed_chars > max_chars;
+        let text = if observed_chars > max_chars {
             truncate_display(&extracted, max_chars)
         } else {
             extracted
@@ -1064,15 +1421,20 @@ impl ToolExecutor {
             "content_type": content_type,
             "text": text,
             "truncated": truncated,
-            "original_chars": original_chars
+            "body_truncated": body.truncated,
+            "downloaded_bytes": body.downloaded_bytes,
+            "observed_chars": observed_chars,
+            "original_chars": if body.truncated { Value::Null } else { json!(observed_chars) }
         });
         Ok(
-            ToolExecution::new("web_fetch", content, raw.clone(), decision).with_structured(
-                "web_fetch",
-                format!("fetched {} status {}", url, status),
-                raw,
-                truncated,
-            ),
+            ToolExecution::new("web_fetch", content, raw.clone(), decision)
+                .with_structured(
+                    "web_fetch",
+                    format!("fetched {} status {}", url, status),
+                    raw,
+                    truncated,
+                )
+                .with_success(success),
         )
     }
 
@@ -1095,7 +1457,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("open_terminal", &decision, false)?;
+        self.ensure_allowed("open_terminal", &decision, &json!({ "app": app }))?;
         #[cfg(target_os = "macos")]
         let output = run_command_blocking(&self.workspace, &command)?;
         #[cfg(not(target_os = "macos"))]
@@ -1106,10 +1468,12 @@ impl ToolExecutor {
             stderr: "open_terminal is only implemented for macOS".to_string(),
         };
         let content = output_text(&output);
+        let success = output.exit_code == Some(0);
         let raw = json!(output);
         Ok(
             ToolExecution::new("open_terminal", content.clone(), raw.clone(), decision)
-                .with_structured("command_output", first_line(&content), raw, false),
+                .with_structured("command_output", first_line(&content), raw, false)
+                .with_success(success),
         )
     }
 
@@ -1119,7 +1483,7 @@ impl ToolExecutor {
             &self.workspace.join(".deepcli/prompts"),
             false,
         )?;
-        self.ensure_allowed("prompt_list", &decision, false)?;
+        self.ensure_allowed("prompt_list", &decision, &json!({}))?;
         let store = PromptStore::new(&self.workspace);
         let prompts = store.list()?;
         let content = format_prompt_tool_list(&prompts);
@@ -1137,7 +1501,7 @@ impl ToolExecutor {
             &self.workspace.join(".deepcli/prompts"),
             false,
         )?;
-        self.ensure_allowed("prompt_get", &decision, false)?;
+        self.ensure_allowed("prompt_get", &decision, &args)?;
         let store = PromptStore::new(&self.workspace);
         let prompt = store.get(name)?;
         let raw = json!(prompt);
@@ -1162,7 +1526,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("prompt_render", &decision, false)?;
+        self.ensure_allowed("prompt_render", &decision, &args)?;
         let store = PromptStore::new(&self.workspace);
         let prompt = store.get(name)?;
         let context = self.prompt_render_context(&args).await?;
@@ -1185,7 +1549,7 @@ impl ToolExecutor {
     async fn skill_list(&self) -> Result<ToolExecution> {
         let decision =
             self.evaluate_filesystem("skill_list", &self.workspace.join(".deepcli/skills"), false)?;
-        self.ensure_allowed("skill_list", &decision, false)?;
+        self.ensure_allowed("skill_list", &decision, &json!({}))?;
         let store = SkillStore::new(&self.workspace);
         let skills = store.discover()?;
         let content = format_skill_tool_list(&skills);
@@ -1209,20 +1573,26 @@ impl ToolExecutor {
             .await?
             .trim()
             .to_string();
-        let diff_command =
-            "git diff -- . ':(exclude).deepcli/credentials/**' ':(exclude).env' ':(exclude).env.*'";
-        let diff = truncate_display(
-            command_stdout_or_empty(&self.workspace, diff_command)
-                .await?
-                .trim(),
-            max_diff_chars,
-        );
+        let diff = match self.safe_git_diff_paths(false).await {
+            Ok(diff_paths) => {
+                let diff_output = self.run_safe_git_diff(false, &diff_paths, false).await?;
+                truncate_display(
+                    if diff_output.exit_code == Some(0) {
+                        diff_output.stdout.trim()
+                    } else {
+                        ""
+                    },
+                    max_diff_chars,
+                )
+            }
+            Err(_) => String::new(),
+        };
 
         let (file, file_content) = if let Some(raw_file) = args.get("file").and_then(Value::as_str)
         {
-            let file_path = resolve_workspace_path(&self.workspace, raw_file)?;
+            let file_path = self.resolve_provider_path(raw_file)?;
             let file_decision = self.evaluate_filesystem("prompt_render", &file_path, false)?;
-            self.ensure_allowed("prompt_render", &file_decision, false)?;
+            self.ensure_allowed("prompt_render", &file_decision, args)?;
             let relative = file_path
                 .strip_prefix(&self.workspace)
                 .unwrap_or(&file_path)
@@ -1249,13 +1619,12 @@ impl ToolExecutor {
     async fn skill_generate(&self, args: Value) -> Result<ToolExecution> {
         let name = required_str(&args, "name")?;
         let description = required_str(&args, "description")?;
-        let approved = bool_arg(&args, "approved", false);
         let decision = self.evaluate_filesystem(
             "skill_generate",
             &self.workspace.join(".deepcli/skills").join(name),
             true,
         )?;
-        self.ensure_allowed("skill_generate", &decision, approved)?;
+        self.ensure_allowed("skill_generate", &decision, &args)?;
         let store = SkillStore::new(&self.workspace);
         let skill = store.generate(name, description)?;
         let content = skill.instruction_path.display().to_string();
@@ -1270,7 +1639,7 @@ impl ToolExecutor {
         let name = required_str(&args, "name")?;
         let decision =
             self.evaluate_filesystem("skill_run", &self.workspace.join(".deepcli/skills"), false)?;
-        self.ensure_allowed("skill_run", &decision, false)?;
+        self.ensure_allowed("skill_run", &decision, &args)?;
         let store = SkillStore::new(&self.workspace);
         let loaded = store.load(name)?;
         let content = loaded.instructions.clone();
@@ -1282,11 +1651,14 @@ impl ToolExecutor {
     }
 
     async fn spawn_subagent(&self, args: Value) -> Result<ToolExecution> {
-        let depth = args.get("depth").and_then(Value::as_u64).unwrap_or(1) as u8;
+        let depth = self
+            .current_subagent_depth
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("sub-agent depth exceeds the supported range"))?;
         let task = required_str(&args, "task")?;
         let write_scope = string_array_arg(&args, "write_scope");
         let read_scope = string_array_arg(&args, "read_scope");
-        let allowed_tools = string_array_arg(&args, "allowed_tools")
+        let mut allowed_tools = string_array_arg(&args, "allowed_tools")
             .into_iter()
             .map(|path| path.to_string_lossy().to_string())
             .collect::<Vec<_>>();
@@ -1297,6 +1669,20 @@ impl ToolExecutor {
             .filter(|value| !value.is_empty())
             .map(str::to_string);
         validate_allowed_subagent_tools(&allowed_tools)?;
+        if let Some(parent_allowed) = self
+            .subagent_capability
+            .as_ref()
+            .and_then(|capability| capability.allowed_tools.as_ref())
+        {
+            if allowed_tools.is_empty() {
+                allowed_tools = parent_allowed.iter().cloned().collect();
+            } else if let Some(tool) = allowed_tools
+                .iter()
+                .find(|tool| !parent_allowed.contains(*tool))
+            {
+                bail!("nested sub-agent cannot widen parent tool capability with `{tool}`");
+            }
+        }
         let decision = self.evaluate_declared_tool(
             "spawn_subagent",
             ToolPermissionContext {
@@ -1304,7 +1690,7 @@ impl ToolExecutor {
                 ..ToolPermissionContext::default()
             },
         )?;
-        self.ensure_allowed("spawn_subagent", &decision, false)?;
+        self.ensure_allowed("spawn_subagent", &decision, &args)?;
         if depth > self.max_subagent_depth {
             bail!(
                 "sub-agent depth {depth} exceeds configured maxSubagentDepth {}",
@@ -1362,6 +1748,7 @@ impl ToolExecutor {
         path: &Path,
         writes_files: bool,
     ) -> Result<PermissionDecision> {
+        self.ensure_subagent_path_allowed(path, writes_files)?;
         Ok(self.permissions.evaluate(&ToolRequest {
             tool: tool.to_string(),
             surface: ToolSurface::Filesystem,
@@ -1371,24 +1758,96 @@ impl ToolExecutor {
             writes_files,
             creates_process: false,
             requires_network: false,
-            explicit_approval: false,
         }))
+    }
+
+    fn ensure_subagent_tool_allowed(&self, tool: &str) -> Result<()> {
+        let Some(capability) = &self.subagent_capability else {
+            return Ok(());
+        };
+        if capability
+            .allowed_tools
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(tool))
+        {
+            bail!("sub-agent capability does not allow tool `{tool}`");
+        }
+        if capability.has_path_restrictions()
+            && !matches!(
+                tool,
+                "read_file"
+                    | "list_files"
+                    | "search"
+                    | "write_file"
+                    | "apply_patch_or_write"
+                    | "todo_write"
+                    | "ask_user_question"
+                    | "web_search"
+                    | "web_fetch"
+            )
+        {
+            bail!("sub-agent capability cannot safely enforce path scopes for tool `{tool}`");
+        }
+        Ok(())
+    }
+
+    fn ensure_subagent_path_allowed(&self, path: &Path, writes_files: bool) -> Result<()> {
+        let Some(capability) = &self.subagent_capability else {
+            return Ok(());
+        };
+        let scopes = if writes_files {
+            capability.write_scope.as_ref()
+        } else {
+            capability.read_scope.as_ref()
+        };
+        let Some(scopes) = scopes else {
+            return Ok(());
+        };
+        if scopes
+            .iter()
+            .any(|scope| path == scope || path.starts_with(scope))
+        {
+            return Ok(());
+        }
+        let access = if writes_files { "write" } else { "read" };
+        bail!(
+            "sub-agent {access} capability does not include path {}",
+            relative_path_string(&self.workspace, path)
+        )
     }
 
     fn ensure_allowed(
         &self,
         tool: &str,
         decision: &PermissionDecision,
-        approved: bool,
+        args: &Value,
     ) -> Result<()> {
+        if matches!(
+            decision.outcome,
+            DecisionOutcome::RequiresUserApproval | DecisionOutcome::DoubleConfirmRequired
+        ) {
+            let digest = invocation_digest(tool, args);
+            if let Some(session) = &self.session {
+                let confirmations_required =
+                    if decision.outcome == DecisionOutcome::DoubleConfirmRequired {
+                        2
+                    } else {
+                        1
+                    };
+                if session
+                    .consume_approval_grant(tool, &digest, decision, confirmations_required)?
+                    .is_some()
+                {
+                    return Ok(());
+                }
+            }
+        }
         match decision.outcome {
             DecisionOutcome::Allowed | DecisionOutcome::AutoApproved => Ok(()),
-            DecisionOutcome::RequiresUserApproval if approved => Ok(()),
             DecisionOutcome::RequiresUserApproval if self.can_assume_yes(tool, decision) => Ok(()),
-            DecisionOutcome::DoubleConfirmRequired if approved => Ok(()),
             DecisionOutcome::Denied => bail!("permission denied: {}", decision.reason),
             DecisionOutcome::RequiresUserApproval => {
-                let approval = self.enqueue_approval_request(tool, decision)?;
+                let approval = self.enqueue_approval_request(tool, args, decision)?;
                 bail!(
                     "operation requires approval: {} (approval {})",
                     decision.reason,
@@ -1396,7 +1855,7 @@ impl ToolExecutor {
                 )
             }
             DecisionOutcome::DoubleConfirmRequired => {
-                let approval = self.enqueue_approval_request(tool, decision)?;
+                let approval = self.enqueue_approval_request(tool, args, decision)?;
                 bail!(
                     "operation requires double confirmation: {} (approval {})",
                     decision.reason,
@@ -1409,42 +1868,66 @@ impl ToolExecutor {
     fn enqueue_approval_request(
         &self,
         tool: &str,
+        args: &Value,
         decision: &PermissionDecision,
     ) -> Result<crate::session::ApprovalRequest> {
+        let digest = invocation_digest(tool, args);
+        let summary = invocation_summary(tool, args);
+        let confirmations_required = if decision.outcome == DecisionOutcome::DoubleConfirmRequired {
+            2
+        } else {
+            1
+        };
         if let Some(session) = &self.session {
-            session.enqueue_approval_request(tool, decision.clone())
+            session.enqueue_bound_approval_request(
+                tool,
+                decision.clone(),
+                digest,
+                summary,
+                confirmations_required,
+            )
         } else {
             Ok(crate::session::ApprovalRequest {
                 id: uuid::Uuid::nil(),
                 tool: tool.to_string(),
                 decision: decision.clone(),
                 status: crate::session::ApprovalStatus::Pending,
+                invocation_digest: Some(digest),
+                input_summary: Some(summary),
+                confirmations_required,
+                confirmations_received: 0,
+                approved_at: None,
+                consumed_at: None,
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
             })
         }
     }
 
-    fn can_assume_yes(&self, tool: &str, decision: &PermissionDecision) -> bool {
+    fn can_assume_yes(&self, _tool: &str, _decision: &PermissionDecision) -> bool {
         self.assume_yes
-            && decision.risk == RiskLevel::High
-            && matches!(
-                tool,
-                "write_file" | "apply_patch_or_write" | "skill_generate" | "spawn_subagent"
-            )
     }
 
     fn resolve_required_path(&self, args: &Value) -> Result<PathBuf> {
         let raw = required_str(args, "path")?;
-        resolve_workspace_path(&self.workspace, raw)
+        self.resolve_provider_path(raw)
     }
 
     fn resolve_optional_path(&self, args: &Value) -> Result<Option<PathBuf>> {
         args.get("path")
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
-            .map(|raw| resolve_workspace_path(&self.workspace, raw))
+            .map(|raw| self.resolve_provider_path(raw))
             .transpose()
+    }
+
+    fn resolve_provider_path(&self, raw: &str) -> Result<PathBuf> {
+        let path = resolve_workspace_path(&self.workspace, raw)?;
+        let ignore = DeepIgnore::load(&self.workspace)?;
+        if ignore.is_ignored(&path) {
+            bail!("path is ignored by workspace policy: {}", path.display());
+        }
+        Ok(path)
     }
 }
 
@@ -1453,6 +1936,37 @@ fn required_str<'a>(args: &'a Value, key: &str) -> Result<&'a str> {
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| anyhow!("missing required string argument `{key}`"))
+}
+
+fn resolve_capability_scope(
+    workspace: &Path,
+    raw_scopes: &[PathBuf],
+) -> Result<Option<Vec<PathBuf>>> {
+    if raw_scopes.is_empty() {
+        return Ok(None);
+    }
+    let scopes = raw_scopes
+        .iter()
+        .map(|scope| {
+            let raw = scope.to_str().ok_or_else(|| {
+                anyhow!("sub-agent scope is not valid UTF-8: {}", scope.display())
+            })?;
+            resolve_workspace_path(workspace, raw)
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if scopes.iter().any(|scope| scope == workspace) {
+        Ok(None)
+    } else {
+        Ok(Some(scopes))
+    }
+}
+
+fn parse_git_oid(value: &str, label: &str) -> Result<String> {
+    let oid = value.trim();
+    if !matches!(oid.len(), 40 | 64) || !oid.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("git returned an invalid {label} object id");
+    }
+    Ok(oid.to_ascii_lowercase())
 }
 
 fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
@@ -1464,6 +1978,29 @@ fn bool_arg(args: &Value, key: &str, default: bool) -> bool {
         ),
         _ => default,
     }
+}
+
+fn bounded_timeout_seconds(args: &Value, maximum: u64) -> u64 {
+    args.get("timeout_seconds")
+        .and_then(Value::as_u64)
+        .filter(|value| *value > 0)
+        .map(|value| value.min(maximum))
+        .unwrap_or(maximum)
+}
+
+fn authorization_args_with_resolved_path(args: &Value, path: &Path) -> Value {
+    let mut authorization_args = args.clone();
+    if let Value::Object(arguments) = &mut authorization_args {
+        arguments.insert(
+            "path".to_string(),
+            Value::String(path.display().to_string()),
+        );
+        if let Some(content) = args.get("content").and_then(Value::as_str) {
+            arguments.insert("_content_bytes".to_string(), json!(content.len()));
+            arguments.insert("_content_lines".to_string(), json!(content.lines().count()));
+        }
+    }
+    authorization_args
 }
 
 fn optional_string_array(args: &Value, key: &str) -> Result<Vec<String>> {
@@ -1755,6 +2292,14 @@ fn subagent_next_actions(task: &SubagentTask) -> Vec<String> {
         SubagentStatus::Queued | SubagentStatus::Failed => {
             actions.push(format!("deepcli agent resume {id} --json"));
         }
+        SubagentStatus::AwaitingApproval => {
+            if let Some(session_id) = task.child_session_id {
+                actions.push(format!(
+                    "deepcli approval list --session {session_id} --json"
+                ));
+            }
+            actions.push(format!("deepcli agent resume {id} --json"));
+        }
         SubagentStatus::Running => {
             actions.push(format!("deepcli agent resume {id} --json"));
         }
@@ -1767,6 +2312,7 @@ fn subagent_status_text(status: &SubagentStatus) -> &'static str {
     match status {
         SubagentStatus::Queued => "queued",
         SubagentStatus::Running => "running",
+        SubagentStatus::AwaitingApproval => "awaiting_approval",
         SubagentStatus::Completed => "completed",
         SubagentStatus::Failed => "failed",
     }
@@ -1870,6 +2416,71 @@ mod tests {
     use super::*;
     use crate::config::{PermissionConfig, SandboxConfig};
     use tempfile::tempdir;
+
+    #[test]
+    fn provider_tool_schemas_do_not_expose_authorization_controls() {
+        let registry = ToolRegistry::mvp();
+        for spec in registry.tool_specs() {
+            let properties = spec.function.parameters["properties"]
+                .as_object()
+                .expect("tool properties");
+            for untrusted in ["approved", "writes_files", "requires_network"] {
+                assert!(
+                    !properties.contains_key(untrusted),
+                    "{} must not expose host-owned `{untrusted}`",
+                    spec.function.name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tool_validation_rejects_model_supplied_authorization_controls() {
+        let registry = ToolRegistry::mvp();
+        for (tool, args, field) in [
+            (
+                "write_file",
+                json!({"path": "note.txt", "content": "x", "approved": true}),
+                "approved",
+            ),
+            (
+                "run_shell",
+                json!({"command": "pwd", "writes_files": false}),
+                "writes_files",
+            ),
+            (
+                "run_shell",
+                json!({"command": "pwd", "requires_network": false}),
+                "requires_network",
+            ),
+        ] {
+            let error = registry
+                .tool(tool)
+                .expect("registered tool")
+                .validate_arguments(&args)
+                .expect_err("host-owned fields must be rejected");
+            assert!(error.to_string().contains(field));
+        }
+    }
+
+    #[test]
+    fn tool_prompt_content_uses_the_execution_outcome() {
+        let decision = PermissionDecision {
+            outcome: DecisionOutcome::Allowed,
+            risk: RiskLevel::Low,
+            reason: "test".to_string(),
+        };
+        let execution = ToolExecution::new(
+            "run_tests",
+            "tests failed",
+            json!({"passed": false}),
+            decision,
+        )
+        .with_success(false);
+
+        let prompt: Value = serde_json::from_str(&execution.prompt_content()).unwrap();
+        assert_eq!(prompt["ok"], false);
+    }
 
     #[test]
     fn discovers_common_test_commands() {
@@ -1983,12 +2594,13 @@ mod tests {
             dir.path(),
             PermissionConfig::default(),
             SandboxConfig::default(),
-        );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        )
+        .with_auto_reviewer(true);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
         executor
             .execute(
                 "write_file",
-                json!({"path": "src/lib.rs", "content": "pub fn ok() {}\n", "approved": true}),
+                json!({"path": "src/lib.rs", "content": "pub fn ok() {}\n"}),
             )
             .await
             .unwrap();
@@ -2018,13 +2630,12 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
         executor
             .execute(
                 "apply_patch_or_write",
                 json!({
-                    "patch": "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n",
-                    "approved": true
+                    "patch": "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n-old\n+new\n"
                 }),
             )
             .await
@@ -2032,6 +2643,230 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join("note.txt")).unwrap(),
             "new\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_patch_rejects_custom_ignored_target() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".deepignore"), "secret.txt\n").unwrap();
+        fs::write(dir.path().join("secret.txt"), "old\n").unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
+
+        let error = executor
+            .execute(
+                "apply_patch_or_write",
+                json!({
+                    "patch": "--- a/secret.txt\n+++ b/secret.txt\n@@ -1 +1 @@\n-old\n+new\n"
+                }),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("ignored by workspace policy"));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("secret.txt")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn git_diff_excludes_default_and_custom_ignored_files() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".deepignore"), "secret.txt\n").unwrap();
+        fs::write(dir.path().join("safe.txt"), "safe old\n").unwrap();
+        fs::write(dir.path().join(".env"), "TOKEN=old\n").unwrap();
+        fs::write(dir.path().join("secret.txt"), "secret old\n").unwrap();
+        let init = run_command_blocking(
+            dir.path(),
+            "git init -q && git add -f . && git -c user.name=test -c user.email=test@example.com commit -qm init",
+        )
+        .unwrap();
+        assert_eq!(init.exit_code, Some(0), "{}", init.stderr);
+        fs::write(dir.path().join("safe.txt"), "safe new\n").unwrap();
+        fs::write(dir.path().join(".env"), "TOKEN=new\n").unwrap();
+        fs::write(dir.path().join("secret.txt"), "secret new\n").unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+
+        let execution = executor.execute("git_diff", json!({})).await.unwrap();
+
+        assert!(execution.success);
+        assert!(execution.content.contains("safe new"));
+        assert!(!execution.content.contains("TOKEN="));
+        assert!(!execution.content.contains("secret new"));
+        assert!(!execution.content.contains(".env"));
+        assert!(!execution.content.contains("secret.txt"));
+    }
+
+    #[tokio::test]
+    async fn git_commit_approval_is_bound_to_the_staged_snapshot() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("safe.txt"), "old\n").unwrap();
+        let init = run_command_blocking(
+            dir.path(),
+            "git init -q && git add safe.txt && git -c user.name=test -c user.email=test@example.com commit -qm init",
+        )
+        .unwrap();
+        assert_eq!(init.exit_code, Some(0), "{}", init.stderr);
+        fs::write(dir.path().join("safe.txt"), "first\n").unwrap();
+        assert_eq!(
+            run_command_blocking(dir.path(), "git add safe.txt")
+                .unwrap()
+                .exit_code,
+            Some(0)
+        );
+        let session = crate::session::SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+        let args = json!({"message": "update safe file"});
+
+        executor
+            .execute("git_commit", args.clone())
+            .await
+            .unwrap_err();
+        let first = session.load_approval_requests().unwrap().remove(0);
+        session
+            .approve_approval_request(&first.id.to_string())
+            .unwrap();
+
+        fs::write(dir.path().join("safe.txt"), "second\n").unwrap();
+        assert_eq!(
+            run_command_blocking(dir.path(), "git add safe.txt")
+                .unwrap()
+                .exit_code,
+            Some(0)
+        );
+        let error = executor
+            .execute("git_commit", args)
+            .await
+            .expect_err("changed staged content must require a new approval");
+
+        assert!(error.to_string().contains("operation requires approval"));
+        let approvals = session.load_approval_requests().unwrap();
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(
+            approvals[0].status,
+            crate::session::ApprovalStatus::Approved
+        );
+        assert_eq!(approvals[1].status, crate::session::ApprovalStatus::Pending);
+        assert_ne!(
+            approvals[0].invocation_digest,
+            approvals[1].invocation_digest
+        );
+    }
+
+    #[tokio::test]
+    async fn git_commit_refuses_staged_paths_blocked_by_workspace_policy() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join(".deepignore"), "secret.txt\n").unwrap();
+        fs::write(dir.path().join("secret.txt"), "old\n").unwrap();
+        let init = run_command_blocking(
+            dir.path(),
+            "git init -q && git add -f secret.txt && git -c user.name=test -c user.email=test@example.com commit -qm init",
+        )
+        .unwrap();
+        assert_eq!(init.exit_code, Some(0), "{}", init.stderr);
+        fs::write(dir.path().join("secret.txt"), "new secret\n").unwrap();
+        assert_eq!(
+            run_command_blocking(dir.path(), "git add -f secret.txt")
+                .unwrap()
+                .exit_code,
+            Some(0)
+        );
+        let session = crate::session::SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+
+        let error = executor
+            .execute("git_commit", json!({"message": "must not commit secret"}))
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("blocked by workspace policy"));
+        assert!(session.load_approval_requests().unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_commit_uses_the_approved_tree_without_running_repository_hooks() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("safe.txt"), "old\n").unwrap();
+        let init = run_command_blocking(
+            dir.path(),
+            "git init -q && git config user.name test && git config user.email test@example.com && git add safe.txt && git commit -qm init",
+        )
+        .unwrap();
+        assert_eq!(init.exit_code, Some(0), "{}", init.stderr);
+        fs::write(dir.path().join("safe.txt"), "approved\n").unwrap();
+        assert_eq!(
+            run_command_blocking(dir.path(), "git add safe.txt")
+                .unwrap()
+                .exit_code,
+            Some(0)
+        );
+        let hook = dir.path().join(".git/hooks/pre-commit");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nprintf 'hook changed\\n' > safe.txt\ngit add safe.txt\n",
+        )
+        .unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+        let session = crate::session::SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+        let args = json!({"message": "approved tree"});
+
+        executor
+            .execute("git_commit", args.clone())
+            .await
+            .unwrap_err();
+        let approval = session.load_approval_requests().unwrap().remove(0);
+        assert!(approval
+            .input_summary
+            .as_deref()
+            .is_some_and(|summary| summary.contains("staged_files=1")));
+        session
+            .approve_approval_request(&approval.id.to_string())
+            .unwrap();
+        let execution = executor.execute("git_commit", args).await.unwrap();
+
+        assert!(execution.success, "{}", execution.content);
+        let committed = run_command_blocking(dir.path(), "git show HEAD:safe.txt").unwrap();
+        assert_eq!(committed.exit_code, Some(0), "{}", committed.stderr);
+        assert_eq!(committed.stdout, "approved\n");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("safe.txt")).unwrap(),
+            "approved\n"
         );
     }
 
@@ -2045,15 +2880,14 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
         let result = executor
             .execute(
                 "apply_patch_or_write",
                 json!({
                     "path": "src/lib.rs",
                     "old": "beta\n",
-                    "new": "delta\n",
-                    "approved": true
+                    "new": "delta\n"
                 }),
             )
             .await
@@ -2084,10 +2918,35 @@ mod tests {
 
     #[test]
     fn bool_arg_accepts_string_booleans() {
-        assert!(bool_arg(&json!({"approved": "true"}), "approved", false));
-        assert!(bool_arg(&json!({"approved": "yes"}), "approved", false));
-        assert!(!bool_arg(&json!({"approved": "false"}), "approved", true));
-        assert!(bool_arg(&json!({}), "approved", true));
+        assert!(bool_arg(
+            &json!({"install_missing": "true"}),
+            "install_missing",
+            false
+        ));
+        assert!(bool_arg(
+            &json!({"install_missing": "yes"}),
+            "install_missing",
+            false
+        ));
+        assert!(!bool_arg(
+            &json!({"install_missing": "false"}),
+            "install_missing",
+            true
+        ));
+        assert!(bool_arg(&json!({}), "install_missing", true));
+    }
+
+    #[test]
+    fn provider_timeout_can_shorten_but_not_extend_the_host_limit() {
+        assert_eq!(bounded_timeout_seconds(&json!({}), 120), 120);
+        assert_eq!(
+            bounded_timeout_seconds(&json!({"timeout_seconds": 5}), 120),
+            5
+        );
+        assert_eq!(
+            bounded_timeout_seconds(&json!({"timeout_seconds": 999}), 120),
+            120
+        );
     }
 
     #[tokio::test]
@@ -2102,15 +2961,14 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
 
         let error = executor
             .execute(
                 "apply_patch_or_write",
                 json!({
                     "path": "src/lib.rs",
-                    "content": "// placeholder",
-                    "approved": true
+                    "content": "// placeholder"
                 }),
             )
             .await
@@ -2132,15 +2990,14 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
 
         let error = executor
             .execute(
                 "apply_patch_or_write",
                 json!({
                     "path": "src/lib.rs",
-                    "content": "pub fn replacement() {}\n".repeat(100),
-                    "approved": true
+                    "content": "pub fn replacement() {}\n".repeat(100)
                 }),
             )
             .await
@@ -2162,15 +3019,14 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
 
         let error = executor
             .execute(
                 "write_file",
                 json!({
                     "path": "src/lib.rs",
-                    "content": "pub fn changed() {}\n".repeat(700),
-                    "approved": true
+                    "content": "pub fn changed() {}\n".repeat(700)
                 }),
             )
             .await
@@ -2183,6 +3039,7 @@ mod tests {
     #[tokio::test]
     async fn run_tests_records_test_result_in_session() {
         let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Makefile"), "test:\n\t@printf ok\n").unwrap();
         let store = crate::session::SessionStore::new(dir.path());
         let session = store
             .create(
@@ -2195,14 +3052,55 @@ mod tests {
             dir.path(),
             PermissionConfig::default(),
             SandboxConfig::default(),
-        );
+        )
+        .with_auto_reviewer(true);
         let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
         let execution = executor
-            .execute("run_tests", json!({"command": "printf ok"}))
+            .execute("run_tests", json!({"command": "make test"}))
             .await
             .unwrap();
         assert!(execution.raw["passed"].as_bool().unwrap());
         assert_eq!(session.activity_summary().unwrap().test_run_count, 1);
+    }
+
+    #[tokio::test]
+    async fn default_test_approval_is_bound_to_the_resolved_command() {
+        let dir = tempdir().unwrap();
+        fs::write(dir.path().join("Makefile"), "test:\n\t@printf ok\n").unwrap();
+        let session = crate::session::SessionStore::new(dir.path())
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+
+        executor.execute("run_tests", json!({})).await.unwrap_err();
+        let first = session.load_approval_requests().unwrap().remove(0);
+        assert_eq!(first.input_summary.as_deref(), Some("command=make test"));
+        session
+            .approve_approval_request(&first.id.to_string())
+            .unwrap();
+
+        fs::write(dir.path().join("Cargo.toml"), "[package]\nname='x'\n").unwrap();
+        executor.execute("run_tests", json!({})).await.unwrap_err();
+        let approvals = session.load_approval_requests().unwrap();
+        assert_eq!(approvals.len(), 2);
+        assert_eq!(
+            approvals[0].status,
+            crate::session::ApprovalStatus::Approved
+        );
+        assert_eq!(approvals[1].status, crate::session::ApprovalStatus::Pending);
+        assert_eq!(
+            approvals[1].input_summary.as_deref(),
+            Some("command=cargo test")
+        );
     }
 
     #[tokio::test]
@@ -2234,6 +3132,46 @@ mod tests {
         assert_eq!(approvals.len(), 1);
         assert_eq!(approvals[0].tool, "write_file");
         assert_eq!(approvals[0].status, crate::session::ApprovalStatus::Pending);
+    }
+
+    #[tokio::test]
+    async fn bound_approval_authorizes_one_exact_tool_invocation() {
+        let dir = tempdir().unwrap();
+        let session = crate::session::SessionStore::new(dir.path())
+            .create(
+                dir.path(),
+                "deepseek".to_string(),
+                Some("model".to_string()),
+            )
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, Some(session.clone()), 2);
+        let args = json!({"path": "note.txt", "content": "approved once\n"});
+
+        executor
+            .execute("write_file", args.clone())
+            .await
+            .unwrap_err();
+        let approval = session.load_approval_requests().unwrap().remove(0);
+        session
+            .approve_approval_request(&approval.id.to_string())
+            .unwrap();
+
+        executor.execute("write_file", args.clone()).await.unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("note.txt")).unwrap(),
+            "approved once\n"
+        );
+
+        let replay = executor
+            .execute("write_file", args)
+            .await
+            .expect_err("the consumed approval must not authorize a replay");
+        assert!(replay.to_string().contains("operation requires approval"));
     }
 
     #[tokio::test]
@@ -2299,13 +3237,12 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
         let execution = executor
             .execute(
                 "spawn_subagent",
                 json!({
                     "task": "inspect parser",
-                    "depth": 1,
                     "write_scope": ["src/parser.rs"]
                 }),
             )
@@ -2355,13 +3292,12 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
         let execution = executor
             .execute(
                 "spawn_subagent",
                 json!({
                     "task": "inspect runtime",
-                    "depth": 1,
                     "read_scope": ["src/runtime.rs"],
                     "write_scope": ["src/tools.rs"],
                     "allowed_tools": ["read_file", "search"],
@@ -2382,6 +3318,196 @@ mod tests {
             execution.raw["background_start"]["pid"].is_u64()
                 || execution.raw["background_start"]["pid"].is_null()
         );
+    }
+
+    #[tokio::test]
+    async fn spawn_subagent_rejects_model_controlled_depth() {
+        let dir = tempdir().unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
+
+        let error = executor
+            .execute(
+                "spawn_subagent",
+                json!({"task": "inspect runtime", "depth": 257}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unsupported argument `depth`"));
+    }
+
+    #[tokio::test]
+    async fn subagent_capability_enforces_allowed_tools_and_canonical_path_scopes() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        fs::write(dir.path().join("src/allowed.txt"), "allowed\n").unwrap();
+        fs::write(dir.path().join("outside.txt"), "outside\n").unwrap();
+        let task = AgentStore::new(dir.path())
+            .create_subagent_task_with_options(crate::agents::SubagentTaskOptions {
+                parent_session_id: None,
+                task: "edit one file".to_string(),
+                depth: 1,
+                read_scope: vec![PathBuf::from("src/allowed.txt")],
+                write_scope: vec![PathBuf::from("src/output.txt")],
+                allowed_tools: vec!["read_file".to_string(), "write_file".to_string()],
+                context: None,
+            })
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let mut executor =
+            ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
+        executor.restrict_to_subagent(&task).unwrap();
+
+        assert!(executor
+            .execute("read_file", json!({"path": "src/allowed.txt"}))
+            .await
+            .is_ok());
+        let outside_read = executor
+            .execute("read_file", json!({"path": "outside.txt"}))
+            .await
+            .unwrap_err();
+        assert!(outside_read
+            .to_string()
+            .contains("read capability does not include path"));
+        let disallowed_tool = executor
+            .execute("list_files", json!({"path": "src"}))
+            .await
+            .unwrap_err();
+        assert!(disallowed_tool
+            .to_string()
+            .contains("does not allow tool `list_files`"));
+        executor
+            .execute(
+                "write_file",
+                json!({"path": "src/output.txt", "content": "written\n"}),
+            )
+            .await
+            .unwrap();
+        let outside_write = executor
+            .execute(
+                "write_file",
+                json!({"path": "src/other.txt", "content": "blocked\n"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(outside_write
+            .to_string()
+            .contains("write capability does not include path"));
+        assert!(!dir.path().join("src/other.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn scoped_subagent_rejects_tools_without_enforceable_path_boundaries() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("src")).unwrap();
+        let task = AgentStore::new(dir.path())
+            .create_subagent_task_with_options(crate::agents::SubagentTaskOptions {
+                parent_session_id: None,
+                task: "inspect src".to_string(),
+                depth: 1,
+                read_scope: vec![PathBuf::from("src")],
+                write_scope: Vec::new(),
+                allowed_tools: vec!["run_shell".to_string()],
+                context: None,
+            })
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let mut executor =
+            ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
+        executor.restrict_to_subagent(&task).unwrap();
+
+        let error = executor
+            .execute("run_shell", json!({"command": "cat outside.txt"}))
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("cannot safely enforce path scopes for tool `run_shell`"));
+    }
+
+    #[tokio::test]
+    async fn nested_subagent_depth_is_computed_by_the_host() {
+        let dir = tempdir().unwrap();
+        let task = AgentStore::new(dir.path())
+            .create_subagent_task_with_options(crate::agents::SubagentTaskOptions {
+                parent_session_id: None,
+                task: "parent".to_string(),
+                depth: 2,
+                read_scope: Vec::new(),
+                write_scope: Vec::new(),
+                allowed_tools: vec!["spawn_subagent".to_string()],
+                context: None,
+            })
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let mut executor =
+            ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
+        executor.restrict_to_subagent(&task).unwrap();
+
+        let error = executor
+            .execute("spawn_subagent", json!({"task": "must be depth three"}))
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("exceeds configured maxSubagentDepth 2"));
+        assert!(AgentStore::new(dir.path()).list().unwrap().len() == 1);
+    }
+
+    #[tokio::test]
+    async fn nested_subagent_cannot_widen_parent_tool_capability() {
+        let dir = tempdir().unwrap();
+        let task = AgentStore::new(dir.path())
+            .create_subagent_task_with_options(crate::agents::SubagentTaskOptions {
+                parent_session_id: None,
+                task: "delegator".to_string(),
+                depth: 1,
+                read_scope: Vec::new(),
+                write_scope: Vec::new(),
+                allowed_tools: vec!["spawn_subagent".to_string()],
+                context: None,
+            })
+            .unwrap();
+        let permissions = PermissionEngine::new(
+            dir.path(),
+            PermissionConfig::default(),
+            SandboxConfig::default(),
+        );
+        let mut executor =
+            ToolExecutor::new(dir.path(), permissions, None, 3).with_assume_yes(true);
+        executor.restrict_to_subagent(&task).unwrap();
+
+        let error = executor
+            .execute(
+                "spawn_subagent",
+                json!({"task": "escape", "allowed_tools": ["read_file"]}),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("cannot widen parent tool capability"));
+        assert!(AgentStore::new(dir.path()).list().unwrap().len() == 1);
     }
 
     #[tokio::test]
@@ -2684,7 +3810,7 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         );
-        let executor = ToolExecutor::new(dir.path(), permissions, None, 2);
+        let executor = ToolExecutor::new(dir.path(), permissions, None, 2).with_assume_yes(true);
 
         let empty = executor.execute("skill_list", json!({})).await.unwrap();
         assert!(empty.content.contains("no project skills registered"));
@@ -2694,8 +3820,7 @@ mod tests {
                 "skill_generate",
                 json!({
                     "name": "compiler",
-                    "description": "SysY compiler workflow",
-                    "approved": true
+                    "description": "SysY compiler workflow"
                 }),
             )
             .await

@@ -6,9 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -252,9 +252,16 @@ pub struct SideQuestion {
 pub enum ApprovalStatus {
     Pending,
     Approved,
+    Consumed,
     Denied,
     Cleared,
 }
+
+fn default_approval_confirmations_required() -> u8 {
+    1
+}
+
+const APPROVAL_GRANT_TTL_SECONDS: i64 = 600;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ApprovalRequest {
@@ -262,6 +269,18 @@ pub struct ApprovalRequest {
     pub tool: String,
     pub decision: PermissionDecision,
     pub status: ApprovalStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invocation_digest: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_summary: Option<String>,
+    #[serde(default = "default_approval_confirmations_required")]
+    pub confirmations_required: u8,
+    #[serde(default)]
+    pub confirmations_received: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub approved_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consumed_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -275,6 +294,16 @@ pub struct SessionStore {
 pub struct Session {
     pub metadata: SessionMetadata,
     path: PathBuf,
+}
+
+struct ApprovalFileLock {
+    path: PathBuf,
+}
+
+impl Drop for ApprovalFileLock {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
 }
 
 impl SessionStore {
@@ -746,16 +775,71 @@ impl Session {
         tool: impl Into<String>,
         decision: PermissionDecision,
     ) -> Result<ApprovalRequest> {
+        let _lock = self.acquire_approval_lock()?;
         let now = Utc::now();
         let request = ApprovalRequest {
             id: Uuid::new_v4(),
             tool: tool.into(),
             decision,
             status: ApprovalStatus::Pending,
+            invocation_digest: None,
+            input_summary: None,
+            confirmations_required: 1,
+            confirmations_received: 0,
+            approved_at: None,
+            consumed_at: None,
             created_at: now,
             updated_at: now,
         };
         let mut items = self.load_approval_requests()?;
+        items.push(request.clone());
+        self.save_approval_requests(&items)?;
+        self.append_audit_event("approval_requested", serde_json::to_value(&request)?)?;
+        Ok(request)
+    }
+
+    pub fn enqueue_bound_approval_request(
+        &self,
+        tool: impl Into<String>,
+        decision: PermissionDecision,
+        invocation_digest: impl Into<String>,
+        input_summary: impl Into<String>,
+        confirmations_required: u8,
+    ) -> Result<ApprovalRequest> {
+        let _lock = self.acquire_approval_lock()?;
+        let tool = tool.into();
+        let invocation_digest = invocation_digest.into();
+        if invocation_digest.trim().is_empty() {
+            anyhow::bail!("approval invocation digest cannot be empty");
+        }
+
+        let mut items = self.load_approval_requests()?;
+        if let Some(existing) = items.iter().find(|item| {
+            item.tool == tool
+                && item.invocation_digest.as_deref() == Some(invocation_digest.as_str())
+                && matches!(
+                    &item.status,
+                    ApprovalStatus::Pending | ApprovalStatus::Approved
+                )
+        }) {
+            return Ok(existing.clone());
+        }
+
+        let now = Utc::now();
+        let request = ApprovalRequest {
+            id: Uuid::new_v4(),
+            tool,
+            decision,
+            status: ApprovalStatus::Pending,
+            invocation_digest: Some(invocation_digest),
+            input_summary: Some(redact_sensitive_text(&input_summary.into())),
+            confirmations_required: confirmations_required.max(1),
+            confirmations_received: 0,
+            approved_at: None,
+            consumed_at: None,
+            created_at: now,
+            updated_at: now,
+        };
         items.push(request.clone());
         self.save_approval_requests(&items)?;
         self.append_audit_event("approval_requested", serde_json::to_value(&request)?)?;
@@ -773,6 +857,13 @@ impl Session {
         id: &str,
         status: ApprovalStatus,
     ) -> Result<ApprovalRequest> {
+        let _lock = self.acquire_approval_lock()?;
+        if !matches!(status, ApprovalStatus::Denied | ApprovalStatus::Cleared) {
+            anyhow::bail!(
+                "approval status {:?} must be reached through the dedicated approval state machine",
+                status
+            );
+        }
         let mut items = self.load_approval_requests()?;
         let index = resolve_approval_request_index(&items, id)?;
         items[index].status = status;
@@ -783,7 +874,108 @@ impl Session {
         Ok(updated)
     }
 
+    pub fn approve_approval_request(&self, id: &str) -> Result<ApprovalRequest> {
+        let _lock = self.acquire_approval_lock()?;
+        let mut items = self.load_approval_requests()?;
+        let index = resolve_approval_request_index(&items, id)?;
+        if items[index]
+            .invocation_digest
+            .as_deref()
+            .is_none_or(|digest| digest.trim().is_empty())
+        {
+            anyhow::bail!(
+                "approval request `{id}` is not bound to an invocation; retry the tool call"
+            );
+        }
+        if items[index].status != ApprovalStatus::Pending {
+            anyhow::bail!(
+                "approval request `{id}` is not pending (status: {:?})",
+                items[index].status
+            );
+        }
+
+        let now = Utc::now();
+        let required = items[index].confirmations_required.max(1);
+        items[index].confirmations_required = required;
+        if required > 1 && items[index].confirmations_received > 0 {
+            let age = now
+                .signed_duration_since(items[index].updated_at)
+                .num_seconds();
+            if !(0..=APPROVAL_GRANT_TTL_SECONDS).contains(&age) {
+                items[index].confirmations_received = 0;
+                items[index].approved_at = None;
+            }
+        }
+        items[index].confirmations_received = items[index]
+            .confirmations_received
+            .saturating_add(1)
+            .min(required);
+        if items[index].confirmations_received >= required {
+            items[index].status = ApprovalStatus::Approved;
+            items[index].approved_at = Some(now);
+        }
+        items[index].updated_at = now;
+        let updated = items[index].clone();
+        self.save_approval_requests(&items)?;
+        self.append_audit_event("approval_updated", serde_json::to_value(&updated)?)?;
+        Ok(updated)
+    }
+
+    pub fn consume_approval_grant(
+        &self,
+        tool: &str,
+        invocation_digest: &str,
+        current_decision: &PermissionDecision,
+        confirmations_required: u8,
+    ) -> Result<Option<ApprovalRequest>> {
+        let _lock = self.acquire_approval_lock()?;
+        if invocation_digest.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let mut items = self.load_approval_requests()?;
+        let Some(index) = items.iter().position(|item| {
+            item.status == ApprovalStatus::Approved
+                && item.tool == tool
+                && item.invocation_digest.as_deref() == Some(invocation_digest)
+        }) else {
+            return Ok(None);
+        };
+
+        let now = Utc::now();
+        let required = items[index]
+            .confirmations_required
+            .max(confirmations_required)
+            .max(1);
+        let fresh = items[index].approved_at.is_some_and(|approved_at| {
+            let age = now.signed_duration_since(approved_at).num_seconds();
+            (0..=APPROVAL_GRANT_TTL_SECONDS).contains(&age)
+        });
+        let policy_compatible = items[index].decision.risk >= current_decision.risk
+            && items[index].confirmations_received >= required;
+        if !fresh || !policy_compatible {
+            items[index].status = ApprovalStatus::Pending;
+            items[index].decision = current_decision.clone();
+            items[index].confirmations_required = required;
+            items[index].confirmations_received = 0;
+            items[index].approved_at = None;
+            items[index].updated_at = now;
+            let renewed = items[index].clone();
+            self.save_approval_requests(&items)?;
+            self.append_audit_event("approval_renewed", serde_json::to_value(&renewed)?)?;
+            return Ok(None);
+        }
+        items[index].status = ApprovalStatus::Consumed;
+        items[index].consumed_at = Some(now);
+        items[index].updated_at = now;
+        let consumed = items[index].clone();
+        self.save_approval_requests(&items)?;
+        self.append_audit_event("approval_updated", serde_json::to_value(&consumed)?)?;
+        Ok(Some(consumed))
+    }
+
     pub fn clear_pending_approval_requests(&self) -> Result<usize> {
+        let _lock = self.acquire_approval_lock()?;
         let mut items = self.load_approval_requests()?;
         let now = Utc::now();
         let mut changed = 0;
@@ -981,8 +1173,66 @@ impl Session {
     fn write_json<T: Serialize>(&self, name: &str, value: &T) -> Result<()> {
         self.ensure_dirs()?;
         let path = self.path.join(name);
-        fs::write(&path, serde_json::to_vec_pretty(value)?)
-            .with_context(|| format!("failed to write {}", path.display()))
+        let temporary = self.path.join(format!(
+            ".{name}.{}.{}.tmp",
+            std::process::id(),
+            Uuid::new_v4()
+        ));
+        let result = (|| -> Result<()> {
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&temporary)
+                .with_context(|| format!("failed to create {}", temporary.display()))?;
+            file.write_all(&serde_json::to_vec_pretty(value)?)?;
+            file.sync_all()?;
+            #[cfg(windows)]
+            if path.exists() {
+                fs::remove_file(&path)?;
+            }
+            fs::rename(&temporary, &path)
+                .with_context(|| format!("failed to replace {}", path.display()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    fn acquire_approval_lock(&self) -> Result<ApprovalFileLock> {
+        self.ensure_dirs()?;
+        let path = self.path.join("approvals.lock");
+        for _ in 0..200 {
+            match OpenOptions::new().create_new(true).write(true).open(&path) {
+                Ok(mut file) => {
+                    let lock = ApprovalFileLock { path: path.clone() };
+                    writeln!(file, "pid={} created_at={}", std::process::id(), Utc::now())?;
+                    file.sync_all()?;
+                    return Ok(lock);
+                }
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                    let stale = fs::metadata(&path)
+                        .and_then(|metadata| metadata.modified())
+                        .ok()
+                        .and_then(|modified| modified.elapsed().ok())
+                        .is_some_and(|age| age >= Duration::from_secs(30));
+                    if stale {
+                        let _ = fs::remove_file(&path);
+                        continue;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(error)
+                        .with_context(|| format!("failed to lock {}", path.display()));
+                }
+            }
+        }
+        anyhow::bail!(
+            "timed out waiting for approval ledger lock {}",
+            path.display()
+        )
     }
 
     fn read_json_if_exists<T: DeserializeOwned>(&self, name: &str) -> Result<Option<T>> {
@@ -1572,7 +1822,7 @@ mod tests {
     }
 
     #[test]
-    fn stores_approval_requests_with_status_updates() {
+    fn stores_approval_requests_with_terminal_status_updates() {
         let dir = tempdir().unwrap();
         let store = SessionStore::new(dir.path());
         let session = store
@@ -1589,15 +1839,387 @@ mod tests {
             )
             .unwrap();
 
-        let approved = session
-            .update_approval_request(&request.id.to_string()[..8], ApprovalStatus::Approved)
+        let denied = session
+            .update_approval_request(&request.id.to_string()[..8], ApprovalStatus::Denied)
             .unwrap();
-        assert_eq!(approved.status, ApprovalStatus::Approved);
+        assert_eq!(denied.status, ApprovalStatus::Denied);
+        assert!(session
+            .update_approval_request(&request.id.to_string()[..8], ApprovalStatus::Approved)
+            .is_err());
         assert_eq!(session.load_approval_requests().unwrap().len(), 1);
         assert_eq!(
             session.activity_summary().unwrap().approval_request_count,
             1
         );
+    }
+
+    #[test]
+    fn loads_legacy_approval_requests_with_safe_defaults() {
+        let now = Utc::now();
+        let request: ApprovalRequest = serde_json::from_value(serde_json::json!({
+            "id": Uuid::new_v4(),
+            "tool": "write_file",
+            "decision": {
+                "outcome": "requires_user_approval",
+                "risk": "high",
+                "reason": "write requires approval"
+            },
+            "status": "pending",
+            "created_at": now,
+            "updated_at": now
+        }))
+        .unwrap();
+
+        assert_eq!(request.invocation_digest, None);
+        assert_eq!(request.input_summary, None);
+        assert_eq!(request.confirmations_required, 1);
+        assert_eq!(request.confirmations_received, 0);
+        assert_eq!(request.approved_at, None);
+        assert_eq!(request.consumed_at, None);
+    }
+
+    #[test]
+    fn deduplicates_pending_and_approved_bound_approval_requests() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let decision = PermissionDecision {
+            outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+            risk: crate::permissions::RiskLevel::High,
+            reason: "write requires approval".to_string(),
+        };
+
+        let first = session
+            .enqueue_bound_approval_request(
+                "write_file",
+                decision.clone(),
+                "digest-write-a",
+                "path=src/lib.rs",
+                1,
+            )
+            .unwrap();
+        let duplicate_pending = session
+            .enqueue_bound_approval_request(
+                "write_file",
+                decision.clone(),
+                "digest-write-a",
+                "path=src/lib.rs",
+                1,
+            )
+            .unwrap();
+        assert_eq!(duplicate_pending.id, first.id);
+        assert_eq!(session.load_approval_requests().unwrap().len(), 1);
+
+        session
+            .approve_approval_request(&first.id.to_string()[..8])
+            .unwrap();
+        let duplicate_approved = session
+            .enqueue_bound_approval_request(
+                "write_file",
+                decision.clone(),
+                "digest-write-a",
+                "path=src/lib.rs",
+                1,
+            )
+            .unwrap();
+        assert_eq!(duplicate_approved.id, first.id);
+        assert_eq!(duplicate_approved.status, ApprovalStatus::Approved);
+
+        session
+            .consume_approval_grant("write_file", "digest-write-a", &decision, 1)
+            .unwrap()
+            .unwrap();
+        let after_consumption = session
+            .enqueue_bound_approval_request(
+                "write_file",
+                decision,
+                "digest-write-a",
+                "path=src/lib.rs",
+                1,
+            )
+            .unwrap();
+        assert_ne!(after_consumption.id, first.id);
+        assert_eq!(session.load_approval_requests().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn approval_grants_require_an_exact_match_and_are_consumed_once() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let decision = PermissionDecision {
+            outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+            risk: crate::permissions::RiskLevel::High,
+            reason: "shell requires approval".to_string(),
+        };
+        let request = session
+            .enqueue_bound_approval_request(
+                "run_shell",
+                decision.clone(),
+                "digest-shell-a",
+                "command=cargo test",
+                1,
+            )
+            .unwrap();
+        session
+            .approve_approval_request(&request.id.to_string()[..8])
+            .unwrap();
+
+        assert!(session
+            .consume_approval_grant("write_file", "digest-shell-a", &decision, 1)
+            .unwrap()
+            .is_none());
+        assert!(session
+            .consume_approval_grant("run_shell", "digest-shell-b", &decision, 1)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            session.load_approval_requests().unwrap()[0].status,
+            ApprovalStatus::Approved
+        );
+
+        let consumed = session
+            .consume_approval_grant("run_shell", "digest-shell-a", &decision, 1)
+            .unwrap()
+            .unwrap();
+        assert_eq!(consumed.status, ApprovalStatus::Consumed);
+        assert!(consumed.consumed_at.is_some());
+        assert!(session
+            .consume_approval_grant("run_shell", "digest-shell-a", &decision, 1)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            session.load_approval_requests().unwrap()[0].status,
+            ApprovalStatus::Consumed
+        );
+    }
+
+    #[test]
+    fn concurrent_consumers_cannot_reuse_one_approval_grant() {
+        let dir = tempdir().unwrap();
+        let session = SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let decision = PermissionDecision {
+            outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+            risk: crate::permissions::RiskLevel::High,
+            reason: "write requires approval".to_string(),
+        };
+        let request = session
+            .enqueue_bound_approval_request(
+                "write_file",
+                decision.clone(),
+                "digest-concurrent-write",
+                "path=src/lib.rs",
+                1,
+            )
+            .unwrap();
+        session
+            .approve_approval_request(&request.id.to_string())
+            .unwrap();
+
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+        let handles = (0..2)
+            .map(|_| {
+                let session = session.clone();
+                let barrier = barrier.clone();
+                let decision = decision.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    session
+                        .consume_approval_grant(
+                            "write_file",
+                            "digest-concurrent-write",
+                            &decision,
+                            1,
+                        )
+                        .unwrap()
+                        .is_some()
+                })
+            })
+            .collect::<Vec<_>>();
+        barrier.wait();
+        let consumed = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .filter(|consumed| *consumed)
+            .count();
+
+        assert_eq!(consumed, 1);
+        assert_eq!(
+            session.load_approval_requests().unwrap()[0].status,
+            ApprovalStatus::Consumed
+        );
+    }
+
+    #[test]
+    fn approval_grant_is_renewed_when_risk_escalates_or_it_expires() {
+        let dir = tempdir().unwrap();
+        let session = SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let high = PermissionDecision {
+            outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+            risk: crate::permissions::RiskLevel::High,
+            reason: "high risk".to_string(),
+        };
+        let request = session
+            .enqueue_bound_approval_request(
+                "run_shell",
+                high,
+                "digest-policy-change",
+                "command=destructive",
+                1,
+            )
+            .unwrap();
+        session
+            .approve_approval_request(&request.id.to_string())
+            .unwrap();
+        let double = PermissionDecision {
+            outcome: crate::permissions::DecisionOutcome::DoubleConfirmRequired,
+            risk: crate::permissions::RiskLevel::DoubleConfirm,
+            reason: "risk escalated".to_string(),
+        };
+
+        assert!(session
+            .consume_approval_grant("run_shell", "digest-policy-change", &double, 2)
+            .unwrap()
+            .is_none());
+        let renewed = session.load_approval_requests().unwrap().remove(0);
+        assert_eq!(renewed.status, ApprovalStatus::Pending);
+        assert_eq!(renewed.confirmations_required, 2);
+        assert_eq!(renewed.confirmations_received, 0);
+        assert_eq!(
+            renewed.decision.risk,
+            crate::permissions::RiskLevel::DoubleConfirm
+        );
+
+        session
+            .approve_approval_request(&renewed.id.to_string())
+            .unwrap();
+        session
+            .approve_approval_request(&renewed.id.to_string())
+            .unwrap();
+        let mut approvals = session.load_approval_requests().unwrap();
+        approvals[0].approved_at =
+            Some(Utc::now() - chrono::Duration::seconds(APPROVAL_GRANT_TTL_SECONDS + 1));
+        session.save_approval_requests(&approvals).unwrap();
+
+        assert!(session
+            .consume_approval_grant("run_shell", "digest-policy-change", &double, 2)
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            session.load_approval_requests().unwrap()[0].status,
+            ApprovalStatus::Pending
+        );
+    }
+
+    #[test]
+    fn rejects_approval_of_legacy_unbound_requests() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let request = session
+            .enqueue_approval_request(
+                "write_file",
+                PermissionDecision {
+                    outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
+                    risk: crate::permissions::RiskLevel::High,
+                    reason: "write requires approval".to_string(),
+                },
+            )
+            .unwrap();
+
+        let error = session
+            .approve_approval_request(&request.id.to_string()[..8])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("not bound to an invocation"));
+        assert_eq!(
+            session.load_approval_requests().unwrap()[0].status,
+            ApprovalStatus::Pending
+        );
+    }
+
+    #[test]
+    fn double_confirmation_keeps_the_request_pending_until_the_second_approval() {
+        let dir = tempdir().unwrap();
+        let store = SessionStore::new(dir.path());
+        let session = store
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let request = session
+            .enqueue_bound_approval_request(
+                "run_shell",
+                PermissionDecision {
+                    outcome: crate::permissions::DecisionOutcome::DoubleConfirmRequired,
+                    risk: crate::permissions::RiskLevel::DoubleConfirm,
+                    reason: "destructive command requires double confirmation".to_string(),
+                },
+                "digest-destructive-a",
+                "command=git reset [arguments redacted]",
+                2,
+            )
+            .unwrap();
+
+        let first = session
+            .approve_approval_request(&request.id.to_string()[..8])
+            .unwrap();
+        assert_eq!(first.status, ApprovalStatus::Pending);
+        assert_eq!(first.confirmations_received, 1);
+        assert_eq!(first.confirmations_required, 2);
+        assert_eq!(first.approved_at, None);
+
+        let second = session
+            .approve_approval_request(&request.id.to_string()[..8])
+            .unwrap();
+        assert_eq!(second.status, ApprovalStatus::Approved);
+        assert_eq!(second.confirmations_received, 2);
+        assert!(second.approved_at.is_some());
+    }
+
+    #[test]
+    fn double_confirmation_expires_an_old_first_confirmation() {
+        let dir = tempdir().unwrap();
+        let session = SessionStore::new(dir.path())
+            .create(dir.path(), "deepseek".to_string(), None)
+            .unwrap();
+        let request = session
+            .enqueue_bound_approval_request(
+                "run_shell",
+                PermissionDecision {
+                    outcome: crate::permissions::DecisionOutcome::DoubleConfirmRequired,
+                    risk: crate::permissions::RiskLevel::DoubleConfirm,
+                    reason: "destructive command requires double confirmation".to_string(),
+                },
+                "digest-destructive-expiring",
+                "command=git reset [arguments redacted]",
+                2,
+            )
+            .unwrap();
+        let first = session
+            .approve_approval_request(&request.id.to_string())
+            .unwrap();
+        assert_eq!(first.confirmations_received, 1);
+
+        let mut approvals = session.load_approval_requests().unwrap();
+        approvals[0].updated_at =
+            Utc::now() - chrono::Duration::seconds(APPROVAL_GRANT_TTL_SECONDS + 1);
+        session.save_approval_requests(&approvals).unwrap();
+
+        let renewed_first = session
+            .approve_approval_request(&request.id.to_string())
+            .unwrap();
+        assert_eq!(renewed_first.status, ApprovalStatus::Pending);
+        assert_eq!(renewed_first.confirmations_received, 1);
+        assert_eq!(renewed_first.approved_at, None);
     }
 
     #[test]

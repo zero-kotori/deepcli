@@ -30,7 +30,7 @@
 | /apikey | legacy | commands | stable alias | 凭证设置别名。替代：`/credentials set`。 |
 | /logout | support | commands | stable alias | 凭证移除快捷方式。 |
 | /credentials | core | commands | stable | Provider 凭证管理。 |
-| /config | core | commands | stable | 有效配置检查与编辑。 |
+| /config | core | commands | stable | 有效配置检查与编辑；默认、全局和项目 JSON 对象递归合并后再应用环境变量。 |
 | /timeout | support | commands | stable | Provider-turn 超时快捷方式。 |
 | /model | core | commands | stable | Provider/model 检查与切换。 |
 | /goal | core | session | stable | 长期目标契约、生命周期控制与 gate。 |
@@ -42,16 +42,16 @@
 | /gate | core | commands | stable alias | 基于 `/verify` 的严格验证 gate。 |
 | /verify | core | commands | stable | 验收报告与阻断项汇总。 |
 | /handoff | core | commands | stable | 交接与可提 PR 的报告。 |
-| /test | core | tools | stable | 经工具层做测试发现与执行。 |
+| /test | core | tools | stable | 经工具层发现并执行工作区测试；执行命令必须匹配发现结果或受限扩展。 |
 | /compiler | legacy | tools | stable | 编译环境的 check/plan/setup/install/test（目标优先）。替代：`/doctor compiler` 用于诊断，setup 仍走受控环境流程。 |
 | /install | legacy | tools | stable | 准备本地 docker 或 compiler 环境。替代：`/doctor compiler` 先诊断，再按报告执行环境 setup。 |
-| /git | core | tools | stable | Git 检查与受控写操作。 |
+| /git | core | tools | stable | Git 检查与受控写操作；commit 精确绑定已批准的暂存 tree，并以 HEAD compare-and-swap 更新，不运行仓库 hooks。 |
 | /web | support | tools | stable | 经权限检查的 web 搜索。 |
 | /prompt | support | commands | stable | 本地 prompt 库。 |
 | /skill | support | commands | stable | 本地 skill 库。 |
-| /agent | support | commands | stable | 子 agent 任务、运行、恢复与日志观察。 |
+| /agent | support | commands | stable | 子 agent 任务、运行、恢复与日志观察；resume 强制 allowed-tools、canonical read/write scope 和宿主深度。 |
 | /btw | core | session | stable | 旁路问题队列。 |
-| /approval | core | session | stable | 审批队列检查与处理。 |
+| /approval | core | session | stable | 检查和处理按精确调用 digest 绑定、单次消费的审批；高危调用需要两次确认。 |
 | /session | core | session | stable | 持久化会话检查与维护。 |
 | /cleanup | legacy | session | stable alias | `/session prune-empty` 的别名。替代：`/session prune-empty`。 |
 | /resume | core | session | stable | 会话恢复与候选预览。 |

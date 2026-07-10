@@ -80,11 +80,17 @@ for sequence in \
   $'\033[?1002h' \
   $'\033[?1003h' \
   $'\033[?1006h' \
-  $'\033[?2004h' \
   $'\033[>1u' \
   $'\033[>4;2m'; do
   if grep -Fq "$sequence" "$capture"; then
     echo "native-terminal-smoke: found removed terminal control sequence" >&2
+    exit 1
+  fi
+done
+
+for sequence in $'\033[?2004h' $'\033[?2004l'; do
+  if ! grep -Fq "$sequence" "$capture"; then
+    echo "native-terminal-smoke: missing bracketed paste lifecycle sequence" >&2
     exit 1
   fi
 done

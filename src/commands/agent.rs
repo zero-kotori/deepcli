@@ -134,7 +134,7 @@ async fn handle_agent_inner(
                 bail!("/agent spawn requires a task");
             }
             Ok(executor
-                .execute("spawn_subagent", json!({"task": task, "depth": 1}))
+                .execute("spawn_subagent", json!({"task": task}))
                 .await?
                 .content)
         }
@@ -252,7 +252,7 @@ async fn resume_subagent_command(
             workspace: workspace.to_path_buf(),
             provider: provider_override.map(str::to_string),
             model: None,
-            assume_yes: true,
+            assume_yes: false,
             resume_session,
             stream_output: false,
         },
@@ -271,6 +271,18 @@ async fn resume_subagent_command(
             );
         }
     };
+    if let Err(error) = runtime.restrict_to_subagent(&task) {
+        let failed = store.fail_subagent(task.id, &error.to_string())?;
+        return format_agent_resume_output(
+            workspace,
+            store,
+            &failed,
+            action,
+            options,
+            None,
+            Some(&error.to_string()),
+        );
+    }
     let child_session_id = uuid::Uuid::parse_str(&runtime.session_id())
         .with_context(|| "child runtime returned an invalid session id")?;
     let pid = Some(std::process::id());
@@ -281,11 +293,15 @@ async fn resume_subagent_command(
     match result {
         Ok(output) => {
             append_subagent_output(store, task.id, &output)?;
-            let completed = store.complete_subagent(task.id, first_line_for_summary(&output))?;
+            let terminal_task = if runtime.state_label() == "AwaitingApproval" {
+                store.await_subagent_approval(task.id, first_line_for_summary(&output))?
+            } else {
+                store.complete_subagent(task.id, first_line_for_summary(&output))?
+            };
             format_agent_resume_output(
                 workspace,
                 store,
-                &completed,
+                &terminal_task,
                 action,
                 options,
                 Some(&output),
@@ -335,10 +351,7 @@ fn subagent_runtime_prompt(task: &SubagentTask) -> String {
         ));
     }
     if !task.allowed_tools.is_empty() {
-        lines.push(format!(
-            "Allowed tool hints: {}",
-            task.allowed_tools.join(", ")
-        ));
+        lines.push(format!("Allowed tools: {}", task.allowed_tools.join(", ")));
     }
     if let Some(context) = task.context.as_deref() {
         lines.push(format!("Context: {context}"));
@@ -563,6 +576,7 @@ fn subagent_status_label(status: &SubagentStatus) -> &'static str {
     match status {
         SubagentStatus::Queued => "queued",
         SubagentStatus::Running => "running",
+        SubagentStatus::AwaitingApproval => "awaiting_approval",
         SubagentStatus::Completed => "completed",
         SubagentStatus::Failed => "failed",
     }
@@ -585,6 +599,14 @@ fn agent_next_actions(task: Option<&SubagentTask>, empty: bool) -> Vec<String> {
                 actions.push(format!("deepcli agent resume {}", short_id(&task.id)))
             }
             SubagentStatus::Running | SubagentStatus::Failed => {
+                actions.push(format!("deepcli agent resume {}", short_id(&task.id)));
+            }
+            SubagentStatus::AwaitingApproval => {
+                if let Some(session_id) = task.child_session_id {
+                    actions.push(format!(
+                        "deepcli approval list --session {session_id} --json"
+                    ));
+                }
                 actions.push(format!("deepcli agent resume {}", short_id(&task.id)));
             }
             SubagentStatus::Completed => {}

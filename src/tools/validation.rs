@@ -48,25 +48,18 @@ fn allowed_arguments(name: &str) -> BTreeSet<&'static str> {
             "max_file_bytes",
         ]
         .into(),
-        "write_file" => ["path", "content", "approved"].into(),
-        "apply_patch_or_write" => ["path", "content", "patch", "old", "new", "approved"].into(),
-        "run_shell" => [
-            "command",
-            "approved",
-            "writes_files",
-            "requires_network",
-            "timeout_seconds",
-        ]
-        .into(),
+        "write_file" => ["path", "content"].into(),
+        "apply_patch_or_write" => ["path", "content", "patch", "old", "new"].into(),
+        "run_shell" => ["command", "timeout_seconds"].into(),
         "git_status" | "git_branch" | "discover_tests" | "prompt_list" | "skill_list"
         | "open_terminal" => BTreeSet::new(),
         "git_diff" => ["staged"].into(),
-        "git_create_branch" => ["name", "approved"].into(),
+        "git_create_branch" => ["name"].into(),
         "git_commit_message" => BTreeSet::new(),
-        "git_commit" => ["message", "approved"].into(),
+        "git_commit" => ["message"].into(),
         "run_tests" => ["command"].into(),
         "check_environment" => ["target"].into(),
-        "setup_environment" => ["target", "approved", "install_missing", "smoke_test"].into(),
+        "setup_environment" => ["target", "install_missing", "smoke_test"].into(),
         "todo_write" => ["title", "todos"].into(),
         "ask_user_question" => ["question", "context", "options"].into(),
         "web_search" => ["query"].into(),
@@ -80,11 +73,10 @@ fn allowed_arguments(name: &str) -> BTreeSet<&'static str> {
             "max_file_chars",
         ]
         .into(),
-        "skill_generate" => ["name", "description", "approved"].into(),
+        "skill_generate" => ["name", "description"].into(),
         "skill_run" => ["name"].into(),
         "spawn_subagent" => [
             "task",
-            "depth",
             "write_scope",
             "read_scope",
             "allowed_tools",
@@ -158,7 +150,6 @@ fn validate_argument_types(name: &str, args: &Value) -> Result<()> {
         "apply_patch_or_write" => validate_edit_mode(args)?,
         "spawn_subagent" => {
             expect_string(args, "task")?;
-            expect_optional_positive_integer(args, "depth")?;
             expect_optional_string_array(args, "write_scope")?;
             expect_optional_string_array(args, "read_scope")?;
             expect_optional_string_array(args, "allowed_tools")?;

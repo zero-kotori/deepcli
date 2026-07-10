@@ -77,11 +77,10 @@ pub(crate) async fn handle_env(
             };
             let options = parse_env_options(&args[1..], "docker", false, true, command_name)?;
             let output = executor
-                .execute(
+                .execute_user_action(
                     "setup_environment",
                     json!({
                         "target": options.target,
-                        "approved": true,
                         "install_missing": true,
                         "smoke_test": options.smoke_test
                     }),
@@ -116,7 +115,7 @@ pub(crate) async fn handle_env(
                         anyhow::anyhow!("no compiler Docker autotest command discovered")
                     })?;
                 let output = executor
-                    .execute("run_tests", json!({ "command": command.command }))
+                    .execute_user_action("run_tests", json!({ "command": command.command }))
                     .await?;
                 let text = output.content.clone();
                 let output = if options.json_output {
@@ -135,11 +134,10 @@ pub(crate) async fn handle_env(
                 Ok(output)
             } else {
                 let output = executor
-                    .execute(
+                    .execute_user_action(
                         "setup_environment",
                         json!({
                             "target": options.target,
-                            "approved": true,
                             "install_missing": false,
                             "smoke_test": true
                         }),

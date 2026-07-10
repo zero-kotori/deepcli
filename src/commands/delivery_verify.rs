@@ -620,7 +620,7 @@ async fn run_verification_tests(
         .as_ref()
         .map(|command| json!({ "command": command }))
         .unwrap_or_else(|| json!({}));
-    match executor.execute("run_tests", args).await {
+    match executor.execute_user_action("run_tests", args).await {
         Ok(output) => verification_test_run_from_output(&output.raw),
         Err(error) => VerificationTestRun::Error(error.to_string()),
     }

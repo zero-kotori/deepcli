@@ -24,8 +24,17 @@ pub(crate) fn status_u128_value(value: u128) -> Value {
 }
 
 pub(crate) fn workspace_relative_display(workspace: &Path, path: &Path) -> String {
-    path.strip_prefix(workspace)
+    let relative = path
+        .strip_prefix(workspace)
         .ok()
+        .map(Path::to_path_buf)
+        .or_else(|| {
+            workspace
+                .canonicalize()
+                .ok()
+                .and_then(|workspace| path.strip_prefix(workspace).ok().map(Path::to_path_buf))
+        });
+    relative
         .filter(|relative| !relative.as_os_str().is_empty())
         .map(|relative| relative.display().to_string())
         .unwrap_or_else(|| path.display().to_string())

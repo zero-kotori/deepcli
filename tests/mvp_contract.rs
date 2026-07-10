@@ -481,7 +481,6 @@ fn tool_declarations_build_permission_requests() {
         command: Some("git commit -m checkpoint".to_string()),
         path: Some(workspace.clone()),
         creates_process: true,
-        explicit_approval: true,
         ..ToolPermissionContext::default()
     });
     assert_eq!(git_request.tool, "git_commit");
@@ -489,7 +488,6 @@ fn tool_declarations_build_permission_requests() {
     assert!(git_request.writes_files);
     assert!(!git_request.requires_network);
     assert!(git_request.creates_process);
-    assert!(git_request.explicit_approval);
 
     let shell = registry
         .declaration("run_shell")
@@ -513,7 +511,6 @@ fn tool_declarations_build_permission_requests() {
         command: Some("deepcli environment setup compiler".to_string()),
         path: Some(Path::new(env!("CARGO_MANIFEST_DIR")).to_path_buf()),
         creates_process: true,
-        explicit_approval: true,
         ..ToolPermissionContext::default()
     });
     assert_eq!(setup_request.surface, ToolSurface::Docker);

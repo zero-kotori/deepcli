@@ -72,7 +72,7 @@
   },
   "agent": {
     "requirePlanForComplexTasks": true,
-    "autoReviewer": true,
+    "autoReviewer": false,
     "maxSubagentDepth": 2,
     "providerTurnTimeoutSeconds": 600
   },

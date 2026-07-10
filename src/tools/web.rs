@@ -1,4 +1,177 @@
+use anyhow::{bail, Context, Result};
+use reqwest::{redirect::Policy, Client, Response, Url};
 use serde_json::Value;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::time::Duration;
+
+const MAX_WEB_REDIRECTS: usize = 5;
+pub(super) const DEFAULT_WEB_FETCH_CHARS: usize = 20_000;
+pub(super) const MAX_WEB_FETCH_CHARS: usize = 200_000;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct BoundedResponseBody {
+    pub text: String,
+    pub truncated: bool,
+    pub downloaded_bytes: usize,
+}
+
+pub(super) async fn safe_web_get(
+    initial_url: Url,
+    timeout: Duration,
+    user_agent: &str,
+) -> Result<(Url, Response)> {
+    let mut url = initial_url;
+    for redirect_count in 0..=MAX_WEB_REDIRECTS {
+        let client = safe_web_client(&url, timeout, user_agent).await?;
+        let response = client.get(url.clone()).send().await?;
+        if !response.status().is_redirection() {
+            return Ok((url, response));
+        }
+        if redirect_count == MAX_WEB_REDIRECTS {
+            bail!("web_fetch exceeded {MAX_WEB_REDIRECTS} redirects");
+        }
+        let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+            return Ok((url, response));
+        };
+        let location = location
+            .to_str()
+            .context("web_fetch redirect location is not valid text")?;
+        url = url
+            .join(location)
+            .with_context(|| format!("invalid web_fetch redirect target `{location}`"))?;
+    }
+    unreachable!("bounded redirect loop always returns or errors")
+}
+
+pub(super) async fn read_bounded_response_body(
+    mut response: Response,
+    max_chars: usize,
+) -> Result<BoundedResponseBody> {
+    let max_chars = max_chars.clamp(1, MAX_WEB_FETCH_CHARS);
+    let max_bytes = max_chars.saturating_mul(4);
+    let mut body = Vec::with_capacity(max_bytes.min(64 * 1024));
+    let mut truncated = response
+        .content_length()
+        .is_some_and(|length| length > max_bytes as u64);
+
+    while body.len() < max_bytes {
+        let Some(chunk) = response.chunk().await? else {
+            break;
+        };
+        let remaining = max_bytes - body.len();
+        if chunk.len() > remaining {
+            body.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
+            break;
+        }
+        body.extend_from_slice(&chunk);
+        if body.len() == max_bytes {
+            truncated = true;
+            break;
+        }
+    }
+
+    let downloaded_bytes = body.len();
+    Ok(BoundedResponseBody {
+        text: String::from_utf8_lossy(&body).into_owned(),
+        truncated,
+        downloaded_bytes,
+    })
+}
+
+pub(super) fn bounded_web_fetch_chars(value: Option<u64>) -> usize {
+    value
+        .unwrap_or(DEFAULT_WEB_FETCH_CHARS as u64)
+        .clamp(1, MAX_WEB_FETCH_CHARS as u64) as usize
+}
+
+async fn safe_web_client(url: &Url, timeout: Duration, user_agent: &str) -> Result<Client> {
+    validate_web_url(url)?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| anyhow::anyhow!("web_fetch URL must include a host"))?;
+    let port = url
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("web_fetch URL must include a supported port"))?;
+    let mut builder = Client::builder()
+        .timeout(timeout)
+        .user_agent(user_agent)
+        .redirect(Policy::none())
+        .no_proxy();
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        ensure_public_web_ip(ip)?;
+    } else {
+        let addresses = tokio::net::lookup_host((host, port))
+            .await
+            .with_context(|| format!("failed to resolve web_fetch host `{host}`"))?
+            .collect::<Vec<SocketAddr>>();
+        if addresses.is_empty() {
+            bail!("web_fetch host `{host}` did not resolve to an address");
+        }
+        for address in &addresses {
+            ensure_public_web_ip(address.ip())?;
+        }
+        builder = builder.resolve_to_addrs(host, &addresses);
+    }
+    builder.build().context("failed to build safe web client")
+}
+
+fn validate_web_url(url: &Url) -> Result<()> {
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("web_fetch only supports http or https URLs");
+    }
+    if !url.username().is_empty() || url.password().is_some() {
+        bail!("web_fetch URLs cannot contain embedded credentials");
+    }
+    if let Some(host) = url.host_str() {
+        if let Ok(ip) = host.parse::<IpAddr>() {
+            ensure_public_web_ip(ip)?;
+        }
+    }
+    Ok(())
+}
+
+fn ensure_public_web_ip(ip: IpAddr) -> Result<()> {
+    let blocked = match ip {
+        IpAddr::V4(ip) => is_blocked_ipv4(ip),
+        IpAddr::V6(ip) => is_blocked_ipv6(ip),
+    };
+    if blocked {
+        bail!("web_fetch refused a non-public network address");
+    }
+    Ok(())
+}
+
+fn is_blocked_ipv4(ip: Ipv4Addr) -> bool {
+    let [a, b, _, _] = ip.octets();
+    ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_unspecified()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+        || a == 0
+        || (a == 100 && (64..=127).contains(&b))
+        || (a == 198 && matches!(b, 18 | 19))
+        || a >= 240
+}
+
+fn is_blocked_ipv6(ip: Ipv6Addr) -> bool {
+    if let Some(mapped) = ip.to_ipv4_mapped() {
+        return is_blocked_ipv4(mapped);
+    }
+    let first = ip.segments()[0];
+    let ipv4_compatible = ip.segments()[..6].iter().all(|segment| *segment == 0);
+    ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || (first & 0xfe00) == 0xfc00
+        || (first & 0xffc0) == 0xfe80
+        || (first & 0xffc0) == 0xfec0
+        || ipv4_compatible
+        || (ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8)
+}
 
 pub(super) fn format_web_fetch_text(body: &str, content_type: &str) -> String {
     if content_type.to_ascii_lowercase().contains("html") || body.contains("<html") {
@@ -176,6 +349,8 @@ fn collect_web_related_topic_values(
 mod tests {
     use super::*;
     use serde_json::json;
+    use tokio::io::AsyncWriteExt;
+    use tokio::net::TcpListener;
 
     #[test]
     fn formats_web_search_result_with_related_topic_fallback() {
@@ -220,5 +395,75 @@ mod tests {
         assert!(output.contains("A & B"));
         assert!(!output.contains("alert"));
         assert!(!output.contains(".x"));
+    }
+
+    #[test]
+    fn web_fetch_network_policy_rejects_local_and_private_addresses() {
+        for address in [
+            "127.0.0.1",
+            "10.0.0.1",
+            "100.64.0.1",
+            "169.254.169.254",
+            "192.168.1.1",
+            "0.0.0.0",
+            "::1",
+            "fc00::1",
+            "fe80::1",
+            "::ffff:127.0.0.1",
+        ] {
+            let ip = address.parse::<IpAddr>().unwrap();
+            assert!(ensure_public_web_ip(ip).is_err(), "{address}");
+        }
+        for address in ["1.1.1.1", "8.8.8.8", "2606:4700:4700::1111"] {
+            let ip = address.parse::<IpAddr>().unwrap();
+            assert!(ensure_public_web_ip(ip).is_ok(), "{address}");
+        }
+    }
+
+    #[test]
+    fn web_fetch_network_policy_rejects_embedded_credentials_and_private_redirects() {
+        let credentials = Url::parse("https://user:pass@example.com/").unwrap();
+        assert!(validate_web_url(&credentials).is_err());
+
+        let public = Url::parse("https://example.com/start").unwrap();
+        let redirected = public
+            .join("http://169.254.169.254/latest/meta-data")
+            .unwrap();
+        assert!(validate_web_url(&redirected).is_err());
+    }
+
+    #[test]
+    fn web_fetch_character_limit_is_host_bounded() {
+        assert_eq!(bounded_web_fetch_chars(None), DEFAULT_WEB_FETCH_CHARS);
+        assert_eq!(bounded_web_fetch_chars(Some(0)), 1);
+        assert_eq!(bounded_web_fetch_chars(Some(u64::MAX)), MAX_WEB_FETCH_CHARS);
+    }
+
+    #[tokio::test]
+    async fn response_body_reader_stops_at_the_host_byte_limit() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let body = "x".repeat(1024);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes()).await;
+        });
+        let response = Client::new()
+            .get(format!("http://{address}/large"))
+            .send()
+            .await
+            .unwrap();
+
+        let body = read_bounded_response_body(response, 10).await.unwrap();
+
+        assert!(body.truncated);
+        assert_eq!(body.downloaded_bytes, 40);
+        assert_eq!(body.text.len(), 40);
+        server.await.unwrap();
     }
 }

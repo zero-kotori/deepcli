@@ -67,11 +67,17 @@ pub(crate) fn handle_approval(
                 approval_id,
                 options.current_only,
             )?;
-            let item = session.update_approval_request(approval_id, ApprovalStatus::Approved)?;
+            let item = session.approve_approval_request(approval_id)?;
+            let outcome = if item.status == ApprovalStatus::Approved {
+                "approved request"
+            } else {
+                "recorded confirmation for request"
+            };
             let report = format!(
-                "approved request {} in session {}",
+                "{outcome} {} in session {} {}",
                 short_id(&item.id),
-                session.id()
+                session.id(),
+                approval_request_metadata_text(&item)
             );
             let output = if options.json_output {
                 format_approval_action_json(workspace, &session, "approve", &item, &report)?
@@ -97,9 +103,10 @@ pub(crate) fn handle_approval(
             )?;
             let item = session.update_approval_request(approval_id, ApprovalStatus::Denied)?;
             let report = format!(
-                "denied request {} in session {}",
+                "denied request {} in session {} {}",
                 short_id(&item.id),
-                session.id()
+                session.id(),
+                approval_request_metadata_text(&item)
             );
             let output = if options.json_output {
                 format_approval_action_json(workspace, &session, "deny", &item, &report)?
@@ -148,10 +155,10 @@ pub(super) fn format_approval_requests(items: &[ApprovalRequest], include_all: b
         .filter(|item| include_all || item.status == ApprovalStatus::Pending)
         .map(|item| {
             format!(
-                "{} [{}] tool={} risk={:?} outcome={:?} reason={}",
+                "{} [{}] {} risk={:?} outcome={:?} reason={}",
                 short_id(&item.id),
                 approval_status_label(&item.status),
-                item.tool,
+                approval_request_metadata_text(item),
                 item.decision.risk,
                 item.decision.outcome,
                 redact_sensitive_text(&item.decision.reason)
@@ -163,6 +170,35 @@ pub(super) fn format_approval_requests(items: &[ApprovalRequest], include_all: b
     } else {
         rows.join("\n")
     }
+}
+
+fn approval_request_metadata_text(item: &ApprovalRequest) -> String {
+    let digest = item.invocation_digest.as_deref().unwrap_or("unbound");
+    let summary = item
+        .input_summary
+        .as_deref()
+        .map(redact_sensitive_text)
+        .unwrap_or_else(|| "-".to_string());
+    let approved_at = item
+        .approved_at
+        .as_ref()
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+    let consumed_at = item
+        .consumed_at
+        .as_ref()
+        .map(|value| value.to_rfc3339())
+        .unwrap_or_else(|| "-".to_string());
+    format!(
+        "tool={} digest={} summary={} confirmations={}/{} approved_at={} consumed_at={}",
+        item.tool,
+        digest,
+        summary,
+        item.confirmations_received,
+        item.confirmations_required,
+        approved_at,
+        consumed_at
+    )
 }
 
 fn format_approval_list_json(
@@ -280,11 +316,18 @@ fn format_approval_clear_json(
 }
 
 fn approval_request_json(item: &ApprovalRequest) -> Value {
+    let input_summary = item.input_summary.as_deref().map(redact_sensitive_text);
     json!({
         "id": item.id.to_string(),
         "shortId": short_id(&item.id),
         "status": &item.status,
         "tool": item.tool.as_str(),
+        "invocationDigest": &item.invocation_digest,
+        "inputSummary": input_summary,
+        "confirmationsRequired": item.confirmations_required,
+        "confirmationsReceived": item.confirmations_received,
+        "approvedAt": &item.approved_at,
+        "consumedAt": &item.consumed_at,
         "decision": {
             "risk": &item.decision.risk,
             "outcome": &item.decision.outcome,
@@ -299,6 +342,7 @@ fn approval_status_label(status: &ApprovalStatus) -> &'static str {
     match status {
         ApprovalStatus::Pending => "pending",
         ApprovalStatus::Approved => "approved",
+        ApprovalStatus::Consumed => "consumed",
         ApprovalStatus::Denied => "denied",
         ApprovalStatus::Cleared => "cleared",
     }

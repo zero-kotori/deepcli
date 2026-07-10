@@ -1,3 +1,4 @@
+use crate::agents::SubagentTask;
 use crate::commands::{
     format_session_list, handle_config, handle_credentials_with_default, handle_model_read_command,
     handle_timeout, list_resumable_sessions, parse_model_set_args, run_cmd_shell,
@@ -83,6 +84,7 @@ pub struct AgentRuntime {
     progress_tx: Option<Sender<RuntimeProgress>>,
     planning_mode_active: bool,
     planning_initial_side_question_count: usize,
+    subagent_read_scope: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -539,6 +541,9 @@ pub enum RuntimeProgress {
         ok: bool,
         summary: String,
     },
+    ToolBatchCompleted {
+        tool_calls: usize,
+    },
 }
 
 impl RuntimeProgress {
@@ -573,6 +578,9 @@ impl RuntimeProgress {
             RuntimeProgress::ToolCompleted { tool, ok, .. } => {
                 let status = if *ok { "completed" } else { "failed" };
                 format!("deepcli: tool {tool} {status}")
+            }
+            RuntimeProgress::ToolBatchCompleted { tool_calls } => {
+                format!("deepcli: tool batch completed (tool_calls={tool_calls})")
             }
         }
     }
@@ -719,7 +727,8 @@ impl AgentRuntime {
             &workspace,
             config.permissions.clone(),
             config.sandbox.clone(),
-        );
+        )
+        .with_auto_reviewer(config.agent.auto_reviewer);
         let executor = ToolExecutor::new(
             &workspace,
             permissions,
@@ -738,11 +747,27 @@ impl AgentRuntime {
             progress_tx: None,
             planning_mode_active: false,
             planning_initial_side_question_count: 0,
+            subagent_read_scope: None,
         })
     }
 
     pub fn session_id(&self) -> String {
         self.session.id().to_string()
+    }
+
+    pub(crate) fn restrict_to_subagent(&mut self, task: &SubagentTask) -> Result<()> {
+        self.executor.restrict_to_subagent(task)?;
+        self.registry.restrict_to_names(&task.allowed_tools)?;
+        self.subagent_read_scope = self.executor.subagent_read_scope().map(<[PathBuf]>::to_vec);
+        Ok(())
+    }
+
+    fn collect_workspace_context(&self) -> Result<crate::workspace::WorkspaceContext> {
+        let context = WorkspaceManager::new(&self.workspace)?.collect_context()?;
+        Ok(match self.subagent_read_scope.as_deref() {
+            Some(scopes) => restrict_workspace_context(context, scopes),
+            None => context,
+        })
     }
 
     pub fn session_title(&self) -> Option<&str> {
@@ -973,14 +998,20 @@ impl AgentRuntime {
     }
 
     pub fn update_current_approval(&mut self, id: &str, approved: bool) -> Result<String> {
-        let status = if approved {
-            ApprovalStatus::Approved
+        let item = if approved {
+            self.session.approve_approval_request(id)?
         } else {
-            ApprovalStatus::Denied
+            self.session
+                .update_approval_request(id, ApprovalStatus::Denied)?
         };
-        let item = self.session.update_approval_request(id, status)?;
         self.executor.set_session(Some(self.session.clone()));
-        let action = if approved { "approved" } else { "denied" };
+        let action = if approved && item.status == ApprovalStatus::Approved {
+            "approved"
+        } else if approved {
+            "recorded confirmation for"
+        } else {
+            "denied"
+        };
         Ok(format!(
             "{action} approval request {} for tool {}",
             item.id, item.tool
@@ -1212,8 +1243,10 @@ impl AgentRuntime {
     }
 
     pub async fn run_agent_task(&mut self, task: &str) -> Result<String> {
-        self.run_agent_task_inner(task, task, AgentRunMode::Normal)
-            .await
+        let result = self
+            .run_agent_task_inner(task, task, AgentRunMode::Normal)
+            .await;
+        self.finalize_agent_run_result(result)
     }
 
     async fn run_planning_task(&mut self, requirement: &str) -> Result<String> {
@@ -1224,7 +1257,7 @@ impl AgentRuntime {
             .run_agent_task_inner(requirement, &task, AgentRunMode::Planning)
             .await;
         self.planning_mode_active = false;
-        result
+        self.finalize_agent_run_result(result)
     }
 
     pub async fn continue_planning_after_side_question_answer(&mut self) -> Result<String> {
@@ -1244,46 +1277,55 @@ impl AgentRuntime {
             .run_agent_loop(&requirement, messages, AgentRunMode::Planning)
             .await;
         self.planning_mode_active = false;
+        self.finalize_agent_run_result(result)
+    }
+
+    fn finalize_agent_run_result<T>(&mut self, result: Result<T>) -> Result<T> {
+        if let Err(error) = &result {
+            let _ = self
+                .session
+                .append_audit_event("agent_run_failed", json!({ "error": error.to_string() }));
+            let _ = self.session.set_state(SessionState::Failed);
+        }
         result
     }
 
     fn planning_continuation_messages(&self) -> Result<Vec<ProviderMessage>> {
-        let mut messages = if let Some(messages) =
-            self.session.load_pending_plan_provider_messages()?
-        {
-            messages
-        } else {
-            let requirement = self
-                .session
-                .metadata
-                .title
-                .clone()
-                .unwrap_or_else(|| "Continue active /plan".to_string());
-            let session_context = self.build_session_context()?;
-            let workspace_context = WorkspaceManager::new(&self.workspace)?.collect_context()?;
-            vec![
-                ProviderMessage {
-                    role: "system".to_string(),
-                    content: Some(system_prompt(
-                        &workspace_context,
-                        &self.config,
-                        session_context.as_deref(),
-                    )),
-                    reasoning_content: None,
-                    name: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                },
-                ProviderMessage {
-                    role: "user".to_string(),
-                    content: Some(build_model_plan_continuation_prompt(&requirement)),
-                    reasoning_content: None,
-                    name: None,
-                    tool_call_id: None,
-                    tool_calls: None,
-                },
-            ]
-        };
+        let mut messages =
+            if let Some(messages) = self.session.load_pending_plan_provider_messages()? {
+                messages
+            } else {
+                let requirement = self
+                    .session
+                    .metadata
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Continue active /plan".to_string());
+                let session_context = self.build_session_context()?;
+                let workspace_context = self.collect_workspace_context()?;
+                vec![
+                    ProviderMessage {
+                        role: "system".to_string(),
+                        content: Some(system_prompt(
+                            &workspace_context,
+                            &self.config,
+                            session_context.as_deref(),
+                        )),
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    },
+                    ProviderMessage {
+                        role: "user".to_string(),
+                        content: Some(build_model_plan_continuation_prompt(&requirement)),
+                        reasoning_content: None,
+                        name: None,
+                        tool_call_id: None,
+                        tool_calls: None,
+                    },
+                ]
+            };
         messages.push(ProviderMessage {
             role: "user".to_string(),
             content: Some(self.planning_answer_context_prompt()?),
@@ -1335,7 +1377,7 @@ impl AgentRuntime {
         self.session.set_state(SessionState::ContextLoading)?;
         self.session.append_message("user", provider_task)?;
 
-        let workspace_context = WorkspaceManager::new(&self.workspace)?.collect_context()?;
+        let workspace_context = self.collect_workspace_context()?;
         if mode == AgentRunMode::Normal
             && self.config.agent.require_plan_for_complex_tasks
             && is_complex_task(title_task)
@@ -1383,38 +1425,8 @@ impl AgentRuntime {
         let provider_turn_timeout = self.provider_turn_timeout();
 
         self.session.set_state(SessionState::Executing)?;
-        if mode == AgentRunMode::Normal && self.stream_output && !is_complex_task(title_task) {
-            self.emit_progress(RuntimeProgress::ProviderStreamStarted);
-            self.session
-                .append_audit_event("provider_stream_started", json!({}))?;
-            let events = match timeout(
-                provider_turn_timeout,
-                provider.stream(ChatRequest {
-                    messages: messages.clone(),
-                    tools: Vec::new(),
-                    json_mode: false,
-                }),
-            )
-            .await
-            {
-                Ok(result) => result?,
-                Err(_) => {
-                    self.session.set_state(SessionState::Failed)?;
-                    return Err(anyhow!(
-                        "provider stream timed out after {} seconds",
-                        provider_turn_timeout.as_secs()
-                    ));
-                }
-            };
-            let content = events
-                .into_iter()
-                .filter_map(|event| event.content_delta)
-                .collect::<String>();
-            self.session.append_message("assistant", &content)?;
-            self.session.write_summary(&content)?;
-            self.session.complete_pending_plan_steps()?;
-            self.session.set_state(SessionState::Completed)?;
-            return Ok(with_token_estimate(content, estimated_tokens));
+        if self.has_pending_approvals()? {
+            return self.pause_for_pending_approvals();
         }
 
         let context_tool_limit = context_tool_limit();
@@ -1513,7 +1525,11 @@ impl AgentRuntime {
             )?;
             let started = Instant::now();
             let progress_tx = self.progress_tx.clone();
+            let stream_output = self.stream_output;
             let mut on_stream_event = move |event: StreamEvent| {
+                if !stream_output {
+                    return;
+                }
                 if let Some(delta) = event.content_delta.filter(|delta| !delta.is_empty()) {
                     if let Some(tx) = &progress_tx {
                         let _ = tx.send(RuntimeProgress::AssistantDelta { delta });
@@ -1548,9 +1564,7 @@ impl AgentRuntime {
                         AgentLoopTransitionReason::ProviderFailed,
                         json!({ "error": error.to_string() }),
                     );
-                    if is_provider_chat_timeout_error(&error) {
-                        self.session.set_state(SessionState::Failed)?;
-                    }
+                    self.session.set_state(SessionState::Failed)?;
                     return Err(error);
                 }
             };
@@ -1714,7 +1728,24 @@ impl AgentRuntime {
 
             let mut budget_skipped_this_turn = 0usize;
             let turn_tool_calls = response.tool_calls;
+            let mut approval_pending = false;
             for batch in tool_call_batches(&self.registry, &turn_tool_calls) {
+                if approval_pending {
+                    match &batch {
+                        ToolCallBatch::Parallel(range) => {
+                            for call in &turn_tool_calls[range.clone()] {
+                                self.push_approval_skipped_tool_message(&mut messages, call)?;
+                            }
+                        }
+                        ToolCallBatch::Serial(index) => {
+                            self.push_approval_skipped_tool_message(
+                                &mut messages,
+                                &turn_tool_calls[*index],
+                            )?;
+                        }
+                    }
+                    continue;
+                }
                 match batch {
                     ToolCallBatch::Parallel(range)
                         if batch_fits_tool_budgets(
@@ -1758,9 +1789,14 @@ impl AgentRuntime {
                             );
                             self.push_tool_provider_message(&mut messages, call, tool_output)?;
                         }
+                        approval_pending = self.has_pending_approvals()?;
                     }
                     ToolCallBatch::Parallel(range) => {
                         for call in &turn_tool_calls[range] {
+                            if approval_pending {
+                                self.push_approval_skipped_tool_message(&mut messages, call)?;
+                                continue;
+                            }
                             let tool_output = if let Some(output) =
                                 take_matching_early_tool_output(&mut early_tool_results, call)
                             {
@@ -1784,6 +1820,7 @@ impl AgentRuntime {
                                 &mut verification_calls_before_action,
                             );
                             self.push_tool_provider_message(&mut messages, call, tool_output)?;
+                            approval_pending = self.has_pending_approvals()?;
                         }
                     }
                     ToolCallBatch::Serial(index) => {
@@ -1811,8 +1848,23 @@ impl AgentRuntime {
                             &mut verification_calls_before_action,
                         );
                         self.push_tool_provider_message(&mut messages, call, tool_output)?;
+                        approval_pending = self.has_pending_approvals()?;
                     }
                 }
+            }
+            self.emit_progress(RuntimeProgress::ToolBatchCompleted {
+                tool_calls: turn_tool_calls.len(),
+            });
+            if approval_pending {
+                let content = self.pause_for_pending_approvals()?;
+                self.record_agent_loop_transition(
+                    &mut loop_tracker,
+                    Some(iteration_number),
+                    AgentLoopState::Completed,
+                    AgentLoopTransitionReason::CompletionBlocked,
+                    json!({ "waiting_for_approval": true }),
+                )?;
+                return Ok(content);
             }
             self.record_agent_loop_transition(
                 &mut loop_tracker,
@@ -1903,6 +1955,44 @@ impl AgentRuntime {
         Ok(content)
     }
 
+    fn has_pending_approvals(&self) -> Result<bool> {
+        Ok(self
+            .session
+            .load_approval_requests()?
+            .iter()
+            .any(|approval| approval.status == ApprovalStatus::Pending))
+    }
+
+    fn pause_for_pending_approvals(&mut self) -> Result<String> {
+        let pending = self
+            .session
+            .load_approval_requests()?
+            .into_iter()
+            .filter(|approval| approval.status == ApprovalStatus::Pending)
+            .collect::<Vec<_>>();
+        let content = if pending.len() == 1 {
+            let approval = &pending[0];
+            format!(
+                "等待审批 {}：{}",
+                &approval.id.to_string()[..8],
+                approval
+                    .input_summary
+                    .as_deref()
+                    .unwrap_or(approval.tool.as_str())
+            )
+        } else {
+            format!("等待 {} 个工具审批。", pending.len())
+        };
+        self.session.append_message("assistant", &content)?;
+        self.session.set_state(SessionState::AwaitingApproval)?;
+        self.session.write_summary(&content)?;
+        self.session.append_audit_event(
+            "agent_paused_for_approval",
+            json!({ "pending_approvals": pending.len() }),
+        )?;
+        Ok(content)
+    }
+
     fn provider_turn_timeout(&self) -> Duration {
         Duration::from_secs(self.config.agent.provider_turn_timeout_seconds.max(1))
     }
@@ -1957,6 +2047,34 @@ impl AgentRuntime {
         self.record_provider_message_transcript(&message)?;
         messages.push(message);
         Ok(())
+    }
+
+    fn push_approval_skipped_tool_message(
+        &self,
+        messages: &mut Vec<ProviderMessage>,
+        call: &ToolCall,
+    ) -> Result<()> {
+        let summary = "skipped because an earlier tool call is awaiting user approval";
+        let output = json!({
+            "tool": call.function.name,
+            "ok": false,
+            "kind": "approval_wait",
+            "summary": summary,
+            "content": summary,
+            "data": { "skipped": true },
+            "truncated": false,
+        })
+        .to_string();
+        self.session.append_audit_event(
+            "tool_skipped_approval_pending",
+            json!({ "tool": call.function.name, "tool_call_id": call.id }),
+        )?;
+        self.emit_progress(RuntimeProgress::ToolCompleted {
+            tool: call.function.name.clone(),
+            ok: false,
+            summary: summary.to_string(),
+        });
+        self.push_tool_provider_message(messages, call, output)
     }
 
     fn record_tool_execution_recovery_context(
@@ -2029,6 +2147,7 @@ impl AgentRuntime {
 
         let non_overridable_blocker = blockers.iter().any(|blocker| {
             blocker.starts_with("open user question count:")
+                || blocker.starts_with("pending approval request count:")
                 || blocker == PLAN_USER_QUESTION_BLOCKER
         });
         if blockers.is_empty()
@@ -2319,7 +2438,7 @@ impl AgentRuntime {
         self.record_tool_execution_recovery_context(call, &execution)?;
         self.emit_progress(RuntimeProgress::ToolCompleted {
             tool: call.function.name.clone(),
-            ok: true,
+            ok: execution.success,
             summary: truncate_progress_detail(&execution.content),
         });
         Ok(execution.prompt_content())
@@ -2404,7 +2523,7 @@ impl AgentRuntime {
                     self.record_tool_execution_recovery_context(call, &execution)?;
                     self.emit_progress(RuntimeProgress::ToolCompleted {
                         tool: call.function.name.clone(),
-                        ok: true,
+                        ok: execution.success,
                         summary: truncate_progress_detail(&execution.content),
                     });
                     outputs.push(execution.prompt_content());
@@ -2625,13 +2744,18 @@ impl<'a> SessionContextManager<'a> {
             .session
             .load_approval_requests()?
             .into_iter()
-            .filter(|approval| approval.status == ApprovalStatus::Pending)
+            .filter(|approval| {
+                matches!(
+                    approval.status,
+                    ApprovalStatus::Pending | ApprovalStatus::Approved
+                )
+            })
             .collect::<Vec<_>>();
         if approvals.is_empty() {
             return Ok(None);
         }
         Ok(Some(format!(
-            "Pending approvals:\n{}",
+            "Tool approvals:\n{}",
             approvals
                 .iter()
                 .map(format_approval_context)
@@ -2862,13 +2986,20 @@ fn format_side_question_context(question: &SideQuestion) -> String {
 }
 
 fn format_approval_context(approval: &ApprovalRequest) -> String {
-    format!(
-        "- {} tool={} risk={:?}: {}",
+    let mut line = format!(
+        "- {} status={:?} tool={} risk={:?} confirmations={}/{}: {}",
         approval.id,
+        approval.status,
         approval.tool,
         approval.decision.risk,
+        approval.confirmations_received,
+        approval.confirmations_required,
         truncate_chars(&approval.decision.reason, 600)
-    )
+    );
+    if let Some(summary) = approval.input_summary.as_deref() {
+        line.push_str(&format!("\n  input: {}", truncate_chars(summary, 600)));
+    }
+    line
 }
 
 fn format_session_message_context(message: SessionMessage) -> String {
@@ -3461,12 +3592,6 @@ fn is_max_output_tokens_error(error: &anyhow::Error) -> bool {
             && (text.contains("output") || text.contains("completion"))
 }
 
-fn is_provider_chat_timeout_error(error: &anyhow::Error) -> bool {
-    error
-        .to_string()
-        .starts_with("provider chat timed out after ")
-}
-
 fn env_usize(name: &str, min: usize, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -3724,18 +3849,7 @@ fn is_project_write_call(call: &ToolCall) -> bool {
         || normalized.starts_with(".github/")
 }
 
-fn run_shell_writes_files(call: &ToolCall) -> bool {
-    call.function
-        .arguments
-        .get("writes_files")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false)
-}
-
 fn run_shell_writes_project(call: &ToolCall) -> bool {
-    if run_shell_writes_files(call) {
-        return true;
-    }
     let command = call
         .function
         .arguments
@@ -3798,6 +3912,13 @@ fn is_progress_shell_command(command: &str) -> bool {
 }
 
 fn tool_output_indicates_failure(output: &str) -> bool {
+    if serde_json::from_str::<Value>(output)
+        .ok()
+        .and_then(|value| value.get("ok").and_then(Value::as_bool))
+        == Some(false)
+    {
+        return true;
+    }
     let lower = output.to_ascii_lowercase();
     lower.starts_with("tool `")
         && (lower.contains(" failed:")
@@ -4013,6 +4134,22 @@ fn system_prompt(
         });
     }
     prompt.to_string()
+}
+
+fn restrict_workspace_context(
+    mut context: crate::workspace::WorkspaceContext,
+    scopes: &[PathBuf],
+) -> crate::workspace::WorkspaceContext {
+    let within_scope = |path: &Path| {
+        scopes
+            .iter()
+            .any(|scope| path == scope || path.starts_with(scope))
+    };
+    context.agents_files.retain(|file| within_scope(&file.path));
+    context.docs_files.retain(|file| within_scope(&file.path));
+    context.readme_files.retain(|file| within_scope(&file.path));
+    context.git_diff_present = false;
+    context
 }
 
 fn agents_instructions_for_prompt(
@@ -4587,6 +4724,31 @@ mod tests {
     }
 
     #[test]
+    fn subagent_workspace_context_only_exposes_declared_read_scope() {
+        let dir = tempdir().unwrap();
+        let scoped = dir.path().join("scoped");
+        let summary = |path: PathBuf| crate::workspace::FileSummary {
+            path,
+            bytes: 1,
+            sha256: "digest".to_string(),
+        };
+        let context = crate::workspace::WorkspaceContext {
+            root: dir.path().to_path_buf(),
+            agents_files: vec![summary(dir.path().join("AGENTS.md"))],
+            docs_files: vec![summary(scoped.join("design.md"))],
+            readme_files: vec![summary(dir.path().join("README.md"))],
+            git_diff_present: true,
+        };
+
+        let restricted = restrict_workspace_context(context, std::slice::from_ref(&scoped));
+
+        assert!(restricted.agents_files.is_empty());
+        assert_eq!(restricted.docs_files.len(), 1);
+        assert!(restricted.readme_files.is_empty());
+        assert!(!restricted.git_diff_present);
+    }
+
+    #[test]
     fn runtime_marks_repair_step_after_failed_tests() {
         let dir = tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".deepcli/credentials")).unwrap();
@@ -5130,6 +5292,28 @@ mod tests {
     }
 
     #[test]
+    fn failed_agent_run_sets_terminal_session_state() {
+        let dir = tempdir().unwrap();
+        let mut runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: false,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+
+        let result: Result<()> = runtime.finalize_agent_run_result(Err(anyhow!("provider failed")));
+
+        assert!(result.is_err());
+        assert_eq!(runtime.session.metadata.state, SessionState::Failed);
+    }
+
+    #[test]
     fn completion_hooks_block_open_user_questions() {
         let dir = tempdir().unwrap();
         let runtime = AgentRuntime::new(
@@ -5188,6 +5372,44 @@ mod tests {
             .follow_up_prompt
             .unwrap()
             .contains("open user question"));
+    }
+
+    #[test]
+    fn completion_hooks_do_not_accept_pending_approval_at_continuation_limit() {
+        let dir = tempdir().unwrap();
+        let runtime = AgentRuntime::new(
+            AppConfig::default(),
+            RuntimeOptions {
+                workspace: dir.path().to_path_buf(),
+                provider: None,
+                model: None,
+                assume_yes: false,
+                resume_session: None,
+                stream_output: false,
+            },
+        )
+        .unwrap();
+        runtime
+            .session
+            .enqueue_approval_request(
+                "write_file",
+                PermissionDecision {
+                    outcome: DecisionOutcome::RequiresUserApproval,
+                    risk: RiskLevel::High,
+                    reason: "workspace write".to_string(),
+                },
+            )
+            .unwrap();
+
+        let decision = runtime
+            .evaluate_completion_hooks("final answer", 1, completion_hook_continuation_limit())
+            .unwrap();
+
+        assert_eq!(decision.action, CompletionAction::Continue);
+        assert!(decision
+            .blockers
+            .iter()
+            .any(|blocker| blocker.starts_with("pending approval request count:")));
     }
 
     fn test_provider_message(role: &str, content: &str) -> ProviderMessage {
@@ -5441,7 +5663,7 @@ mod tests {
         assert!(context.contains("cargo test --lib"));
         assert!(context.contains("Diff summary"));
         assert!(context.contains("Side questions"));
-        assert!(context.contains("Pending approvals"));
+        assert!(context.contains("Tool approvals"));
         assert!(context.contains("after compact boundary"));
         assert!(!context.contains("before compact boundary"));
     }
@@ -6213,15 +6435,6 @@ mod tests {
                 }),
             )
         };
-        let shell_write_call = |command: &str| {
-            tool_call(
-                "run_shell",
-                json!({
-                    "command": command,
-                    "writes_files": true
-                }),
-            )
-        };
         let subagent_call = ToolCall {
             id: "call_shell".to_string(),
             call_type: "function".to_string(),
@@ -6265,8 +6478,8 @@ mod tests {
         assert!(is_project_mutating_call(&shell_call(
             "sed -i '' 's/a/b/' src/parser.rs"
         )));
-        assert!(is_progress_action_call(&shell_write_call(
-            "python3 - <<'PY'\nprint('patch')\nPY"
+        assert!(is_progress_action_call(&shell_call(
+            "sed -i '' 's/a/b/' src/parser.rs"
         )));
         assert!(is_progress_action_call(&source_write));
         assert!(!is_progress_action_call(&scratch_write));
@@ -6275,6 +6488,9 @@ mod tests {
         ));
         assert!(tool_output_indicates_failure(
             "refusing to overwrite existing large file src/lib.rs with much shorter content"
+        ));
+        assert!(tool_output_indicates_failure(
+            r#"{"tool":"run_tests","ok":false,"content":"tests failed"}"#
         ));
         assert!(!tool_output_indicates_failure(
             "Finished dev profile successfully"
@@ -6308,7 +6524,8 @@ mod tests {
             vec![
                 ToolCallBatch::Parallel(0..2),
                 ToolCallBatch::Serial(2),
-                ToolCallBatch::Parallel(3..5),
+                ToolCallBatch::Serial(3),
+                ToolCallBatch::Parallel(4..5),
                 ToolCallBatch::Serial(5),
             ]
         );

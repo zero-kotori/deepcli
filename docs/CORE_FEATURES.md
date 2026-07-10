@@ -12,14 +12,19 @@
 ## Agent 与工具
 
 - Agent 循环：分析 → 计划 → 修改 → 测试 → 修复 → 汇报。
-- 工具注册表覆盖文件、shell、Git、测试、环境、web、terminal、prompt、skill、子 Agent；工具声明拥有 provider schema 与权限请求。
-- 所有写入/shell/Git/网络/Docker/终端/setup 操作经权限层；工具调用全生命周期审计、输出脱敏。
+- 工具注册表覆盖文件、shell、Git、测试、环境、web、terminal、prompt、skill、子 Agent；Provider schema 只拥有业务参数，host 根据工具与已解析参数构造权限请求。
+- 普通 Agent turn 使用同一 tool-capable 流式循环；工具执行结果携带真实 `success`，Provider 上下文、生命周期审计和 UI 状态不会把非零退出或测试失败记为成功。
+- 所有写入/shell/Git/网络/Docker/终端/setup 操作经权限层；工具调用全生命周期审计、输出脱敏，原生终端在 `ToolBatchCompleted` 后汇总折叠工具进度。
 - `/cmd <bash command>` 复用本地 `run_shell` 工具在当前 workspace 执行命令并把 command/exit code/stdout/stderr 回显到 UI；默认不调用 provider，`/cmd --attach <bash command>` 会把格式化输出作为下一条用户上下文交给模型。
 
 ## 权限与 sandbox
 
-- 默认 sandbox：工作区读允许，系统写与危险命令受限。
-- 风险分级：只读 shell 可允许；测试/构建类可自动审批；Docker、依赖安装、破坏性 shell/Git 需审批或二次确认。
+- 默认应用层 sandbox 策略：工作区低风险读允许，系统写与危险命令受限；这不是 OS 级 shell/network 隔离。
+- 审批由 host 按工具名和经解析的有效参数 canonical JSON digest 绑定；普通批准一次确认，高危操作两次确认，授权只消费一次，Provider 不能通过参数自报已批准或降低风险。
+- 风险分级：固定只读探测可允许；`autoReviewer` 默认关闭，显式开启时只处理校验后的测试/构建入口，但不等同于可信执行或 OS sandbox；Docker、依赖安装、复合/联网 shell 和破坏性 shell/Git 需审批或二次确认。
+- 文件路径经过 canonical/symlink workspace containment 与 DeepIgnore 检查；`run_tests` 受工作区测试发现结果约束。shell 子进程清洗敏感环境，`run_shell`/`run_tests` 有超时，但尚无完整 process-group 取消。
+- 子 Agent 的 allowed-tools 会裁剪 Provider registry 并由 Executor 二次校验；read/write scope 在 canonical 路径上强制，无法限定 scope 的广域工具会拒绝；depth 由 host 计算，嵌套 Agent 不得扩大父工具 capability。
+- `web_fetch` 拒绝私网、回环、链路本地与 redirect 跳转，并有宿主响应体上限；`git_commit` 精确提交已批准的暂存 tree，不运行仓库 hooks。
 
 ## 会话、恢复、fork、goal
 

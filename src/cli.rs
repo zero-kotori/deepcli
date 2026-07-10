@@ -100,7 +100,8 @@ pub async fn run_cli(cli: Cli) -> Result<()> {
                     &workspace,
                     config.permissions.clone(),
                     config.sandbox.clone(),
-                );
+                )
+                .with_auto_reviewer(config.agent.auto_reviewer);
                 let executor = ToolExecutor::new(
                     &workspace,
                     permissions,

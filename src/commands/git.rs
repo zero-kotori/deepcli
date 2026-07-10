@@ -71,10 +71,7 @@ pub(crate) async fn handle_git(
                 return format_git_action_output(workspace, &options, "create-branch", &command);
             }
             Ok(executor
-                .execute(
-                    "git_create_branch",
-                    json!({"name": options.subject, "approved": true}),
-                )
+                .execute_user_action("git_create_branch", json!({"name": options.subject}))
                 .await?
                 .content)
         }
@@ -85,10 +82,7 @@ pub(crate) async fn handle_git(
                 return format_git_action_output(workspace, &options, "commit", &command);
             }
             Ok(executor
-                .execute(
-                    "git_commit",
-                    json!({"message": options.subject, "approved": true}),
-                )
+                .execute_user_action("git_commit", json!({"message": options.subject}))
                 .await?
                 .content)
         }
@@ -246,8 +240,9 @@ fn git_create_branch_command(name: &str) -> String {
     format!("git switch -c {}", shell_words::quote(name))
 }
 
-fn git_commit_command(message: &str) -> String {
-    format!("git commit -m {}", shell_words::quote(message))
+fn git_commit_command(_message: &str) -> String {
+    "git commit-tree <approved-staged-tree> -F - && git update-ref HEAD <new-commit> <old-head>"
+        .to_string()
 }
 
 fn format_git_action_output(

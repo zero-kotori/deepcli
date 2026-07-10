@@ -131,7 +131,7 @@ pub struct SandboxConfig {
 pub struct AgentConfig {
     #[serde(rename = "requirePlanForComplexTasks", default = "default_true")]
     pub require_plan_for_complex_tasks: bool,
-    #[serde(rename = "autoReviewer", default = "default_true")]
+    #[serde(rename = "autoReviewer", default)]
     pub auto_reviewer: bool,
     #[serde(rename = "maxSubagentDepth", default = "default_subagent_depth")]
     pub max_subagent_depth: u8,
@@ -216,11 +216,11 @@ impl AppConfig {
         explicit_config: Option<&Path>,
     ) -> Result<Self> {
         let workspace = workspace.as_ref();
-        let mut config = Self::default();
+        let mut effective = serde_json::to_value(Self::default())?;
 
         if let Some(global) = global_config_path() {
             if global.exists() {
-                config = merge_config(config, read_config_file(&global)?);
+                merge_config_value(&mut effective, read_config_value(&global)?);
             }
         }
 
@@ -228,9 +228,11 @@ impl AppConfig {
             .map(PathBuf::from)
             .unwrap_or_else(|| workspace.join(".deepcli").join("config.json"));
         if project_config.exists() {
-            config = merge_config(config, read_config_file(&project_config)?);
+            merge_config_value(&mut effective, read_config_value(&project_config)?);
         }
 
+        let mut config: Self = serde_json::from_value(effective)
+            .context("failed to parse the merged effective configuration")?;
         config.apply_env_overrides();
         Ok(config)
     }
@@ -407,7 +409,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             require_plan_for_complex_tasks: true,
-            auto_reviewer: true,
+            auto_reviewer: false,
             max_subagent_depth: default_subagent_depth(),
             max_tool_iterations: default_tool_iterations(),
             provider_turn_timeout_seconds: default_provider_turn_timeout_seconds(),
@@ -435,14 +437,26 @@ impl Default for NetworkConfig {
     }
 }
 
-fn read_config_file(path: &Path) -> Result<AppConfig> {
+fn read_config_value(path: &Path) -> Result<serde_json::Value> {
     let raw = fs::read_to_string(path)
         .with_context(|| format!("failed to read config {}", path.display()))?;
     serde_json::from_str(&raw).with_context(|| format!("failed to parse config {}", path.display()))
 }
 
-fn merge_config(_base: AppConfig, overlay: AppConfig) -> AppConfig {
-    overlay
+fn merge_config_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
+    match (base, overlay) {
+        (serde_json::Value::Object(base), serde_json::Value::Object(overlay)) => {
+            for (key, value) in overlay {
+                match base.get_mut(&key) {
+                    Some(base_value) => merge_config_value(base_value, value),
+                    None => {
+                        base.insert(key, value);
+                    }
+                }
+            }
+        }
+        (base, overlay) => *base = overlay,
+    }
 }
 
 fn global_config_path() -> Option<PathBuf> {
@@ -737,6 +751,45 @@ mod tests {
 
         assert_eq!(config.agent.max_context_tokens, 1_000_000);
         assert_eq!(config.agent.reserved_output_tokens, 384_000);
+    }
+
+    #[test]
+    fn partial_agent_config_keeps_auto_reviewer_disabled() {
+        let config: AppConfig = serde_json::from_str(
+            r#"{"agent":{"maxSubagentDepth":4,"providerTurnTimeoutSeconds":30}}"#,
+        )
+        .unwrap();
+
+        assert!(!config.agent.auto_reviewer);
+        assert_eq!(config.agent.max_subagent_depth, 4);
+    }
+
+    #[test]
+    fn nested_config_overlay_preserves_unspecified_base_fields() {
+        let mut effective = serde_json::to_value(AppConfig::default()).unwrap();
+        merge_config_value(
+            &mut effective,
+            serde_json::json!({
+                "agent": {"maxSubagentDepth": 4},
+                "providers": {
+                    "deepseek": {"acceptanceModel": "project-model"}
+                },
+                "network": {"proxy": {"noProxy": ["internal.test"]}}
+            }),
+        );
+        let config: AppConfig = serde_json::from_value(effective).unwrap();
+
+        assert_eq!(config.agent.max_subagent_depth, 4);
+        assert!(!config.agent.auto_reviewer);
+        assert_eq!(config.agent.provider_turn_timeout_seconds, 600);
+        let provider = config.providers.get("deepseek").unwrap();
+        assert_eq!(provider.provider_type, "deepseek");
+        assert_eq!(
+            provider.credentials_file,
+            PathBuf::from(".deepcli/credentials/deepseek-credentials.json")
+        );
+        assert_eq!(provider.acceptance_model.as_deref(), Some("project-model"));
+        assert_eq!(config.network.proxy.no_proxy, vec!["internal.test"]);
     }
 
     #[test]

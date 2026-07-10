@@ -8354,7 +8354,9 @@ fn version_command_rejects_unknown_options_and_path_traversal() {
 
 fn test_executor(dir: &Path) -> ToolExecutor {
     let config = AppConfig::default();
-    let permissions = PermissionEngine::new(dir, config.permissions, config.sandbox);
+    let permissions =
+        PermissionEngine::new(dir, config.permissions.clone(), config.sandbox.clone())
+            .with_auto_reviewer(config.agent.auto_reviewer);
     ToolExecutor::new(dir, permissions, None, config.agent.max_subagent_depth)
 }
 
@@ -8658,6 +8660,7 @@ async fn test_discover_json_output_is_structured_and_written() {
 #[tokio::test]
 async fn test_run_json_output_reports_status_and_output() {
     let dir = tempdir().unwrap();
+    fs::write(dir.path().join("Makefile"), "test:\n\t@printf ok\n").unwrap();
     let executor = test_executor(dir.path());
 
     let output = handle_test(
@@ -8668,7 +8671,7 @@ async fn test_run_json_output_reports_status_and_output() {
             "--json".into(),
             "--output=.deepcli/exports/test-run.json".into(),
             "--".into(),
-            "printf ok".into(),
+            "make test".into(),
         ],
     )
     .await
@@ -8679,7 +8682,7 @@ async fn test_run_json_output_reports_status_and_output() {
     assert_eq!(value["status"], "passed");
     assert_eq!(value["kind"], "run");
     assert_eq!(value["passed"], true);
-    assert_eq!(value["command"], "printf ok");
+    assert_eq!(value["command"], "make test");
     assert_eq!(value["exitCode"], 0);
     assert_eq!(value["stdout"], "ok");
     assert_eq!(value["stderr"], "");
@@ -8692,7 +8695,7 @@ async fn test_run_json_output_reports_status_and_output() {
         .iter()
         .any(|action| action == "deepcli gate --json"));
     assert!(next_actions.iter().any(|action| {
-        action.starts_with("deepcli test run --json -- ") && action.contains("printf ok")
+        action.starts_with("deepcli test run --json -- ") && action.contains("make test")
     }));
     assert_checklist_matches_executable_actions(&value, &next_actions);
     let checklist_labels = json_checklist_labels(&value);
@@ -8957,7 +8960,7 @@ async fn git_write_dry_run_json_previews_without_execution() {
     assert_eq!(commit_value["subject"], "preview checkpoint");
     assert_eq!(
         commit_value["command"],
-        "git commit -m 'preview checkpoint'"
+        "git commit-tree <approved-staged-tree> -F - && git update-ref HEAD <new-commit> <old-head>"
     );
     let commit_next_actions = json_string_array(&commit_value["nextActions"]);
     assert_executable_deepcli_actions(&commit_next_actions);
@@ -12147,13 +12150,16 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
         )
         .unwrap();
     let request = with_approval
-        .enqueue_approval_request(
+        .enqueue_bound_approval_request(
             "write_file",
             crate::permissions::PermissionDecision {
                 outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
                 risk: crate::permissions::RiskLevel::High,
                 reason: "write requires approval api_key = sk-approval-secret".to_string(),
             },
+            "digest-write-command-test",
+            "path=src/lib.rs",
+            1,
         )
         .unwrap();
     let current_empty = store
@@ -12168,6 +12174,9 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
     let list = handle_approval(dir.path(), current_id.clone(), vec!["list".into()]).unwrap();
     assert!(list.contains("latest session with pending approval requests"));
     assert!(list.contains("write_file"));
+    assert!(list.contains("digest=digest-write-command-test"));
+    assert!(list.contains("summary=path=src/lib.rs"));
+    assert!(list.contains("confirmations=0/1"));
     assert!(list.contains("<redacted>"));
     assert!(!list.contains("sk-approval-secret"));
 
@@ -12193,6 +12202,15 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
     assert_eq!(value["itemCount"], 1);
     assert_eq!(value["pendingCount"], 1);
     assert_eq!(value["approvals"][0]["tool"], "write_file");
+    assert_eq!(
+        value["approvals"][0]["invocationDigest"],
+        "digest-write-command-test"
+    );
+    assert_eq!(value["approvals"][0]["inputSummary"], "path=src/lib.rs");
+    assert_eq!(value["approvals"][0]["confirmationsRequired"], 1);
+    assert_eq!(value["approvals"][0]["confirmationsReceived"], 0);
+    assert_eq!(value["approvals"][0]["approvedAt"], Value::Null);
+    assert_eq!(value["approvals"][0]["consumedAt"], Value::Null);
     assert!(value["approvals"][0]["decision"]["reason"]
         .as_str()
         .unwrap()
@@ -12273,6 +12291,8 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
     )
     .unwrap();
     assert!(approved.contains("approved request"));
+    assert!(approved.contains("confirmations=1/1"));
+    assert!(approved.contains("digest=digest-write-command-test"));
     assert!(approved.contains(&with_approval.id().to_string()));
     let loaded = store.load(&with_approval.id().to_string()).unwrap();
     assert_eq!(
@@ -12281,15 +12301,29 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
     );
 
     let second_request = with_approval
-        .enqueue_approval_request(
+        .enqueue_bound_approval_request(
             "run_shell",
             crate::permissions::PermissionDecision {
                 outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
                 risk: crate::permissions::RiskLevel::High,
                 reason: "shell requires approval api_key = sk-second-approval-secret".to_string(),
             },
+            "digest-shell-command-test",
+            "command=cargo test",
+            2,
         )
         .unwrap();
+    let first_confirmation = handle_approval(
+        dir.path(),
+        current_id.clone(),
+        vec![
+            "approve".into(),
+            second_request.id.to_string()[..8].to_string(),
+        ],
+    )
+    .unwrap();
+    assert!(first_confirmation.contains("recorded confirmation for request"));
+    assert!(first_confirmation.contains("confirmations=1/2"));
     let approved_json = handle_approval(
         dir.path(),
         current_id,
@@ -12315,6 +12349,18 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
         second_request.id.to_string()
     );
     assert_eq!(approved_value["approval"]["status"], "approved");
+    assert_eq!(
+        approved_value["approval"]["invocationDigest"],
+        "digest-shell-command-test"
+    );
+    assert_eq!(
+        approved_value["approval"]["inputSummary"],
+        "command=cargo test"
+    );
+    assert_eq!(approved_value["approval"]["confirmationsRequired"], 2);
+    assert_eq!(approved_value["approval"]["confirmationsReceived"], 2);
+    assert!(approved_value["approval"]["approvedAt"].is_string());
+    assert_eq!(approved_value["approval"]["consumedAt"], Value::Null);
     assert!(!approved_json.contains("sk-second-approval-secret"));
     let approved_next_actions = json_string_array(&approved_value["nextActions"]);
     assert_executable_deepcli_actions(&approved_next_actions);
@@ -12331,13 +12377,16 @@ fn approval_commands_find_pending_requests_across_one_shot_sessions() {
     assert_eq!(approved_written, approved_json);
 
     with_approval
-        .enqueue_approval_request(
+        .enqueue_bound_approval_request(
             "delete_file",
             crate::permissions::PermissionDecision {
                 outcome: crate::permissions::DecisionOutcome::RequiresUserApproval,
                 risk: crate::permissions::RiskLevel::High,
                 reason: "delete requires approval api_key = sk-clear-approval-secret".to_string(),
             },
+            "digest-delete-command-test",
+            "path=obsolete.txt",
+            1,
         )
         .unwrap();
     let clear_json = handle_approval(
@@ -15836,7 +15885,7 @@ async fn verify_can_run_requested_tests_in_report() {
 }
 
 #[tokio::test]
-async fn verify_treats_smoke_only_requested_test_as_weak_evidence() {
+async fn verify_rejects_undiscovered_smoke_only_command() {
     let dir = tempdir().unwrap();
     let store = SessionStore::new(dir.path());
     let session = store
@@ -15856,10 +15905,9 @@ async fn verify_treats_smoke_only_requested_test_as_weak_evidence() {
     .await
     .unwrap();
 
-    assert!(report.contains("requested test run: [passed]"));
-    assert!(report.contains("weak test evidence"));
-    assert!(report.contains("no strong passing test evidence"));
-    assert!(report.contains("add strong test evidence"));
+    assert!(report.contains("requested test run: error"));
+    assert!(report.contains("must extend a command discovered from the current workspace"));
+    assert!(report.contains("requested verification test run failed"));
     assert!(!report.contains("blockers: none detected"));
 }
 
@@ -15941,6 +15989,8 @@ async fn verify_path_scope_filters_session_diff_fallback() {
 #[tokio::test]
 async fn verify_failed_requested_test_is_a_blocker() {
     let dir = tempdir().unwrap();
+    write_minimal_cargo_project(dir.path());
+    fs::write(dir.path().join("src/lib.rs"), "this is not valid rust\n").unwrap();
     let store = SessionStore::new(dir.path());
     let session = store
         .create(dir.path(), "deepseek".to_string(), None)
@@ -15954,20 +16004,21 @@ async fn verify_failed_requested_test_is_a_blocker() {
         dir.path(),
         Some(session.id().to_string()),
         &executor,
-        vec!["--test-command".into(), "printf fail >&2; exit 7".into()],
+        vec!["--test-command".into(), "cargo test --quiet".into()],
     )
     .await
     .unwrap();
 
     assert!(report.contains("requested test run: [failed]"));
-    assert!(report.contains("exit=Some(7)"));
-    assert!(report.contains("requested output: fail"));
+    assert!(report.contains("exit=Some(101)"));
+    assert!(report.contains("requested output:"));
     assert!(report.contains("requested verification test run failed"));
 }
 
 #[tokio::test]
 async fn verify_treats_high_review_risk_as_blocker() {
     let dir = tempdir().unwrap();
+    write_minimal_cargo_project(dir.path());
     let store = SessionStore::new(dir.path());
     let session = store
         .create(dir.path(), "deepseek".to_string(), None)
@@ -15981,7 +16032,7 @@ async fn verify_treats_high_review_risk_as_blocker() {
         dir.path(),
         Some(session.id().to_string()),
         &executor,
-        vec!["--test-command".into(), "printf ok".into()],
+        vec!["--test-command".into(), "cargo test --quiet".into()],
     )
     .await
     .unwrap();
@@ -16061,6 +16112,12 @@ fn formats_approval_requests_by_default_and_all() {
             reason: "write requires approval".to_string(),
         },
         status: ApprovalStatus::Pending,
+        invocation_digest: Some("digest-write-format-test".to_string()),
+        input_summary: Some("path=src/lib.rs".to_string()),
+        confirmations_required: 1,
+        confirmations_received: 0,
+        approved_at: None,
+        consumed_at: None,
         created_at: now,
         updated_at: now,
     };
@@ -16073,11 +16130,20 @@ fn formats_approval_requests_by_default_and_all() {
             reason: "git write requires approval".to_string(),
         },
         status: ApprovalStatus::Approved,
+        invocation_digest: Some("digest-git-format-test".to_string()),
+        input_summary: Some("git commit".to_string()),
+        confirmations_required: 1,
+        confirmations_received: 1,
+        approved_at: Some(now),
+        consumed_at: None,
         created_at: now,
         updated_at: now,
     };
     let default = format_approval_requests(&[pending.clone(), approved.clone()], false);
     assert!(default.contains("write_file"));
+    assert!(default.contains("digest=digest-write-format-test"));
+    assert!(default.contains("summary=path=src/lib.rs"));
+    assert!(default.contains("confirmations=0/1"));
     assert!(!default.contains("git_commit"));
 
     let all = format_approval_requests(&[pending, approved], true);

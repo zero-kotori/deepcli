@@ -8,7 +8,7 @@
 2. `src/main.rs` 初始化 tracing，然后调用 `src/cli.rs`。
 3. `src/cli.rs` 解析参数、归一化 provider/模式别名、拦截明显拼错的顶层命令，并决定是进入本地命令、one-shot Provider 调用、resume picker，还是原生终端聊天。
 4. 本地命令进入 `src/commands.rs` 和 `src/commands/*.rs`，通过 `CommandRouter` 解析 slash command，输出文本或稳定 JSON。
-5. 需要模型参与的任务进入 `src/runtime.rs`，由 `AgentRuntime` 准备上下文、调用 Provider、执行工具调用、记录会话事件并返回结果。
+5. 需要模型参与的任务进入 `src/runtime.rs`，由 `AgentRuntime` 准备上下文，以携带相应工具 schema 的统一流式路径调用 Provider、执行工具调用、记录会话事件并返回结果。
 
 ## Runtime 与数据流
 
@@ -19,8 +19,8 @@ user input
   -> cli/router
   -> AgentRuntime
   -> ContextManager + SessionStore
-  -> ProviderClient
-  -> tool calls
+  -> ProviderClient stream events (text + completed tool calls)
+  -> tool calls / ToolBatchCompleted
   -> ToolExecutor + PermissionEngine
   -> SessionStore audit/messages/tool records
   -> native terminal output or command JSON
@@ -42,20 +42,28 @@ user input
 
 ## 工具与权限
 
-工具能力分布在 `src/tools.rs` 和 `src/tools/*.rs`。工具声明暴露名称、参数 schema、权限请求和执行入口；工具执行必须经过 `PermissionEngine`。
+工具能力分布在 `src/tools.rs` 和 `src/tools/*.rs`。工具声明向 Provider 暴露名称和 capability-only 参数 schema，授权字段不属于模型输入；host 根据工具名与已解析参数构造权限请求，执行必须经过 `PermissionEngine`。
+
+需要批准时，工具名与经 host 解析的有效参数 canonical JSON 生成 SHA-256 digest，审批记录保存脱敏摘要、确认计数和状态。普通决策确认一次，高危决策确认两次；只有完全匹配的 approved grant 能执行，并立即转为 consumed。`ToolExecution.success` 独立于 Rust 调用是否返回 `Ok`，用于表达非零 exit、测试失败和超时，并投影到 Provider tool result、生命周期和 UI。
+
+文件路径会 canonicalize 工作区及目标的最近既存祖先，拒绝 symlink 逃逸；read/write/patch 目标还要经过 DeepIgnore。`run_tests` 的命令必须匹配工作区发现结果或其受限参数扩展，拒绝 shell 控制符、runner 配置覆盖和工作区外参数。shell helper 启动 child 前清除 Provider API key、token、secret、private/access key 等敏感环境变量；`run_shell` 与 `run_tests` 使用有界超时。`web_fetch` 对 DNS、redirect 和响应体实施 SSRF/容量边界；`git_commit` 使用批准 tree 的 `commit-tree`/`update-ref` CAS 路径。
+
+子 Agent resume 从持久任务构建不可变 capability：allowed-tools 裁剪 Provider registry 并在 Executor 再校验，read/write scope 在 canonical 路径上检查，host 计算下一层 depth，嵌套 capability 只能收窄。带 scope 的广域 shell/Git/test 工具 fail closed。
 
 权限策略的默认方向：
 
 - 工作区内读操作可授权后执行。
 - 写入、shell、Git、网络、Docker、终端和环境 setup 需要风险判断。
-- 测试/构建类操作可按策略自动审批。
+- `autoReviewer` 默认关闭；显式开启时只对校验后的测试/构建入口做确定性审批。
 - 破坏性命令、系统写入、依赖安装和远程 Git 操作必须升级审批或二次确认。
+
+这里的 sandbox 是应用层策略，不等同于 OS 级 shell 或 network 隔离。当前超时/取消没有覆盖完整 process group；显式开启 `autoReviewer` 也不提供仓库代码隔离。
 
 ## UI
 
 当前 UI 是原生终端聊天，不再维护旧 fullscreen TUI。入口位于 `src/ui.rs`，主要实现位于：
 
-- `src/ui/native_terminal.rs`：原生终端输入、流式输出、工具进度折叠和计划采访选项。
+- `src/ui/native_terminal.rs`：bracketed paste 原生输入、终端控制序列清洗、流式输出、按 `ToolBatchCompleted` 刷新的工具进度折叠/失败汇总、审批提示和计划采访选项。
 - `src/ui/resume_picker.rs`：文本 resume picker。
 
 默认 `deepcli` 和 `deepcli repl` 都进入同一 native terminal 路径。

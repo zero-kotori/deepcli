@@ -1,4 +1,7 @@
 use crate::config::{PermissionConfig, SandboxConfig};
+use crate::tools::authorization::{
+    contains_shell_control, is_test_or_build_command, shell_command_requires_network,
+};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -68,8 +71,6 @@ pub struct ToolRequest {
     pub creates_process: bool,
     #[serde(default)]
     pub requires_network: bool,
-    #[serde(default)]
-    pub explicit_approval: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +79,7 @@ pub struct PermissionEngine {
     permissions: PermissionConfig,
     sandbox: SandboxConfig,
     mode: PermissionMode,
+    auto_reviewer: bool,
 }
 
 impl PermissionEngine {
@@ -87,12 +89,22 @@ impl PermissionEngine {
         sandbox: SandboxConfig,
     ) -> Self {
         let mode = parse_permission_mode(&permissions.default_mode);
+        let workspace_root = workspace_root.as_ref();
+        let workspace_root = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
         Self {
-            workspace_root: workspace_root.as_ref().to_path_buf(),
+            workspace_root,
             permissions,
             sandbox,
             mode,
+            auto_reviewer: false,
         }
+    }
+
+    pub fn with_auto_reviewer(mut self, enabled: bool) -> Self {
+        self.auto_reviewer = enabled;
+        self
     }
 
     pub fn mode(&self) -> PermissionMode {
@@ -104,11 +116,7 @@ impl PermissionEngine {
 
         if risk == RiskLevel::DoubleConfirm {
             return PermissionDecision {
-                outcome: if request.explicit_approval && self.sandbox.allow_dangerous_commands {
-                    DecisionOutcome::Allowed
-                } else {
-                    DecisionOutcome::DoubleConfirmRequired
-                },
+                outcome: DecisionOutcome::DoubleConfirmRequired,
                 risk,
                 reason: "operation matches a double-confirmation risk rule".to_string(),
             };
@@ -126,6 +134,17 @@ impl PermissionEngine {
             if let Some(decision) = self.evaluate_sandbox(request, risk) {
                 return decision;
             }
+        }
+
+        if request.surface == ToolSurface::Network
+            && self.permissions.network == "allow"
+            && self.sandbox.allow_network
+        {
+            return PermissionDecision {
+                outcome: DecisionOutcome::Allowed,
+                risk,
+                reason: "dedicated network tool is allowed by current network policy".to_string(),
+            };
         }
 
         match self.mode {
@@ -152,15 +171,12 @@ impl PermissionEngine {
                 risk,
                 reason: "low-risk operation is allowed by current policy".to_string(),
             },
-            _ if self.permissions.approval_policy == "auto_reviewer_then_user"
-                && risk == RiskLevel::Medium =>
-            {
-                PermissionDecision {
-                    outcome: DecisionOutcome::AutoApproved,
-                    risk,
-                    reason: "auto-reviewer approved a medium-risk sandbox escalation".to_string(),
-                }
-            }
+            _ if self.can_auto_review(request, risk) => PermissionDecision {
+                outcome: DecisionOutcome::AutoApproved,
+                risk,
+                reason: "deterministic reviewer approved a validated test/build command"
+                    .to_string(),
+            },
             _ => PermissionDecision {
                 outcome: DecisionOutcome::RequiresUserApproval,
                 risk,
@@ -186,6 +202,29 @@ impl PermissionEngine {
                 return RiskLevel::DoubleConfirm;
             }
 
+            if request.surface == ToolSurface::Shell {
+                if request.tool == "check_environment" {
+                    return RiskLevel::Low;
+                }
+                if contains_shell_control(command)
+                    || shell_command_requires_network(command)
+                    || is_package_install(&normalized)
+                    || normalized.contains("docker run")
+                    || normalized.contains("docker pull")
+                    || normalized.contains("chmod ")
+                    || normalized.contains("chown ")
+                {
+                    return RiskLevel::High;
+                }
+                if is_fixed_shell_introspection(&normalized) {
+                    return RiskLevel::Low;
+                }
+                if is_test_or_build_command(command) {
+                    return RiskLevel::Medium;
+                }
+                return RiskLevel::High;
+            }
+
             if is_package_install(&normalized)
                 || normalized.contains("docker run")
                 || normalized.contains("docker pull")
@@ -193,14 +232,6 @@ impl PermissionEngine {
                 || normalized.contains("chown ")
             {
                 return RiskLevel::High;
-            }
-
-            if is_read_only_shell(&normalized) {
-                return RiskLevel::Low;
-            }
-
-            if is_test_or_build_shell(&normalized) {
-                return RiskLevel::Medium;
             }
         }
 
@@ -261,13 +292,12 @@ impl PermissionEngine {
             });
         }
 
-        if risk == RiskLevel::Medium
-            && self.permissions.approval_policy == "auto_reviewer_then_user"
-        {
+        if self.can_auto_review(request, risk) {
             return Some(PermissionDecision {
                 outcome: DecisionOutcome::AutoApproved,
                 risk,
-                reason: "auto-reviewer approved sandbox escalation".to_string(),
+                reason: "deterministic reviewer approved a validated test/build command"
+                    .to_string(),
             });
         }
 
@@ -283,6 +313,17 @@ impl PermissionEngine {
         }
         path.starts_with(&self.workspace_root)
     }
+
+    fn can_auto_review(&self, request: &ToolRequest, risk: RiskLevel) -> bool {
+        self.auto_reviewer
+            && self.permissions.approval_policy == "auto_reviewer_then_user"
+            && risk == RiskLevel::Medium
+            && request.tool == "run_tests"
+            && request
+                .command
+                .as_deref()
+                .is_some_and(is_test_or_build_command)
+    }
 }
 
 fn parse_permission_mode(value: &str) -> PermissionMode {
@@ -294,45 +335,11 @@ fn parse_permission_mode(value: &str) -> PermissionMode {
     }
 }
 
-fn is_read_only_shell(command: &str) -> bool {
+fn is_fixed_shell_introspection(command: &str) -> bool {
     let Ok(parts) = shell_words::split(command) else {
         return false;
     };
-    matches!(
-        parts.first().map(String::as_str),
-        Some("ls")
-            | Some("pwd")
-            | Some("rg")
-            | Some("grep")
-            | Some("sed")
-            | Some("cat")
-            | Some("head")
-            | Some("tail")
-            | Some("find")
-            | Some("git")
-    ) && !command.contains("git commit")
-        && !command.contains("git checkout")
-        && !command.contains("git switch")
-        && !command.contains("git reset")
-        && !command.contains("git clean")
-}
-
-fn is_test_or_build_shell(command: &str) -> bool {
-    let prefixes = [
-        "cargo test",
-        "cargo check",
-        "cargo build",
-        "npm test",
-        "npm run",
-        "pnpm test",
-        "pnpm run",
-        "yarn test",
-        "pytest",
-        "python -m pytest",
-        "make test",
-        "go test",
-    ];
-    prefixes.iter().any(|prefix| command.starts_with(prefix))
+    matches!(parts.as_slice(), [program] if program == "pwd")
 }
 
 fn is_package_install(command: &str) -> bool {
@@ -375,10 +382,11 @@ mod tests {
             PermissionConfig::default(),
             SandboxConfig::default(),
         )
+        .with_auto_reviewer(true)
     }
 
     #[test]
-    fn read_only_shell_is_allowed() {
+    fn generic_file_read_shell_requires_approval() {
         let request = ToolRequest {
             tool: "run_shell".to_string(),
             surface: ToolSurface::Shell,
@@ -388,7 +396,23 @@ mod tests {
             writes_files: false,
             creates_process: true,
             requires_network: false,
-            explicit_approval: false,
+        };
+        let decision = engine().evaluate(&request);
+        assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);
+        assert_eq!(decision.risk, RiskLevel::High);
+    }
+
+    #[test]
+    fn fixed_shell_introspection_is_allowed() {
+        let request = ToolRequest {
+            tool: "run_shell".to_string(),
+            surface: ToolSurface::Shell,
+            command: Some("pwd".to_string()),
+            path: None,
+            network_target: None,
+            writes_files: false,
+            creates_process: true,
+            requires_network: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::Allowed);
@@ -406,7 +430,6 @@ mod tests {
             writes_files: true,
             creates_process: true,
             requires_network: false,
-            explicit_approval: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::DoubleConfirmRequired);
@@ -414,9 +437,9 @@ mod tests {
     }
 
     #[test]
-    fn medium_risk_shell_can_be_auto_approved() {
+    fn validated_test_tool_can_be_auto_approved() {
         let request = ToolRequest {
-            tool: "run_shell".to_string(),
+            tool: "run_tests".to_string(),
             surface: ToolSurface::Shell,
             command: Some("cargo test".to_string()),
             path: None,
@@ -424,11 +447,47 @@ mod tests {
             writes_files: false,
             creates_process: true,
             requires_network: false,
-            explicit_approval: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::AutoApproved);
         assert_eq!(decision.risk, RiskLevel::Medium);
+    }
+
+    #[test]
+    fn shell_command_shape_alone_cannot_trigger_auto_approval() {
+        let request = ToolRequest {
+            tool: "run_shell".to_string(),
+            surface: ToolSurface::Shell,
+            command: Some("cargo test --manifest-path /tmp/outside/Cargo.toml".to_string()),
+            path: None,
+            network_target: None,
+            writes_files: false,
+            creates_process: true,
+            requires_network: false,
+        };
+
+        let decision = engine().evaluate(&request);
+
+        assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);
+    }
+
+    #[test]
+    fn compound_and_network_shell_commands_are_not_auto_approved() {
+        for command in ["git status; touch changed", "curl https://example.com"] {
+            let request = ToolRequest {
+                tool: "run_shell".to_string(),
+                surface: ToolSurface::Shell,
+                command: Some(command.to_string()),
+                path: Some(PathBuf::from("/tmp/project")),
+                network_target: None,
+                writes_files: false,
+                creates_process: true,
+                requires_network: false,
+            };
+            let decision = engine().evaluate(&request);
+            assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);
+            assert_eq!(decision.risk, RiskLevel::High);
+        }
     }
 
     #[test]
@@ -442,7 +501,6 @@ mod tests {
             writes_files: false,
             creates_process: true,
             requires_network: true,
-            explicit_approval: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);
@@ -460,7 +518,6 @@ mod tests {
             writes_files: true,
             creates_process: true,
             requires_network: true,
-            explicit_approval: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);
@@ -478,7 +535,6 @@ mod tests {
             writes_files: true,
             creates_process: true,
             requires_network: true,
-            explicit_approval: false,
         };
         let decision = engine().evaluate(&request);
         assert_eq!(decision.outcome, DecisionOutcome::RequiresUserApproval);

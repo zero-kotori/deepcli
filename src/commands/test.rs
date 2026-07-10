@@ -1,5 +1,6 @@
 use super::{
-    dedup_preserve_order, local_action_checklist, set_command_output_path, write_command_output,
+    dedup_preserve_order, local_action_checklist, set_command_output_path,
+    workspace_relative_display, write_command_output,
 };
 use crate::privacy::redact_sensitive_text;
 use crate::schema_ids;
@@ -62,7 +63,7 @@ pub(crate) async fn handle_test(
             } else {
                 json!({ "command": parsed.command })
             };
-            let output = executor.execute("run_tests", tool_args).await?;
+            let output = executor.execute_user_action("run_tests", tool_args).await?;
             let text = output.content.clone();
             let output = if parsed.options.json_output {
                 format_test_run_json(workspace, &output.raw, &text)?
@@ -223,12 +224,7 @@ pub(super) fn discovered_test_command_json(workspace: &Path, command: Value) -> 
         .get("source")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let source_path = Path::new(source);
-    let relative_source = source_path
-        .strip_prefix(workspace)
-        .unwrap_or(source_path)
-        .display()
-        .to_string();
+    let relative_source = workspace_relative_display(workspace, Path::new(source));
     json!({
         "source": relative_source,
         "sourcePath": source,

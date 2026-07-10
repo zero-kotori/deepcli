@@ -1,9 +1,13 @@
-use crate::runtime::{AgentRuntime, RuntimeProgress, SessionObservationQuestion};
+use crate::runtime::{
+    AgentRuntime, RuntimeProgress, SessionObservationApproval, SessionObservationQuestion,
+};
 use anyhow::{anyhow, Result};
 use crossterm::{
     cursor::{MoveToColumn, MoveUp},
-    event::{self, Event, KeyCode, KeyEvent, KeyModifiers},
-    queue,
+    event::{
+        self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyModifiers,
+    },
+    execute, queue,
     terminal::{self, disable_raw_mode, enable_raw_mode, Clear, ClearType},
 };
 use std::io::{self, Write};
@@ -21,12 +25,93 @@ struct WorkerDone {
 }
 
 #[derive(Default)]
+struct TerminalTextSanitizer {
+    state: TerminalEscapeState,
+}
+
+#[derive(Default)]
+enum TerminalEscapeState {
+    #[default]
+    Text,
+    Escape,
+    Csi,
+    Osc,
+    OscEscape,
+    ControlString,
+    ControlStringEscape,
+}
+
+impl TerminalTextSanitizer {
+    fn sanitize_chunk(&mut self, value: &str) -> String {
+        let mut sanitized = String::with_capacity(value.len());
+        for ch in value.chars() {
+            match self.state {
+                TerminalEscapeState::Text => match ch {
+                    '\x1b' => self.state = TerminalEscapeState::Escape,
+                    '\u{009b}' => self.state = TerminalEscapeState::Csi,
+                    '\u{009d}' => self.state = TerminalEscapeState::Osc,
+                    '\u{0090}' | '\u{0098}' | '\u{009e}' | '\u{009f}' => {
+                        self.state = TerminalEscapeState::ControlString;
+                    }
+                    '\n' | '\t' => sanitized.push(ch),
+                    ch if ch.is_control() => {}
+                    ch => sanitized.push(ch),
+                },
+                TerminalEscapeState::Escape => match ch {
+                    '[' => self.state = TerminalEscapeState::Csi,
+                    ']' => self.state = TerminalEscapeState::Osc,
+                    'P' | 'X' | '^' | '_' => {
+                        self.state = TerminalEscapeState::ControlString;
+                    }
+                    '\x1b' => {}
+                    ch if (' '..='/').contains(&ch) => {}
+                    _ => self.state = TerminalEscapeState::Text,
+                },
+                TerminalEscapeState::Csi => {
+                    if ch == '\x1b' {
+                        self.state = TerminalEscapeState::Escape;
+                    } else if ('@'..='~').contains(&ch) {
+                        self.state = TerminalEscapeState::Text;
+                    }
+                }
+                TerminalEscapeState::Osc => match ch {
+                    '\x07' | '\u{009c}' => self.state = TerminalEscapeState::Text,
+                    '\x1b' => self.state = TerminalEscapeState::OscEscape,
+                    _ => {}
+                },
+                TerminalEscapeState::OscEscape => match ch {
+                    '\\' | '\u{009c}' => self.state = TerminalEscapeState::Text,
+                    '\x1b' => {}
+                    _ => self.state = TerminalEscapeState::Osc,
+                },
+                TerminalEscapeState::ControlString => match ch {
+                    '\u{009c}' => self.state = TerminalEscapeState::Text,
+                    '\x1b' => self.state = TerminalEscapeState::ControlStringEscape,
+                    _ => {}
+                },
+                TerminalEscapeState::ControlStringEscape => match ch {
+                    '\\' | '\u{009c}' => self.state = TerminalEscapeState::Text,
+                    '\x1b' => {}
+                    _ => self.state = TerminalEscapeState::ControlString,
+                },
+            }
+        }
+        sanitized
+    }
+
+    fn reset(&mut self) {
+        self.state = TerminalEscapeState::Text;
+    }
+}
+
+#[derive(Default)]
 struct NativeRenderState {
     assistant_open: bool,
     saw_assistant_delta: bool,
     folded_tool_events: usize,
     folded_tool_failures: usize,
     latest_folded_tool: Option<String>,
+    assistant_sanitizer: TerminalTextSanitizer,
 }
 
 pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()> {
@@ -43,7 +128,7 @@ pub(super) async fn run_native_terminal(mut runtime: AgentRuntime) -> Result<()>
             break;
         }
         if let Some(answer) = answer_native_side_question(&mut runtime, &input)? {
-            println!("{}", answer.message);
+            println!("{}", terminal_safe_text(&answer.message));
             print_native_open_questions(&runtime)?;
             if answer.continue_planning {
                 runtime.set_progress_sender(Some(progress_tx.clone()));
@@ -199,16 +284,16 @@ impl NativeInputEditor {
     }
 
     fn insert_char(&mut self, ch: char) {
-        self.buffer.insert(self.cursor, ch);
-        self.cursor += ch.len_utf8();
-        self.preferred_column = None;
+        let mut encoded = [0; 4];
+        self.insert_str(ch.encode_utf8(&mut encoded));
     }
 
     fn insert_str(&mut self, value: &str) {
+        let value = terminal_safe_text(value);
         if value.is_empty() {
             return;
         }
-        self.buffer.insert_str(self.cursor, value);
+        self.buffer.insert_str(self.cursor, &value);
         self.cursor += value.len();
         self.preferred_column = None;
     }
@@ -335,14 +420,21 @@ fn native_input_prompt() -> &'static str {
 
 fn read_native_input(stdout: &mut io::Stdout) -> io::Result<Option<String>> {
     enable_raw_mode()?;
+    if let Err(error) = execute!(stdout, EnableBracketedPaste) {
+        let _ = disable_raw_mode();
+        return Err(error);
+    }
     let result = read_native_input_raw(stdout);
+    let disable_paste = execute!(stdout, DisableBracketedPaste);
     let disable_raw = disable_raw_mode();
     match result {
         Ok(value) => {
+            disable_paste?;
             disable_raw?;
             Ok(value)
         }
         Err(error) => {
+            let _ = disable_paste;
             let _ = disable_raw;
             Err(error)
         }
@@ -463,7 +555,11 @@ fn render_input_buffer(buffer: &str) -> String {
 }
 
 fn normalize_native_paste(value: &str) -> String {
-    value.replace("\r\n", "\n").replace('\r', "\n")
+    terminal_safe_text(&value.replace("\r\n", "\n").replace('\r', "\n"))
+}
+
+fn terminal_safe_text(value: &str) -> String {
+    TerminalTextSanitizer::default().sanitize_chunk(value)
 }
 
 fn terminal_width() -> usize {
@@ -566,16 +662,19 @@ async fn wait_for_native_task(
                 drain_native_progress(progress_rx, render_state)?;
                 finish_native_stream_line(render_state)?;
                 let runtime = done.runtime;
+                let state = runtime.state_label();
                 match done.result {
                     Ok(output) => {
-                        if !render_state.saw_assistant_delta {
-                            println!("{output}");
+                        if should_print_native_task_output(render_state.saw_assistant_delta, &state)
+                        {
+                            println!("{}", terminal_safe_text(&output));
                         }
                     }
                     Err(error) => {
-                        println!("error: {error}");
+                        println!("error: {}", terminal_safe_text(&error));
                     }
                 }
+                print_native_pending_approvals(&runtime)?;
                 print_native_open_questions(&runtime)?;
                 return Ok(runtime);
             }
@@ -612,14 +711,17 @@ fn render_native_progress(
             if !render_state.assistant_open {
                 render_state.assistant_open = true;
             }
-            print!("{delta}");
-            io::stdout().flush()?;
+            let delta = render_state.assistant_sanitizer.sanitize_chunk(&delta);
+            if !delta.is_empty() {
+                print!("{delta}");
+                io::stdout().flush()?;
+            }
             render_state.saw_assistant_delta = true;
         }
         other => {
             for line in native_progress_lines(&other, render_state) {
                 finish_native_stream_line(render_state)?;
-                println!("{line}");
+                println!("{}", terminal_safe_text(&line));
             }
         }
     }
@@ -642,43 +744,24 @@ fn native_progress_lines(
             request_kib,
             compacted,
         } => {
-            render_state.folded_tool_events = 0;
-            render_state.folded_tool_failures = 0;
-            render_state.latest_folded_tool = None;
+            let mut lines = flush_folded_native_tool_progress(render_state);
             let mut line = format!(
                 "deepcli | provider {iteration} | messages {message_count} | tools {tool_count} | request {request_kib} KiB"
             );
             if *compacted {
                 line.push_str(" | compacted");
             }
-            vec![line]
+            lines.push(line);
+            lines
         }
         RuntimeProgress::ProviderTurnCompleted {
             elapsed_ms,
             tool_calls,
         } => {
-            let mut lines = Vec::new();
-            if render_state.folded_tool_events > 0 {
-                let mut folded = format!(
-                    "deepcli | tools folded | events {}",
-                    render_state.folded_tool_events
-                );
-                if render_state.folded_tool_failures > 0 {
-                    folded.push_str(&format!(" | failed {}", render_state.folded_tool_failures));
-                }
-                if let Some(latest) = render_state.latest_folded_tool.take() {
-                    folded.push_str(" | latest ");
-                    folded.push_str(&latest);
-                }
-                lines.push(folded);
-                render_state.folded_tool_events = 0;
-                render_state.folded_tool_failures = 0;
-            }
-            lines.push(format!(
+            vec![format!(
                 "deepcli | provider done | {:.1}s | tool calls {tool_calls}",
                 *elapsed_ms as f64 / 1000.0
-            ));
-            lines
+            )]
         }
         RuntimeProgress::ToolStarted { tool, detail } => {
             fold_native_tool_progress(render_state, "run", tool, detail.as_deref(), true);
@@ -692,7 +775,30 @@ fn native_progress_lines(
             fold_native_tool_progress(render_state, status, tool, Some(summary), false);
             Vec::new()
         }
+        RuntimeProgress::ToolBatchCompleted { .. } => {
+            flush_folded_native_tool_progress(render_state)
+        }
     }
+}
+
+fn flush_folded_native_tool_progress(render_state: &mut NativeRenderState) -> Vec<String> {
+    if render_state.folded_tool_events == 0 {
+        return Vec::new();
+    }
+    let mut folded = format!(
+        "deepcli | tools folded | events {}",
+        render_state.folded_tool_events
+    );
+    if render_state.folded_tool_failures > 0 {
+        folded.push_str(&format!(" | failed {}", render_state.folded_tool_failures));
+    }
+    if let Some(latest) = render_state.latest_folded_tool.take() {
+        folded.push_str(" | latest ");
+        folded.push_str(&latest);
+    }
+    render_state.folded_tool_events = 0;
+    render_state.folded_tool_failures = 0;
+    vec![folded]
 }
 
 fn fold_native_tool_progress(
@@ -714,7 +820,11 @@ fn fold_native_tool_progress(
 }
 
 fn native_progress_detail(value: &str) -> Option<String> {
-    let detail = value.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let safe_value = terminal_safe_text(value);
+    let detail = safe_value
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())?;
     Some(compact_native_progress_detail(detail))
 }
 
@@ -736,7 +846,12 @@ fn finish_native_stream_line(render_state: &mut NativeRenderState) -> io::Result
         io::stdout().flush()?;
         render_state.assistant_open = false;
     }
+    render_state.assistant_sanitizer.reset();
     Ok(())
+}
+
+fn should_print_native_task_output(saw_assistant_delta: bool, state: &str) -> bool {
+    !saw_assistant_delta || matches!(state, "AwaitingApproval" | "WaitingUser" | "Failed")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -778,9 +893,37 @@ fn answer_native_side_question(
 fn print_native_open_questions(runtime: &AgentRuntime) -> Result<()> {
     let monitor = runtime.session_monitor()?;
     for line in native_open_question_lines(&monitor.open_questions) {
-        println!("{line}");
+        println!("{}", terminal_safe_text(&line));
     }
     Ok(())
+}
+
+fn print_native_pending_approvals(runtime: &AgentRuntime) -> Result<()> {
+    let monitor = runtime.session_monitor()?;
+    for line in native_pending_approval_lines(&monitor.pending_approvals) {
+        println!("{}", terminal_safe_text(&line));
+    }
+    Ok(())
+}
+
+fn native_pending_approval_lines(approvals: &[SessionObservationApproval]) -> Vec<String> {
+    if approvals.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = vec![format!(
+        "deepcli | pending tool approvals | requests {}",
+        approvals.len()
+    )];
+    for approval in approvals {
+        let short_id = approval.id.chars().take(8).collect::<String>();
+        lines.push(format!(
+            "approval {short_id} | {} | {} | {}",
+            terminal_safe_text(&approval.tool),
+            terminal_safe_text(&approval.risk),
+            terminal_safe_text(&approval.reason)
+        ));
+    }
+    lines
 }
 
 fn native_open_question_lines(questions: &[SessionObservationQuestion]) -> Vec<String> {
@@ -797,9 +940,16 @@ fn native_open_question_lines(questions: &[SessionObservationQuestion]) -> Vec<S
         } else {
             format!("plan question {}", question_index + 1)
         };
-        lines.push(format!("{label}: {}", question.question));
+        lines.push(format!(
+            "{label}: {}",
+            terminal_safe_text(&question.question)
+        ));
         for (option_index, option) in question.options.iter().enumerate() {
-            lines.push(format!("  {}. {}", option_index + 1, option));
+            lines.push(format!(
+                "  {}. {}",
+                option_index + 1,
+                terminal_safe_text(option)
+            ));
         }
         if !question.options.is_empty() {
             lines.push(format!(
@@ -857,7 +1007,7 @@ mod tests {
     }
 
     #[test]
-    fn native_tool_progress_is_folded_until_provider_completion() {
+    fn native_tool_progress_is_folded_until_tool_batch_completion() {
         let mut render_state = NativeRenderState::default();
         let started_turn = RuntimeProgress::ProviderTurnStarted {
             iteration: 1,
@@ -879,19 +1029,21 @@ mod tests {
             elapsed_ms: 5600,
             tool_calls: 1,
         };
+        let completed_batch = RuntimeProgress::ToolBatchCompleted { tool_calls: 1 };
 
         assert_eq!(
             native_progress_lines(&started_turn, &mut render_state),
             vec!["deepcli | provider 1 | messages 12 | tools 9 | request 72 KiB"]
         );
+        assert_eq!(
+            native_progress_lines(&completed_turn, &mut render_state),
+            vec!["deepcli | provider done | 5.6s | tool calls 1".to_string()]
+        );
         assert!(native_progress_lines(&started, &mut render_state).is_empty());
         assert!(native_progress_lines(&completed, &mut render_state).is_empty());
         assert_eq!(
-            native_progress_lines(&completed_turn, &mut render_state),
-            vec![
-                "deepcli | tools folded | events 2 | latest ok read_file | [deepcli read_file slice: lines 1-80 of 5671]".to_string(),
-                "deepcli | provider done | 5.6s | tool calls 1".to_string()
-            ]
+            native_progress_lines(&completed_batch, &mut render_state),
+            vec!["deepcli | tools folded | events 2 | latest ok read_file | [deepcli read_file slice: lines 1-80 of 5671]".to_string()]
         );
     }
 
@@ -914,6 +1066,93 @@ mod tests {
                 "  2. 直接实现 runner".to_string(),
                 "  3. 自定义输入（直接输入文本）".to_string(),
                 "deepcli | answer with option number or free text".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_safe_text_removes_terminal_control_sequences() {
+        let value = concat!(
+            "plain\x1b[31mred\x1b[0m\n",
+            "tab\tvalue\x1b]52;c;YXR0YWNr\x07done",
+            "\x08\r\x7f\u{009b}2Jvisible"
+        );
+
+        assert_eq!(terminal_safe_text(value), "plainred\ntab\tvaluedonevisible");
+    }
+
+    #[test]
+    fn terminal_sanitizer_handles_sequences_split_across_stream_deltas() {
+        let mut sanitizer = TerminalTextSanitizer::default();
+
+        assert_eq!(sanitizer.sanitize_chunk("before\x1b]52;c;"), "before");
+        assert_eq!(sanitizer.sanitize_chunk("YXR0YWNr\x1b\\after"), "after");
+        assert_eq!(sanitizer.sanitize_chunk("\x1b[3"), "");
+        assert_eq!(sanitizer.sanitize_chunk("1mred"), "red");
+    }
+
+    #[test]
+    fn native_paste_is_normalized_before_editor_metrics_and_rendering() {
+        let pasted = normalize_native_paste("one\r\n\x1b[2Jtwo\r\x1b]52;c;YXR0YWNr\x07three\x08");
+        assert_eq!(pasted, "one\ntwo\nthree");
+
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str(&pasted);
+        assert_eq!(editor.buffer(), "one\ntwo\nthree");
+        assert_eq!(render_input_buffer(editor.buffer()), "one\r\ntwo\r\nthree");
+
+        let metrics = native_input_metrics(editor.buffer(), editor.cursor(), 80);
+        assert_eq!(metrics.total_rows, 3);
+        assert_eq!(metrics.cursor_row, 2);
+        assert_eq!(metrics.cursor_col, 5);
+    }
+
+    #[test]
+    fn native_editor_drops_control_sequences_even_without_paste_path() {
+        let mut editor = NativeInputEditor::default();
+        editor.insert_str("\x1b[31mred\x1b[0m\x08");
+
+        assert_eq!(editor.buffer(), "red");
+        assert_eq!(editor.cursor(), 3);
+    }
+
+    #[test]
+    fn native_task_prints_terminal_states_after_streaming() {
+        assert!(!should_print_native_task_output(true, "Running"));
+        assert!(should_print_native_task_output(true, "AwaitingApproval"));
+        assert!(should_print_native_task_output(true, "WaitingUser"));
+        assert!(should_print_native_task_output(true, "Failed"));
+        assert!(should_print_native_task_output(false, "Completed"));
+    }
+
+    #[test]
+    fn native_question_and_approval_lines_sanitize_untrusted_fields() {
+        let question = SessionObservationQuestion {
+            id: "question-id".to_string(),
+            question: "choose\x1b[2J now".to_string(),
+            options: vec!["safe\x1b]52;c;YXR0YWNr\x07 option".to_string()],
+        };
+        let approval = SessionObservationApproval {
+            id: "12345678-0000-0000-0000-000000000000".to_string(),
+            tool: "run_shell\x1b[31m".to_string(),
+            risk: "High\x1b[0m".to_string(),
+            reason: "reason\x08".to_string(),
+        };
+
+        let question_lines = native_open_question_lines(&[question]);
+        assert!(question_lines.iter().all(|line| !line.contains('\x1b')));
+        assert!(question_lines
+            .iter()
+            .any(|line| line.contains("choose now")));
+        assert!(question_lines
+            .iter()
+            .any(|line| line.contains("safe option")));
+
+        assert_eq!(
+            native_pending_approval_lines(&[approval]),
+            vec![
+                "deepcli | pending tool approvals | requests 1".to_string(),
+                "approval 12345678 | run_shell | High | reason".to_string(),
             ]
         );
     }

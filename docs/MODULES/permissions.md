@@ -2,13 +2,15 @@
 
 ## 职责
 
-`src/permissions.rs` 负责文件系统、shell、Git、网络、Docker、终端与设置操作的权限模式评估与风险决策。
+`src/permissions.rs` 负责文件系统、shell、Git、网络、Docker、终端与设置操作的宿主风险评估和权限决策。模型参数不参与授权事实推导；精确 grant 的持久状态机由 `src/session.rs` 拥有。
 
 ## 边界
 
 - 工具与运行时在执行高风险或写入操作之前，必须查询权限决策。
 - 命令可以解释权限结果，但策略决策归属于此处。
 - 审批与审计记录应反映权限引擎所使用的同一权限面与风险分级。
+- `autoReviewer` 默认关闭；显式开启只允许经过工具专用校验的 `run_tests`，不得扩展到通用 shell，也不能表述为 OS sandbox。
+- DoubleConfirm 不可由 assume-yes 绕过，确认窗口与最终 grant 都有时效，风险升级必须重新确认。
 - 新增的风险面在通过工具或命令暴露之前，需要先有测试。
 
 ## 测试

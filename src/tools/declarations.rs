@@ -13,7 +13,6 @@ pub struct ToolPermissionContext {
     pub writes_files: Option<bool>,
     pub creates_process: bool,
     pub requires_network: Option<bool>,
-    pub explicit_approval: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -42,7 +41,6 @@ impl ToolDeclaration {
             writes_files: context.writes_files.unwrap_or(self.writes_files),
             creates_process: context.creates_process,
             requires_network: context.requires_network.unwrap_or(self.requires_network),
-            explicit_approval: context.explicit_approval,
         }
     }
 }
@@ -70,7 +68,13 @@ impl ToolObject {
     }
 
     pub fn can_run_parallel(&self) -> bool {
-        self.declaration.can_run_parallel && !self.declaration.writes_files
+        self.declaration.can_run_parallel
+            && !self.declaration.writes_files
+            && !self.declaration.requires_network
+            && matches!(
+                self.declaration.surface,
+                ToolSurface::Filesystem | ToolSurface::Skill
+            )
     }
 
     pub fn tool_spec(&self) -> ToolSpec {
@@ -357,6 +361,22 @@ impl ToolRegistry {
             .collect()
     }
 
+    pub fn restrict_to_names(&mut self, names: &[String]) -> anyhow::Result<()> {
+        if names.is_empty() {
+            return Ok(());
+        }
+        for name in names {
+            if !self.has(name) {
+                anyhow::bail!("sub-agent allowed_tools contains unknown tool `{name}`");
+            }
+        }
+        self.declarations
+            .retain(|declaration| names.iter().any(|name| name == &declaration.name));
+        self.tools
+            .retain(|tool| names.iter().any(|name| name == tool.name()));
+        Ok(())
+    }
+
     pub fn has(&self, name: &str) -> bool {
         self.tool(name).is_some()
     }
@@ -378,5 +398,40 @@ fn declaration(
         writes_files,
         requires_network,
         can_run_parallel,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ToolRegistry;
+
+    #[test]
+    fn restricted_registry_only_exposes_the_subagent_tool_capability() {
+        let mut registry = ToolRegistry::mvp();
+        registry
+            .restrict_to_names(&["read_file".to_string(), "search".to_string()])
+            .unwrap();
+
+        let names = registry
+            .tool_specs()
+            .into_iter()
+            .map(|tool| tool.function.name)
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["read_file", "search"]);
+        assert!(!registry.has("run_shell"));
+    }
+
+    #[test]
+    fn parallel_tools_are_limited_to_scope_safe_local_reads() {
+        let registry = ToolRegistry::mvp();
+
+        assert!(registry.tool("read_file").unwrap().can_run_parallel());
+        assert!(registry.tool("search").unwrap().can_run_parallel());
+        assert!(!registry.tool("web_fetch").unwrap().can_run_parallel());
+        assert!(!registry.tool("git_diff").unwrap().can_run_parallel());
+        assert!(!registry
+            .tool("check_environment")
+            .unwrap()
+            .can_run_parallel());
     }
 }

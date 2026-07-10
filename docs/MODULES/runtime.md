@@ -2,7 +2,7 @@
 
 ## 职责
 
-`src/runtime.rs` 负责 agent 循环、provider 轮次生命周期、工具调用循环、上下文组装、计划状态更新，以及供状态与 UI 界面使用的会话观测。
+`src/runtime.rs` 负责统一 tool-capable 流式 agent 循环、provider 轮次生命周期、工具批次、审批暂停、上下文组装、计划状态更新，以及供状态与 UI 界面使用的会话观测。子 Agent resume 在此把持久任务装载为 registry/executor capability。
 
 ## 边界
 
@@ -10,6 +10,9 @@
 - 工具执行必须经过 `ToolExecutor` 与权限检查。
 - 会话状态变更必须经过会话 API。
 - provider 特定的请求与流式解析归属于 `src/providers.rs`。
+- pending approval 是不可覆盖的 completion blocker；一旦批次产生审批请求，后续串行调用必须跳过并进入 `AwaitingApproval`。
+- 并行 batch 只接受无写入、无网络且可路径约束的 Filesystem/Skill 读工具；可能触发审批或广域进程的工具必须串行。
+- Provider 可见子 Agent 工具集和 system workspace context 必须按 capability 裁剪，Executor 保留二次工具/路径校验；depth 由父 runtime 计算。
 - agent loop 不设置固定 provider/tool 轮次上限；结束条件来自模型最终回答、用户停止、权限等待、provider timeout 或真实错误。
 - context/verification 工具预算默认不启用；只有显式设置 `DEEPCLI_MAX_CONTEXT_TOOL_CALLS` 或 `DEEPCLI_MAX_VERIFICATION_TOOL_CALLS` 时，运行时才会跳过对应工具并把恢复提示反馈给模型继续处理。
 - 上下文压缩行为不属于当前 harness 重构的范围，除非另行编写专门的计划。

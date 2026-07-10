@@ -12,6 +12,7 @@ use uuid::Uuid;
 pub enum SubagentStatus {
     Queued,
     Running,
+    AwaitingApproval,
     Completed,
     Failed,
 }
@@ -332,6 +333,20 @@ impl AgentStore {
         task.updated_at = now;
         self.save(&task)?;
         self.append_subagent_event(&task, "completed", Some(summary))?;
+        Ok(task)
+    }
+
+    pub fn await_subagent_approval(&self, id: Uuid, summary: &str) -> Result<SubagentTask> {
+        let mut task = self.load(id)?;
+        let now = Utc::now();
+        task.status = SubagentStatus::AwaitingApproval;
+        task.pid = None;
+        task.completed_at = None;
+        task.heartbeat_at = Some(now);
+        task.last_error = None;
+        task.updated_at = now;
+        self.save(&task)?;
+        self.append_subagent_event(&task, "awaiting_approval", Some(summary))?;
         Ok(task)
     }
 

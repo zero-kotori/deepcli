@@ -55,12 +55,11 @@ pub(crate) async fn handle_restore_backup(
             false,
         );
         let result = executor
-            .execute(
+            .execute_user_action(
                 "write_file",
                 json!({
                     "path": target_arg,
-                    "content": backup.content,
-                    "approved": true
+                    "content": backup.content
                 }),
             )
             .await?;
